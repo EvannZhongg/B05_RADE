@@ -1,0 +1,28 @@
+{
+  "name": "rade",
+  "private": true,
+  "version": "0.1.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "interfaces/protocol",
+    "interfaces/client",
+    "interfaces/mobile",
+    "interfaces/tui",
+    "interfaces/gui"
+  ],
+  "scripts": {
+    "pretypecheck": "npm run build --workspace @rade/protocol && npm run build --workspace @rade/client",
+    "pretest": "npm run build --workspace @rade/protocol && npm run build --workspace @rade/client",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

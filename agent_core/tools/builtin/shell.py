@@ -1,0 +1,407 @@
+import json
+import os
+from pathlib import Path
+from typing import Callable
+
+from ...execution.authority import ExecutionScope
+from ...execution.process import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    MAX_COMMAND_TIMEOUT_SECONDS,
+    CommandExecutionResult,
+    CommandOutputSpool,
+    TextExcerpt,
+)
+from ...execution.sandbox.base import FilesystemAccess, NetworkAccess
+from ..base import JSONValue, Tool, ToolDefinition, ToolOutput
+from ..budget import escaped_length, output_fits
+from ..context import ToolExecutionContext
+
+
+# Shell timeout policy is fixed for every runtime: the default is what a call
+# gets when it omits ``timeout_seconds``, and the maximum is the longest a
+# call may ask for.  Both are the executor's bounds, so the schema cannot
+# advertise a timeout the executor would refuse.
+DEFAULT_SHELL_TIMEOUT_SECONDS = DEFAULT_COMMAND_TIMEOUT_SECONDS
+MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS = 15 * 60
+MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS = MAX_COMMAND_TIMEOUT_SECONDS
+
+
+WINDOWS_SHELL_NOTE = (
+    "On Windows, every scope runs through PowerShell 7. Shell dialect is "
+    "independent of execution scope. Use PowerShell syntax for commands; "
+    "running POSIX .sh scripts is outside the Windows shell contract. "
+    "The shell starts with ErrorActionPreference=Stop, strict mode, and "
+    "PSNativeCommandUseErrorActionPreference=true. Preserve fail-fast behavior "
+    "in cleanup scripts: never suppress setup, path validation, or deletion "
+    "errors. Use unique task-specific variable names, never automatic or "
+    "environment variable names such as $home, $HOME, $PID, or $PWD. "
+    "Before recursive deletion or moving, resolve and verify "
+    "the exact absolute target is inside the intended task directory, is "
+    "not that directory's parent, a drive root, or the user profile, and "
+    "does not traverse a junction or symbolic link outside that boundary. "
+    "Keep validation and cleanup in PowerShell; do not pass computed paths "
+    "to cmd.exe or another shell. If a native program's nonzero exit code "
+    "is expected, handle it explicitly before proceeding."
+)
+POSIX_SHELL_NOTE = (
+    "Commands run through /bin/sh, so use POSIX shell syntax: chain "
+    "commands with ';' or '&&'."
+)
+
+
+class ShellTool(Tool):
+    name = "shell"
+
+    def available(self, context: ToolExecutionContext) -> bool:
+        return context.execution_router is not None
+
+    def definition(self, context: ToolExecutionContext) -> ToolDefinition:
+        supports_background = context.jobs is not None
+        maximum_timeout = (
+            MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS
+            if supports_background
+            else MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS
+        )
+        shell_note = (
+            WINDOWS_SHELL_NOTE if os.name == "nt" else POSIX_SHELL_NOTE
+        )
+        timeout_note = (
+            "Foreground calls may run for up to "
+            f"{MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS} seconds; calls with "
+            "background=true may run for up to "
+            f"{MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS} seconds."
+            if supports_background
+            else "Calls may run for up to "
+            f"{MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS} seconds."
+        )
+        timeout_description = (
+            "Optional timeout in seconds. Defaults to "
+            f"{DEFAULT_SHELL_TIMEOUT_SECONDS} seconds, with a foreground "
+            f"maximum of {MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS}. Values up "
+            f"to {MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS} require "
+            "background=true."
+            if supports_background
+            else "Optional timeout in seconds. Defaults to "
+            f"{DEFAULT_SHELL_TIMEOUT_SECONDS} seconds, with a maximum of "
+            f"{MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS}."
+        )
+        router = context.execution_router
+        if router is None:
+            raise RuntimeError("shell execution router is unavailable")
+        workspace_policy = router.workspace_policy
+        authority = router.authority
+        default_scope = authority.default_scope
+        filesystem_description = (
+            "Workspace scope primarily grants writes to the workspace and "
+            "private temporary directory; host files remain readable. On "
+            "Windows, the restricted token is a best-effort write boundary: "
+            "locations already writable by Everyone are an exception. "
+            if getattr(workspace_policy, "host_filesystem", None)
+            is FilesystemAccess.WRITE_RESTRICTED
+            else "Workspace scope is confined to the workspace. "
+        )
+        network_description = (
+            "Network access remains available. "
+            if getattr(workspace_policy, "network", None)
+            is NetworkAccess.ALLOW
+            else "Network access is disabled. "
+        )
+        workspace_description = filesystem_description + network_description
+        scope_guidance = (
+            "Use explicit workspace scope to run with reduced authority. "
+            if default_scope is ExecutionScope.HOST
+            else (
+                "Request host scope only when the command must cross that "
+                "boundary. "
+                if authority.allows(ExecutionScope.HOST)
+                else "Host scope is not available to this Agent. "
+            )
+        )
+        description = (
+            "Execute a shell command with the workspace as the current "
+            f"directory. {default_scope.value.title()} scope is the default. "
+            f"{workspace_description}"
+            f"{scope_guidance}"
+            f"{shell_note} Every call starts a fresh shell, so directory and "
+            "environment changes do not persist. The command is killed after "
+            f"{DEFAULT_SHELL_TIMEOUT_SECONDS} seconds by default. "
+            f"{timeout_note} Its exit code, stdout and stderr are returned."
+        )
+        properties: dict[str, JSONValue] = {
+            "command": {
+                "type": "string",
+                "description": (
+                    "Shell command to execute with the workspace as "
+                    "the current directory."
+                ),
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": maximum_timeout,
+                "description": timeout_description,
+            },
+            "scope": {
+                "type": "string",
+                "enum": [scope.value for scope in authority.scopes],
+                "description": (
+                    "Execution boundary. 'workspace' uses the platform's "
+                    "workspace sandbox; 'host' runs with the current "
+                    "user's host access and may require approval."
+                ),
+                "default": default_scope.value,
+            },
+        }
+        if supports_background:
+            properties["background"] = {
+                "type": "boolean",
+                "description": (
+                    "Run without blocking this tool batch. The call returns "
+                    "a job handle and the completed result is delivered "
+                    "automatically later in the same turn."
+                ),
+                "default": False,
+            }
+        return ToolDefinition(
+            name=self.name,
+            description=description,
+            parameters={
+                "type": "object",
+                "properties": properties,
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        )
+
+    def execute(
+        self,
+        arguments: dict[str, JSONValue],
+        context: ToolExecutionContext,
+    ) -> JSONValue | ToolOutput:
+        command = arguments.get("command")
+        timeout_seconds = arguments.get(
+            "timeout_seconds",
+            DEFAULT_SHELL_TIMEOUT_SECONDS,
+        )
+        background = arguments.get("background", False)
+        if not isinstance(command, str) or not command:
+            raise ValueError("shell requires a non-empty string 'command'")
+        if not isinstance(background, bool):
+            raise ValueError("shell requires 'background' to be a boolean")
+        maximum_timeout = (
+            MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS
+            if background
+            else MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS
+        )
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int)
+            or timeout_seconds < 1
+            or timeout_seconds > maximum_timeout
+        ):
+            raise ValueError(
+                "shell requires 'timeout_seconds' to be an integer "
+                f"between 1 and {maximum_timeout}"
+            )
+        if not set(arguments) <= {
+            "command",
+            "timeout_seconds",
+            "background",
+            "scope",
+        }:
+            raise ValueError(
+                "shell accepts only 'command', 'timeout_seconds', "
+                "'background' and 'scope'"
+            )
+        route = context.execution
+        if route is None or route.scope is None or route.executor is None:
+            raise RuntimeError("shell execution was not resolved")
+        executor = route.executor
+        if background:
+            from ...jobs import JobContext, JobResult
+
+            jobs = context.jobs
+            turn_id = context.session.current_turn_id
+            if jobs is None or turn_id is None:
+                raise ValueError("background shell requires an active JobManager turn")
+            def run(job: JobContext) -> JobResult:
+                execution = executor.execute(
+                    command, timeout_seconds, cancellation=job.cancellation,
+                )
+                return JobResult(
+                    output=_command_output(execution),
+                    result_summary={
+                        "exit_code": execution.exit_code,
+                        "timed_out": execution.timed_out,
+                        "timeout_seconds": execution.timeout_seconds,
+                    },
+                )
+
+            handle = jobs.submit(
+                "shell", turn_id, run,
+                details={"command": command},
+            )
+            return handle.to_dict()
+        execution = (
+            executor.execute(command, timeout_seconds)
+            if context.cancellation is None
+            else executor.execute(
+                command,
+                timeout_seconds,
+                cancellation=context.cancellation,
+            )
+        )
+        return _command_output(execution)
+
+
+def _command_output(execution: CommandExecutionResult) -> JSONValue | ToolOutput:
+    output: dict[str, JSONValue] = {
+        "command": execution.command,
+        "exit_code": execution.exit_code,
+        "stdout": execution.stdout,
+        "stderr": execution.stderr,
+        "timed_out": execution.timed_out,
+        "timeout_seconds": execution.timeout_seconds,
+    }
+    stdout_spool = execution.stdout_spool
+    stderr_spool = execution.stderr_spool
+    if stdout_spool is None and stderr_spool is None and output_fits(output):
+        return output
+
+    writer = _shell_artifact_writer(
+        execution,
+        stdout_spool,
+        stderr_spool,
+    )
+    return ToolOutput(
+        output=output,
+        artifact_writer=writer,
+        artifact_cleanup=_cleanup_spools(stdout_spool, stderr_spool),
+        artifact_preview=lambda json_budget: _shell_artifact_preview(
+            execution, output, json_budget
+        ),
+    )
+
+
+def _shell_artifact_preview(
+    execution: CommandExecutionResult,
+    output: dict[str, JSONValue],
+    json_budget: int,
+) -> JSONValue:
+    preview = {**output, "command": "", "stdout": "", "stderr": ""}
+    remaining = json_budget - len(json.dumps(preview, ensure_ascii=False))
+    if remaining < 0:
+        raise ValueError("shell artifact preview metadata exceeds output limit")
+
+    excerpts: dict[str, TextExcerpt] = {}
+    for name, value, spool in (
+        ("command", execution.command, None),
+        ("stdout", execution.stdout, execution.stdout_spool),
+        ("stderr", execution.stderr, execution.stderr_spool),
+    ):
+        excerpts[name] = (
+            TextExcerpt(value, value, len(value))
+            if spool is None
+            else spool.excerpt(json_budget)
+        )
+
+    # Satisfy short fields first, then divide the remaining serialized
+    # budget evenly so neither output stream can crowd the other out.
+    needs = {
+        name: (
+            escaped_length(excerpt.head)
+            if len(excerpt.head) == excerpt.size_chars
+            else json_budget + 1
+        )
+        for name, excerpt in excerpts.items()
+    }
+    pending = list(excerpts)
+    allocations: dict[str, int] = {}
+    while pending:
+        share, extra = divmod(remaining, len(pending))
+        satisfied = [name for name in pending if needs[name] <= share]
+        if not satisfied:
+            allocations.update(
+                (name, share + (index < extra))
+                for index, name in enumerate(pending)
+            )
+            break
+        for name in satisfied:
+            allocations[name] = needs[name]
+            remaining -= needs[name]
+            pending.remove(name)
+
+    for name, excerpt in excerpts.items():
+        preview[name] = _fit_excerpt(excerpt, allocations[name])
+    return preview
+
+
+def _fit_excerpt(excerpt: TextExcerpt, budget: int) -> str:
+    if (
+        len(excerpt.head) == excerpt.size_chars
+        and escaped_length(excerpt.head) <= budget
+    ):
+        return excerpt.head
+    if escaped_length(excerpt.render(0)) > budget:
+        raise ValueError("shell artifact preview budget is too small")
+    low = 0
+    high = min(excerpt.size_chars - 1, budget)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if escaped_length(excerpt.render(middle)) <= budget:
+            low = middle
+        else:
+            high = middle - 1
+    return excerpt.render(low)
+
+
+def _cleanup_spools(
+    stdout_spool: CommandOutputSpool | None,
+    stderr_spool: CommandOutputSpool | None,
+) -> Callable[[], None]:
+    def cleanup() -> None:
+        if stdout_spool is not None:
+            stdout_spool.cleanup()
+        if stderr_spool is not None:
+            stderr_spool.cleanup()
+
+    return cleanup
+
+
+def _shell_artifact_writer(
+    execution: CommandExecutionResult,
+    stdout_spool: CommandOutputSpool | None,
+    stderr_spool: CommandOutputSpool | None,
+) -> Callable[[Path], None]:
+    """Stream plain source text for the shared Artifact reading view."""
+
+    def write(path: Path) -> None:
+        with path.open("w", encoding="utf-8", newline="\n") as file:
+            file.write(f"$ {execution.command}\n")
+            file.write(f"exit_code: {execution.exit_code}\n")
+            file.write(f"timed_out: {str(execution.timed_out).lower()}\n")
+            if execution.timeout_seconds is not None:
+                file.write(f"timeout_seconds: {execution.timeout_seconds}\n")
+            _write_stream(file, "stdout", stdout_spool, execution.stdout)
+            _write_stream(file, "stderr", stderr_spool, execution.stderr)
+
+    return write
+
+
+def _write_stream(
+    file,
+    name: str,
+    spool: CommandOutputSpool | None,
+    preview: str,
+) -> None:
+    """Write one stream verbatim, from its spool when it has one."""
+    file.write(f"\n--- {name} ---\n")
+    if spool is None:
+        file.write(preview)
+        return
+
+    with spool.path.open(
+        "r", encoding=spool.encoding, errors="replace", newline=""
+    ) as source:
+        for chunk in iter(lambda: source.read(8192), ""):
+            file.write(chunk)

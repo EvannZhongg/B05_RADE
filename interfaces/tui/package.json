@@ -1,0 +1,29 @@
+{
+  "name": "rade-tui",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@rade/client": "0.1.0",
+    "@rade/protocol": "file:../protocol",
+    "ink": "^7.1.1",
+    "ink-spinner": "^5.0.0",
+    "react": "^19.3.0",
+    "string-width": "^8.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.2",
+    "@types/react": "^19.3.0",
+    "esbuild": "^0.28.2",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,153 @@
+"""Application runtime used directly by Bridge and scheduled workers."""
+
+from dataclasses import replace
+from pathlib import Path
+from typing import Callable
+
+from agent_core import (
+    AgentEvent, AttachmentPart, CompositeToolPolicy, ContextWindowEvent,
+    McpApprovalPolicy,
+    PermissionPreset, SchedulerService, ShellApprovalPolicy,
+    ComputerApprovalPolicy, Workspace,
+    FileWriteApprovalPolicy,
+    UnitCompletedEvent,
+)
+
+from .callbacks import RuntimeCallbacks
+from .config import load_model_options
+from .plane_manager import ExecutionPlaneManager
+from .session_controller import SessionRuntimeController
+from .services import RuntimeServices
+from .turn_runner import TurnResult, TurnRunner
+
+
+class RuntimeHost:
+    def __init__(
+        self,
+        config_directory: Path,
+        *,
+        callbacks: RuntimeCallbacks | None = None,
+        scheduler: SchedulerService | None = None,
+        services: RuntimeServices | None = None,
+    ) -> None:
+        self.config_directory = config_directory.resolve()
+        self.callbacks = callbacks or RuntimeCallbacks()
+        runtime_callbacks = replace(self.callbacks, on_event=self.publish_event)
+        self._owns_services = services is None
+        self.services = services or RuntimeServices(
+            self.config_directory, scheduler=scheduler,
+        )
+        self.environment = self.services.environment
+        self.settings = self.services.settings
+        self.scheduler = self.services.scheduler
+        self.planes = ExecutionPlaneManager(
+            self.config_directory, self.environment, self.scheduler,
+            runtime_callbacks,
+        )
+        self.sessions = SessionRuntimeController(
+            self.config_directory, self.environment, runtime_callbacks,
+            CompositeToolPolicy(
+                ShellApprovalPolicy(self.callbacks.request_permission),
+                FileWriteApprovalPolicy(self.callbacks.request_permission),
+                ComputerApprovalPolicy(self.callbacks.request_permission),
+                McpApprovalPolicy(
+                    self._request_mcp_permission,
+                    lambda name: (
+                        self.planes.current.mcp.requires_approval(name)
+                        if self.planes.current is not None else False
+                    ),
+                ),
+            ),
+        )
+        self.turns = TurnRunner(runtime_callbacks)
+
+    def _require_idle(self) -> None:
+        if self.turns.turn_id is not None:
+            raise RuntimeError("cannot change runtime during a turn")
+
+    def open_session(self, workspace: Path, session_id: str | None = None,
+                     provider: str | None = None) -> bool:
+        self._require_idle()
+        with self.sessions.open_session(workspace, session_id, provider) as resumed:
+            self.planes.unbind_session()
+        return resumed
+
+    def change_provider(self, provider: str) -> tuple[bool, str]:
+        self._require_idle()
+        if self.sessions.session is None:
+            raise RuntimeError("session is not initialized")
+        _, models = load_model_options(self.config_directory / "provider_config.json")
+        if provider not in models:
+            raise ValueError(f"provider '{provider}' is not configured")
+        changed = provider != self.sessions.provider_name
+        if changed:
+            self.planes.close()
+            self.sessions.change_provider(provider)
+        return changed, models[provider]
+
+    def change_workspace(self, path: Path) -> bool:
+        self._require_idle()
+        if self.sessions.session is None:
+            raise RuntimeError("session is not initialized")
+        workspace = Workspace(path)
+        changed = workspace != self.sessions.workspace
+        if changed:
+            self.planes.close()
+            self.sessions.change_workspace(workspace)
+        return changed
+
+    def refresh_runtime(self) -> tuple[str, str]:
+        self._require_idle()
+        try:
+            plane = self.planes.ensure(self.sessions, force=True)
+        except Exception:
+            self.callbacks.on_phase("failed", ())
+            raise
+        self.callbacks.on_phase("idle", plane.runtime_warnings)
+        plane.runtime_warnings = ()
+        return plane.provider_name, plane.provider.model_name
+
+    def set_permission_preset(self, preset: PermissionPreset) -> None:
+        if self.sessions.permissions is None:
+            raise RuntimeError("session is not initialized")
+        self.sessions.permissions.set_preset(preset)
+
+    def _request_mcp_permission(self, call) -> bool:
+        plane = self.planes.current
+        identity = plane.mcp.tool_identity(call.name) if plane is not None else None
+        server, tool_name = identity if identity is not None else (None, call.name)
+        return self.callbacks.request_permission(
+            f"{call.name}({call.arguments})", kind="mcp", server=server, tool_name=tool_name,
+        )
+
+    def publish_event(self, event: AgentEvent, turn_id: str) -> None:
+        plane = self.planes.current
+        if isinstance(event, UnitCompletedEvent):
+            if plane is not None and plane.title_task is not None:
+                plane.title_task.start(event.start, event.end, turn_id)
+            return
+        if isinstance(event, ContextWindowEvent) and plane is not None:
+            plane.context_window = event.window
+        self.callbacks.on_event(event, turn_id)
+
+    def run_turn(
+        self, turn_id: str, text: str, *,
+        attachments: Callable[[], tuple[AttachmentPart, ...]] = lambda: (),
+        input_source: str = "user",
+    ) -> TurnResult:
+        return self.turns.run_turn(
+            turn_id, text,
+            lambda: self.planes.ensure(self.sessions, cancellation=self.turns.control),
+            attachments, input_source,
+        )
+
+    def close(self) -> None:
+        self.turns.shutdown()
+        try:
+            self.planes.close()
+        finally:
+            try:
+                self.sessions.close()
+            finally:
+                if self._owns_services:
+                    self.services.close()

@@ -1,0 +1,387 @@
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from agent_runtime.settings import (
+    EnvironmentReloader,
+    SettingsStore,
+    configuration_fingerprint,
+    environment_reference,
+)
+
+
+PROVIDERS = {
+    "main_agent": {"provider": "first", "vision_provider": ""},
+    "fast_model": {"provider": ""},
+    "subagent": {"provider": "", "vision_provider": ""},
+    "subagent_roles": {},
+    "providers": {"first": {"model": "openai/first", "key": "${FIRST_KEY}"}},
+}
+
+AGENT = {
+    "max_same_tool_calls": 5,
+    "output_reserve_tokens": 100,
+    "generate_session_title": False,
+    "max_generation_tokens": None,
+    "provider": {"request_timeout_seconds": 300, "max_retries": 2},
+    "scratch_workspace_root": "workspaces/scratch",
+    "workspace_instruction_files": ["AGENTS.md"],
+    "skills": {"global_paths": ["skills"], "workspace_paths": []},
+    "context": {"compression": {"enabled": True, "trigger_ratio": None, "keep_recent_units": 4, "user_anchor_token_budget": 2000}},
+    "main_agent": {"tools": {"read_file": True}},
+    "subagent_roles": {},
+    "mcp": {"enabled": False, "servers": {}},
+}
+
+
+class SettingsStoreTest(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / "provider_config.json").write_text(json.dumps(PROVIDERS), encoding="utf-8")
+        (self.root / "agent_config.json").write_text(json.dumps(AGENT), encoding="utf-8")
+        (self.root / "skills").mkdir()
+        (self.root / "plugins").mkdir()
+        self.store = SettingsStore(self.root)
+
+    def test_snapshot_redacts_provider_secret(self) -> None:
+        (self.root / ".env").write_text("FIRST_KEY=secret\n", encoding="utf-8")
+        snapshot = self.store.snapshot()
+        self.assertNotIn("secret", json.dumps(snapshot))
+        self.assertEqual(snapshot["providers"][0]["credential"], {
+            "source": "env", "env_name": "FIRST_KEY", "configured": True,
+        })
+        self.assertEqual(snapshot["agent"]["memory"], {
+            "enabled": True,
+            "global_max_tokens": 2000,
+            "workspace_max_tokens": 3000,
+        })
+
+    def test_snapshot_loads_configured_global_skill_paths(self) -> None:
+        external = self.root / "shared-skills" / "demo"
+        external.mkdir(parents=True)
+        (external / "SKILL.md").write_text(
+            "---\nname: shared\ndescription: Shared skill.\n---\n",
+            encoding="utf-8",
+        )
+        document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
+        document["skills"]["global_paths"] = ["shared-skills"]
+        self.store.agent_path.write_text(json.dumps(document), encoding="utf-8")
+
+        snapshot = self.store.snapshot()
+
+        self.assertEqual([skill["name"] for skill in snapshot["skills"]], ["shared"])
+
+    def test_provider_save_is_validated_and_writes_secret_to_dotenv(self) -> None:
+        snapshot = self.store.save_provider("second", {
+            "model": "openai/second",
+            "url": "https://example.test/v1",
+            "max_context_tokens": 1000,
+            "api_key": {"action": "set", "value": "new-secret"},
+            "set_default": True,
+        })
+        document = json.loads((self.root / "provider_config.json").read_text())
+        self.assertEqual(document["main_agent"]["provider"], "second")
+        self.assertEqual(document["providers"]["second"]["key"], "${RADE_SECOND_API_KEY}")
+        self.assertIn("RADE_SECOND_API_KEY=new-secret", (self.root / ".env").read_text())
+        self.assertEqual(snapshot["default_provider"], "second")
+
+    def test_invalid_agent_update_does_not_replace_file(self) -> None:
+        before = (self.root / "agent_config.json").read_text()
+        with self.assertRaises(ValueError):
+            self.store.save_agent({"max_same_tool_calls": 0})
+        self.assertEqual((self.root / "agent_config.json").read_text(), before)
+
+    def test_clearing_provider_secret_removes_its_dotenv_reference(self) -> None:
+        (self.root / ".env").write_text("FIRST_KEY=secret\nOTHER=kept\n", encoding="utf-8")
+        snapshot = self.store.save_provider("first", {
+            "model": "openai/first", "api_key": {"action": "clear"},
+        })
+        self.assertEqual((self.root / ".env").read_text(), "OTHER=kept\n")
+        self.assertEqual(snapshot["providers"][0]["credential"]["source"], "none")
+
+    def test_agent_update_preserves_scratch_workspace_root(self) -> None:
+        self.store.save_agent({"max_same_tool_calls": 6})
+
+        document = json.loads((self.root / "agent_config.json").read_text())
+        self.assertEqual(
+            document["scratch_workspace_root"],
+            "workspaces/scratch",
+        )
+        self.assertEqual(
+            document["provider"],
+            {"request_timeout_seconds": 300, "max_retries": 2},
+        )
+
+    def test_agent_save_preserves_unknown_config_fields(self) -> None:
+        document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
+        document["extra"] = {"enabled": False}
+        document["memory"] = {"enabled": False, "extra": "metadata"}
+        document["subagent_roles"] = {
+            "researcher": {"description": "Reads.", "tools": {}, "extra": []},
+        }
+        for field in ("provider", "skills", "context", "main_agent"):
+            document[field]["extra"] = "metadata"
+        document["context"]["compression"]["extra"] = True
+        self.store.agent_path.write_text(json.dumps(document), encoding="utf-8")
+
+        snapshot = self.store.save_agent({"max_same_tool_calls": 6})
+
+        self.assertEqual(snapshot["agent"]["max_same_tool_calls"], 6)
+        self.assertFalse(snapshot["agent"]["memory"]["enabled"])
+        document["max_same_tool_calls"] = 6
+        self.assertEqual(
+            json.loads(self.store.agent_path.read_text(encoding="utf-8")), document,
+        )
+        self.store.save_agent(self.store.snapshot()["agent"])
+        updated = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
+        self.assertEqual(updated["extra"], {"enabled": False})
+        self.assertEqual(updated["context"]["extra"], "metadata")
+        self.assertEqual(updated["context"]["compression"]["extra"], True)
+        self.assertEqual(updated["memory"]["extra"], "metadata")
+        self.assertEqual(updated["main_agent"]["extra"], "metadata")
+        self.assertEqual(updated["subagent_roles"]["researcher"]["extra"], [])
+
+    def test_provider_save_preserves_unknown_config_fields(self) -> None:
+        document = json.loads(self.store.provider_path.read_text(encoding="utf-8"))
+        document["extra"] = {"enabled": False}
+        document["providers"]["first"]["extra"] = "metadata"
+        for field in ("main_agent", "subagent", "fast_model"):
+            document[field]["extra"] = []
+        document["subagent_roles"] = {
+            "researcher": {"provider": "first", "extra": True},
+        }
+        document["image_generation"] = {
+            "provider": "first", "model": "image-model", "extra": {},
+        }
+        self.store.provider_path.write_text(json.dumps(document), encoding="utf-8")
+
+        snapshot = self.store.save_provider("first", {"model": "openai/updated"})
+
+        self.assertEqual(snapshot["providers"][0]["model"], "openai/updated")
+        document["providers"]["first"]["model"] = "openai/updated"
+        self.assertEqual(
+            json.loads(self.store.provider_path.read_text(encoding="utf-8")), document,
+        )
+        routing = self.store.snapshot()["routing"]
+        routing["roles"] = {"researcher": {"provider": "first"}}
+        self.store.save_routing(routing)
+        self.assertEqual(
+            json.loads(self.store.provider_path.read_text(encoding="utf-8")), document,
+        )
+
+    def test_user_anchor_budget_survives_settings_round_trip(self) -> None:
+        agent = self.store.snapshot()["agent"]
+        self.assertEqual(agent["context"]["compression"]["user_anchor_token_budget"], 2000)
+        agent["context"]["compression"]["user_anchor_token_budget"] = 3500
+
+        snapshot = self.store.save_agent(agent)
+
+        self.assertEqual(
+            snapshot["agent"]["context"]["compression"]["user_anchor_token_budget"],
+            3500,
+        )
+        document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["context"]["compression"]["user_anchor_token_budget"], 3500)
+
+    def test_mcp_toggle_preserves_server_configuration(self) -> None:
+        document = json.loads(
+            (self.root / "agent_config.json").read_text(encoding="utf-8")
+        )
+        server = {
+            "enabled": True,
+            "transport": "streamable_http",
+            "url": "https://example.test/mcp",
+        }
+        document["mcp"]["servers"]["demo"] = server
+        (self.root / "agent_config.json").write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+
+        self.store.save_agent({"mcp_enabled": True})
+
+        updated = json.loads(
+            (self.root / "agent_config.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(updated["mcp"]["enabled"])
+        self.assertEqual(updated["mcp"]["servers"]["demo"], server)
+
+    def test_subagent_mcp_selection_survives_settings_round_trip(self) -> None:
+        selection = {"analyzer": True, "docs": {"search": True}, "writer": {"write": False}}
+        self.store.save_agent({"subagent_roles": {
+            "researcher": {"description": "Reads.", "tools": {}, "mcp": selection},
+        }})
+        agent = self.store.snapshot()["agent"]
+        self.assertEqual(agent["subagent_roles"]["researcher"]["mcp"], selection)
+        agent["max_same_tool_calls"] = 6
+        self.store.save_agent(agent)
+        document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["subagent_roles"]["researcher"]["mcp"], selection)
+
+    def test_agent_update_reports_missing_scratch_workspace_root(self) -> None:
+        document = json.loads(
+            (self.root / "agent_config.json").read_text(encoding="utf-8")
+        )
+        document.pop("scratch_workspace_root")
+        (self.root / "agent_config.json").write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing required config field 'scratch_workspace_root'.*add a path",
+        ):
+            self.store.save_agent({"max_same_tool_calls": 6})
+
+    def test_rejects_a_stale_revision(self) -> None:
+        revision = configuration_fingerprint(self.root)
+        (self.root / ".env").write_text("FIRST_KEY=changed\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "configuration changed"):
+            self.store.save_agent({"max_same_tool_calls": 6}, revision)
+
+    def test_im_configuration_does_not_invalidate_execution_configuration(self) -> None:
+        revision = configuration_fingerprint(self.root)
+        (self.root / "im_channels.json").write_text('{"channels": []}', encoding="utf-8")
+        self.assertEqual(configuration_fingerprint(self.root), revision)
+
+    def test_rejects_secret_line_breaks(self) -> None:
+        with self.assertRaisesRegex(ValueError, "line breaks"):
+            self.store.save_provider("first", {
+                "model": "openai/first",
+                "url": None,
+                "max_context_tokens": None,
+                "api_key": {"action": "set", "value": "first\nSECOND=leak"},
+            })
+
+    def test_rejects_unknown_reasoning_parameter_before_saving(self) -> None:
+        before = self.store.provider_path.read_text(encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "unsupported field.*typo"):
+            self.store.save_provider("first", {
+                "model": "openai/first",
+                "reasoning_parameters": {"typo": True},
+            })
+
+        self.assertEqual(
+            self.store.provider_path.read_text(encoding="utf-8"),
+            before,
+        )
+
+    def test_provider_protocol_round_trip(self) -> None:
+        from agent_runtime.config import load_config
+        for api in ("responses", "chat_completions", None):
+            snapshot = self.store.save_provider("relay", {"model": "custom-model", "api": api})
+            provider = next(p for p in snapshot["providers"] if p["id"] == "relay")
+            self.assertEqual(provider["api"], api)
+            self.assertEqual(load_config(self.store.provider_path, "relay").api, api)
+
+    def test_invalid_protocol_and_nested_reasoning_do_not_replace_config(self) -> None:
+        before = self.store.provider_path.read_text(encoding="utf-8")
+        for settings in ({"api": "automatic"}, {"api": []},
+                         {"reasoning_parameters": {"thinking": True}},
+                         {"reasoning_parameters": {"extra_body": {"reasoning": "high"}}}):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                self.store.save_provider("first", {"model": "gpt-6-astra", **settings})
+            self.assertEqual(self.store.provider_path.read_text(encoding="utf-8"), before)
+
+    def test_preserves_dotenv_comments_and_unrelated_values(self) -> None:
+        (self.root / ".env").write_text("# local values\nOTHER=value\nFIRST_KEY=old\n", encoding="utf-8")
+        self.store.save_provider("first", {
+            "model": "openai/first",
+            "url": None,
+            "max_context_tokens": None,
+            "api_key": {"action": "set", "value": "new"},
+        })
+        content = (self.root / ".env").read_text()
+        self.assertIn("# local values", content)
+        self.assertIn("OTHER=value", content)
+        self.assertIn("FIRST_KEY=new", content)
+
+    def test_updates_provider_routing(self) -> None:
+        snapshot = self.store.snapshot()
+        updated = self.store.save_routing({
+            "main_agent": "first",
+            "vision_provider": None,
+            "subagent": "first",
+            "subagent_vision_provider": None,
+            "roles": {},
+        }, snapshot["revision"])
+        self.assertEqual(updated["routing"]["subagent"], "first")
+
+    def test_updates_fast_model_routing(self) -> None:
+        document = json.loads(self.store.provider_path.read_text(encoding="utf-8"))
+        document["providers"]["second"] = {"model": "openai/second"}
+        self.store.provider_path.write_text(json.dumps(document), encoding="utf-8")
+        routing = self.store.snapshot()["routing"]
+        self.assertIsNone(routing["fast_model"])
+        routing["fast_model"] = "second"
+        snapshot = self.store.save_routing(routing)
+        self.assertEqual(snapshot["routing"]["fast_model"], "second")
+        self.assertEqual(json.loads(self.store.provider_path.read_text())["fast_model"], {"provider": "second"})
+        routing["fast_model"] = "missing"
+        with self.assertRaisesRegex(ValueError, "fast_model.provider"):
+            self.store.save_routing(routing)
+
+    def test_provider_save_preserves_image_generation_config(self) -> None:
+        document = json.loads(
+            (self.root / "provider_config.json").read_text(encoding="utf-8")
+        )
+        document["image_generation"] = {
+            "provider": "first",
+            "model": "openai/image-model",
+        }
+        (self.root / "provider_config.json").write_text(
+            json.dumps(document), encoding="utf-8"
+        )
+
+        self.store.save_provider(
+            "first",
+            {
+                "model": "openai/first",
+                "url": None,
+                "max_context_tokens": None,
+                "api_key": {"action": "keep"},
+            },
+        )
+
+        saved = json.loads(
+            (self.root / "provider_config.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            saved["image_generation"],
+            {"provider": "first", "model": "openai/image-model"},
+        )
+
+
+class EnvironmentReloaderTest(unittest.TestCase):
+    def test_environment_references_require_an_exact_variable_name(self) -> None:
+        self.assertEqual(environment_reference("${_SECRET_1}"), "_SECRET_1")
+        for value in (None, 1, "inline", "${}", "${1SECRET}", "${A-B}", "${A}${B}", "prefix${A}"):
+            with self.subTest(value=value):
+                self.assertIsNone(environment_reference(value))
+
+    def test_reloads_changes_and_removes_deleted_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            path = Path(directory) / ".env"
+            path.write_text("TOKEN=first\n", encoding="utf-8")
+            reloader = EnvironmentReloader(path)
+            reloader.reload()
+            self.assertEqual(os.environ["TOKEN"], "first")
+            self.assertEqual(reloader.loaded_names, frozenset({"TOKEN"}))
+            path.write_text("TOKEN=second\n", encoding="utf-8")
+            reloader.reload()
+            self.assertEqual(os.environ["TOKEN"], "second")
+            path.write_text("", encoding="utf-8")
+            reloader.reload()
+            self.assertNotIn("TOKEN", os.environ)
+            self.assertEqual(reloader.loaded_names, frozenset())
+
+
+if __name__ == "__main__":
+    unittest.main()

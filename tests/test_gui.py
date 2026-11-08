@@ -1,0 +1,2723 @@
+import asyncio
+import json
+import os
+import subprocess
+import tempfile
+import time
+import unittest
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from threading import Event, Lock
+from unittest.mock import AsyncMock, patch
+
+from tests.filesystem_fixtures import symlinks_available
+
+from agent_core import (
+    TokenUsage,
+    JsonlSessionStore,
+    MemoryDocument,
+    MemoryStore,
+    PermissionPreset,
+    Session,
+    SessionInUseError,
+    Workspace,
+)
+from agent_core.scheduler import IntervalTrigger, OneShotTrigger, SchedulerService
+from agent_core.llm import AuxiliaryModelCall
+from interfaces.bridge.managed_workspaces import create_scratch_workspace
+from agent_runtime.settings import SettingsStore
+
+try:
+    from fastapi.testclient import TestClient
+    from fastapi import WebSocketDisconnect
+
+    from interfaces.bridge import protocol as bridge_protocol
+    from interfaces.bridge.event_stream import EventStream
+    from interfaces.gui import server as gui_server
+    from interfaces import session_host
+    from interfaces import bridge_process
+    from interfaces.gui.routes import media
+except ModuleNotFoundError:  # pragma: no cover - exercised without [server]
+    TestClient = None
+
+
+SYMLINKS_AVAILABLE = symlinks_available()
+
+
+class FakeBridge:
+    """Stands in for the bridge child process.
+
+    Records what the server forwards and emits scripted protocol
+    messages in reply, so the relay can be tested without a model. A
+    ``None`` in a reply list ends the message stream, which is how a
+    real bridge exit reaches the server.
+    """
+
+    def __init__(
+        self,
+        replies: dict[str, list[dict | None]] | None = None,
+    ) -> None:
+        self.sent: list[dict] = []
+        self.cancelled = 0
+        self.closed = False
+        self.returncode: int | None = None
+        self._replies = replies or {}
+        self._messages: asyncio.Queue[dict | None] = asyncio.Queue()
+        self._stream = EventStream()
+        self.state = bridge_protocol.runtime_state_message(
+            cache_usage=None,
+            phase="inactive", approval=None, question=None, provider=None,
+            permission_preset="ask_for_approval", context_window=None, jobs=[],
+        )
+        self.items = []
+
+    def send(self, message: dict) -> None:
+        self.sent.append(message)
+        if message["type"] == "open_session":
+            self.state.update(provider=message.get("provider"), workspace=message["workspace"])
+        elif message["type"] == "user_turn":
+            self.state.update(phase="starting", turn_id=message["turn_id"])
+            self.items.append({"role": "user", "content": message["text"]})
+            if not self._replies.get("user_turn"):
+                self.emit(dict(self.state))
+        elif message["type"] == "cancel":
+            self.cancel_turn()
+        for reply in self._replies.get(str(message["type"]), ()):
+            self.emit(reply)
+
+    async def read(self) -> dict | None:
+        return await self._messages.get()
+
+    def emit(self, *messages: dict | None) -> None:
+        for message in messages:
+            if message is None:
+                self._messages.put_nowait(None)
+                continue
+            kind = message["type"]
+            if kind == "runtime_state":
+                self.state.update(message)
+                message = dict(self.state)
+            elif kind == "permission_changed":
+                self.state["permission_preset"] = message["preset"]
+            elif kind == "provider_changed":
+                self.state["provider"] = message["provider"]
+            elif kind == "workspace_changed":
+                self.state["workspace"] = message["workspace"]
+            elif kind == "plan_updated":
+                self.state["plan"] = message["plan"]
+            elif kind == "approval_request":
+                self.state.update(phase="waiting_approval", approval=message)
+            elif kind == "user_question":
+                self.state.update(phase="waiting_user", question=message)
+            elif kind == "assistant_message":
+                self.items.append({"role": "assistant", "content": message["content"]})
+            elif kind in {"turn_completed", "turn_failed", "turn_cancelled", "fatal"}:
+                self.state.update(phase="failed" if kind == "fatal" else "idle", turn_id=None)
+            self._messages.put_nowait(self._stream.publish(
+                message, state=None if kind == "session_open_failed" else dict(self.state),
+                items=list(self.items) if kind in {"session_ready", "turn_completed", "turn_failed", "turn_cancelled"} else None,
+            ))
+
+    def cancel_turn(self) -> None:
+        self.cancelled += 1
+        self._messages.put_nowait(None)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakeBridgeProcess:
+    available = True
+
+    def __init__(self) -> None:
+        self.channels = []
+
+    def track(self, channel):
+        self.channels.append(channel)
+        return channel
+
+    def open_channel(self, channel_id):
+        return self.track(FakeBridge())
+
+    async def close(self):
+        for channel in self.channels:
+            await channel.close()
+
+
+@unittest.skipIf(TestClient is None, "Install the server extra to test the GUI")
+class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cancelled_release_keeps_same_session_waiting_without_blocking_other_sessions(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        class ClosingChannel(FakeBridge):
+            async def close(self):
+                entered.set()
+                await release.wait()
+                await super().close()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            process = FakeBridgeProcess()
+            channels = [ClosingChannel(), FakeBridge(), FakeBridge()]
+            with patch.object(process, "open_channel", side_effect=lambda key: process.track(channels.pop(0))):
+                registry = session_host.ActiveSessionRegistry(JsonlSessionStore(root / "sessions"), Workspace(root), root)
+                registry._bridge = process
+                opening = {"type": "open_session", "session_id": "one", "workspace": str(root)}
+                await registry.open_or_attach(opening, Workspace(root), attach_only=False)
+                closing = asyncio.create_task(registry.release_idle("one"))
+                await asyncio.wait_for(entered.wait(), 2)
+                closing.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await closing
+                reopening = asyncio.create_task(registry.open_or_attach(opening, Workspace(root), attach_only=False))
+                other, created = await asyncio.wait_for(registry.open_or_attach(
+                    {**opening, "session_id": "two"}, Workspace(root), attach_only=False,
+                ), 2)
+                self.assertTrue(created)
+                self.assertEqual(other.session_id, "two")
+                self.assertFalse(reopening.done())
+                release.set()
+                restored, created = await asyncio.wait_for(reopening, 2)
+                self.assertTrue(created)
+                self.assertEqual(restored.session_id, "one")
+                await registry.close_all()
+
+    async def test_refresh_is_busy_until_the_bridge_publishes_state(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+        runtime.send({"type": "runtime_refresh"})
+        self.assertTrue(runtime.running)
+        self.assertEqual(runtime.state["phase"], "inactive")
+        bridge.emit(bridge_protocol.runtime_state_message(
+            phase="starting", provider="first", permission_preset="full_access",
+            approval=None, question=None, context_window=None, cache_usage=None, jobs=[],
+        ))
+        await _wait_for_async(lambda: runtime.event_sequence == 1)
+        self.assertTrue(runtime.running)
+        bridge.emit(bridge_protocol.runtime_state_message(
+            phase="idle", provider="first", permission_preset="full_access",
+            approval=None, question=None, context_window=None, cache_usage=None, jobs=[],
+        ))
+        await _wait_for_async(lambda: runtime.event_sequence == 2)
+        self.assertTrue(runtime.running)
+        bridge.emit({"type": "runtime_refreshed", "provider": "first", "model": "test/model"})
+        await _wait_for_async(lambda: runtime.event_sequence == 3)
+        self.assertFalse(runtime.running)
+
+    async def test_caches_protocol_cursors_without_deriving_them_from_phase(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+        items = [{"role": "user", "content": "second turn"}]
+        bridge._messages.put_nowait({
+            **bridge_protocol.runtime_state_message(
+                cache_usage=None,
+                phase="running", turn_id="t2", approval=None, question=None,
+                provider="first", permission_preset="full_access", context_window=None, jobs=[],
+            ),
+            "event_sequence": 75, "resume_after": 74,
+            "transcript": {"items": items, "event_sequence": 63},
+        })
+        await _wait_for_async(lambda: runtime.event_sequence == 75)
+        self.assertEqual(runtime.transcript, {"items": items, "event_sequence": 63})
+        queue, events, state = await runtime.attach(63, "page", takeover=False)
+        self.assertEqual(state["event_sequence"], 74)
+        self.assertEqual([event["event_sequence"] for event in events], [75])
+        await runtime.detach(queue, "page")
+
+    async def test_client_commands_do_not_change_the_cached_runtime_snapshot(self) -> None:
+        bridge = FakeBridge(replies={"user_turn": [{"type": "assistant_delta", "text": "queued"}]})
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+        before = dict(runtime.state)
+        runtime.send({"type": "user_turn", "turn_id": "t1", "text": "work"})
+        self.assertEqual(runtime.state, before)
+        self.assertEqual(runtime.transcript, {"items": [], "event_sequence": 0})
+        self.assertTrue(runtime.running)
+
+    async def test_event_replay_window_is_bounded_and_sequences_are_monotonic(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+
+        bridge.emit(*(
+            {
+                "type": "assistant_delta",
+                "turn_id": "t1",
+                "text": str(index),
+                "model_call_index": 0,
+            }
+            for index in range(session_host.EVENT_REPLAY_LIMIT + 8)
+        ))
+        await _wait_for_async(
+            lambda: runtime.event_sequence == session_host.EVENT_REPLAY_LIMIT + 8
+        )
+
+        self.assertEqual(len(runtime._events), session_host.EVENT_REPLAY_LIMIT)
+        self.assertEqual(runtime._events[0]["event_sequence"], 9)
+        self.assertEqual(
+            runtime._events[-1]["event_sequence"],
+            session_host.EVENT_REPLAY_LIMIT + 8,
+        )
+
+    async def test_runtime_state_replaces_the_cached_attachment_snapshot(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+        approval = {
+            "type": "approval_request",
+            "turn_id": "t1",
+            "request_id": "t1:1",
+            "command": "ls",
+        }
+        bridge.emit(bridge_protocol.runtime_state_message(
+            cache_usage=None,
+            phase="waiting_approval",
+            turn_id="t1",
+            approval=approval,
+            question=None,
+            provider="first",
+            permission_preset="full_access",
+            context_window={"input_tokens": 1},
+            jobs=[{"job_id": "j1", "kind": "shell", "status": "running"}],
+        ))
+        await _wait_for_async(lambda: runtime.event_sequence == 1)
+
+        self.assertEqual(runtime.state["approval"], approval)
+        self.assertIsNone(runtime.state["question"])
+        self.assertEqual(runtime.state["permission_preset"], "full_access")
+        self.assertEqual([job["job_id"] for job in runtime.state["jobs"]], ["j1"])
+        self.assertEqual(runtime.state["context_window"], {"input_tokens": 1})
+
+    async def test_plan_updates_replace_the_cached_snapshot(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+        first = {"plan_id": "plan-1", "goal": "Ship", "revision": 1, "steps": []}
+        second = {"plan_id": "plan-1", "goal": "Ship", "revision": 2, "steps": []}
+        bridge.emit(bridge_protocol.runtime_state_message(
+            cache_usage=None,
+            phase="running",
+            turn_id="t1",
+            approval=None,
+            question=None,
+            provider="first",
+            permission_preset="ask_for_approval",
+            context_window=None,
+            jobs=[],
+            plan=first,
+        ))
+        bridge.emit({"type": "plan_updated", "plan": second})
+        await _wait_for_async(lambda: runtime.event_sequence == 2)
+
+        self.assertEqual(runtime.state["plan"], second)
+
+    async def test_owner_close_does_not_relabel_the_runtime_as_failed(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime.state["phase"] = "idle"
+
+        await runtime.close()
+
+        self.assertEqual(runtime.state["phase"], "idle")
+
+    async def test_clean_bridge_exit_does_not_relabel_the_runtime_as_failed(self) -> None:
+        bridge = FakeBridge()
+        bridge.returncode = 0
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime.state["phase"] = "idle"
+
+        bridge.emit(None)
+        await _wait_for_async(lambda: runtime.done)
+
+        self.assertEqual(runtime.state["phase"], "idle")
+
+    async def test_bridge_exit_does_not_invent_a_runtime_transition(self) -> None:
+        bridge = FakeBridge()
+        bridge.returncode = 0
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime.state["phase"] = "running"
+
+        bridge.emit(None)
+        await _wait_for_async(lambda: runtime.done)
+
+        self.assertEqual(runtime.state["phase"], "running")
+        self.assertFalse(runtime.attachable)
+
+
+@unittest.skipIf(TestClient is None, "Install the server extra to test the GUI")
+class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
+    async def test_runtime_state_replaces_warnings_including_with_an_empty_list(self) -> None:
+        bridge = FakeBridge()
+        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        self.addAsyncCleanup(runtime.close)
+
+        bridge.emit(
+            bridge_protocol.runtime_state_message(
+                cache_usage=None,
+                phase="running",
+                turn_id="t1",
+                approval=None,
+                question=None,
+                provider="first",
+                permission_preset="ask_for_approval",
+                context_window=None,
+                jobs=[],
+                runtime_warnings=("warning",),
+            )
+        )
+        bridge.emit(
+            bridge_protocol.runtime_state_message(
+                cache_usage=None,
+                phase="idle",
+                turn_id=None,
+                approval=None,
+                question=None,
+                provider="first",
+                permission_preset="ask_for_approval",
+                context_window=None,
+                jobs=[],
+            )
+        )
+
+        await _wait_for_async(lambda: runtime.event_sequence == 2)
+        self.assertEqual(runtime.state["runtime_warnings"], [])
+
+@unittest.skipIf(TestClient is None, "Install the server extra to test the GUI")
+class SessionSearchCancellationTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        self.store = JsonlSessionStore(root / "sessions")
+        workspace = Workspace(root)
+        settings = SettingsStore(root / "config")
+        registry = session_host.ActiveSessionRegistry(self.store, workspace, settings.directory)
+        self.app = gui_server.create_app(workspace, self.store, settings, registry)
+        self.requests = []
+        self.releases = []
+
+    async def asyncTearDown(self) -> None:
+        for release in self.releases:
+            release.set()
+        for task in self.requests:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*self.requests, return_exceptions=True)
+
+    async def start_search(self, query):
+        incoming = asyncio.Queue()
+        incoming.put_nowait({"type": "http.request", "body": b"", "more_body": False})
+        receiving = asyncio.Event()
+        sent = []
+
+        async def receive():
+            message = await incoming.get()
+            receiving.set()
+            return message
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+            "method": "GET", "scheme": "http", "path": "/api/sessions/search",
+            "root_path": "", "query_string": f"q={query}&limit=50&per_session_limit=3".encode(),
+            "headers": [(b"host", b"127.0.0.1")],
+            "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8737),
+        }
+        task = asyncio.create_task(self.app(scope, receive, send))
+        self.requests.append(task)
+        await asyncio.wait_for(receiving.wait(), 2)
+        return task, incoming, sent
+
+    async def test_search_limits_threads_and_cancels_running_and_queued_requests(self) -> None:
+        loop = asyncio.get_running_loop()
+        started = {query: asyncio.Event() for query in ("first", "second", "next")}
+        releases = {query: Event() for query in started}
+        self.releases.extend(releases.values())
+        stop_seen = asyncio.Event()
+        visited = []
+        lock = Lock()
+        active = 0
+        peak = 0
+
+        def search(query, *, limit, per_session_limit, should_cancel):
+            nonlocal active, peak
+            with lock:
+                visited.append(query)
+                active += 1
+                peak = max(peak, active)
+            try:
+                loop.call_soon_threadsafe(started[query].set)
+                if query == "first":
+                    while not should_cancel():
+                        if releases[query].wait(0.01):
+                            return []
+                    loop.call_soon_threadsafe(stop_seen.set)
+                if not releases[query].wait(3):
+                    raise AssertionError("search thread was not released")
+                return []
+            finally:
+                with lock:
+                    active -= 1
+
+        with patch.object(self.store, "search_messages", side_effect=search):
+            first, first_input, first_sent = await self.start_search("first")
+            second, _, second_sent = await self.start_search("second")
+            await asyncio.wait_for(started["first"].wait(), 2)
+            await asyncio.wait_for(started["second"].wait(), 2)
+
+            queued, queued_input, queued_sent = await self.start_search("queued")
+            queued_input.put_nowait({"type": "http.disconnect"})
+            await asyncio.wait_for(queued, 2)
+            self.assertEqual(queued_sent[0]["status"], 499)
+
+            next_request, _, next_sent = await self.start_search("next")
+            first_input.put_nowait({"type": "http.disconnect"})
+            await asyncio.wait_for(stop_seen.wait(), 2)
+            self.assertFalse(first.done())
+            self.assertEqual(set(visited), {"first", "second"})
+
+            releases["first"].set()
+            await asyncio.wait_for(first, 2)
+            self.assertEqual(first_sent[0]["status"], 499)
+            await asyncio.wait_for(started["next"].wait(), 2)
+            self.assertEqual(peak, 2)
+            releases["second"].set()
+            releases["next"].set()
+            await asyncio.wait_for(asyncio.gather(second, next_request), 2)
+            self.assertEqual(second_sent[0]["status"], 200)
+            self.assertEqual(next_sent[0]["status"], 200)
+            self.assertEqual(set(visited), {"first", "second", "next"})
+
+    async def test_search_handler_cancellation_stops_the_worker_and_releases_the_slot(self) -> None:
+        loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+        stopped = asyncio.Event()
+        release = Event()
+        self.releases.append(release)
+
+        def search(query, *, limit, per_session_limit, should_cancel):
+            loop.call_soon_threadsafe(started.set)
+            while not should_cancel():
+                if release.wait(0.01):
+                    return []
+            loop.call_soon_threadsafe(stopped.set)
+            return []
+
+        with patch.object(self.store, "search_messages", side_effect=search):
+            task, _, _ = await self.start_search("cancelled")
+            await asyncio.wait_for(started.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+            self.assertTrue(stopped.is_set())
+
+        with patch.object(self.store, "search_messages", return_value=[]):
+            requests = [await self.start_search(query) for query in ("first", "second")]
+            await asyncio.wait_for(asyncio.gather(*(request[0] for request in requests)), 2)
+            self.assertTrue(all(request[2][0]["status"] == 200 for request in requests))
+
+    async def test_repeated_handler_cancellation_keeps_the_slot_until_the_thread_exits(self) -> None:
+        loop = asyncio.get_running_loop()
+        started = asyncio.Queue()
+        stop_seen = asyncio.Event()
+        release_cancelled = Event()
+        release_others = Event()
+        self.releases.extend((release_cancelled, release_others))
+        lock = Lock()
+        active = 0
+        peak = 0
+
+        def search(query, *, limit, per_session_limit, should_cancel):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                loop.call_soon_threadsafe(started.put_nowait, query)
+                if query == "cancelled":
+                    while not should_cancel():
+                        if release_cancelled.wait(0.01):
+                            return []
+                    loop.call_soon_threadsafe(stop_seen.set)
+                    release = release_cancelled
+                else:
+                    release = release_others
+                if not release.wait(3):
+                    raise AssertionError("search thread was not released")
+                return []
+            finally:
+                with lock:
+                    active -= 1
+
+        with patch.object(self.store, "search_messages", side_effect=search):
+            task, _, _ = await self.start_search("cancelled")
+            self.assertEqual(await asyncio.wait_for(started.get(), 2), "cancelled")
+            task.cancel()
+            await asyncio.wait_for(stop_seen.wait(), 2)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+            first, _, _ = await self.start_search("first")
+            self.assertEqual(await asyncio.wait_for(started.get(), 2), "first")
+            second, _, _ = await self.start_search("second")
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(started.get(), 0.05)
+            release_cancelled.set()
+            self.assertEqual(await asyncio.wait_for(started.get(), 2), "second")
+            release_others.set()
+            await asyncio.wait_for(asyncio.gather(first, second), 2)
+            self.assertEqual(peak, 2)
+
+    async def test_failed_searches_release_their_slots(self) -> None:
+        with patch.object(self.store, "search_messages", side_effect=RuntimeError("scan failed")):
+            for query in ("first", "second", "third"):
+                task, _, sent = await self.start_search(query)
+                with self.assertRaisesRegex(RuntimeError, "scan failed"):
+                    await asyncio.wait_for(task, 2)
+                self.assertEqual(sent[0]["status"], 500)
+
+
+@unittest.skipIf(TestClient is None, "Install the server extra to test the GUI")
+class GuiTest(unittest.TestCase):
+    def test_occupied_session_reports_failure_then_allows_selection_or_retry(self) -> None:
+        for selected in ("occupied", "another"):
+            with self.subTest(selected=selected):
+                failed = FakeBridge(replies={"open_session": [
+                    bridge_protocol.session_open_failed_message("occupied", SessionInUseError("occupied")),
+                ]})
+                ready = FakeBridge(replies={"open_session": [
+                    {"type": "session_ready", "session_id": selected},
+                ]})
+                pending = [failed, ready]
+
+                def open_channel(self, channel_id: str) -> FakeBridge:
+                    return pending.pop(0)
+
+                with patch.object(FakeBridgeProcess, "open_channel", open_channel), self.client() as client:
+                    with client.websocket_connect("/api/session") as socket:
+                        socket.send_json({"type": "open_session", "session_id": "occupied", "attachment_id": "page"})
+                        message = socket.receive_json()
+                        self.assertEqual(message["type"], "session_open_failed")
+                        self.assertEqual(message["error"]["type"], "SessionInUseError")
+                        self.assertNotIn("runtime", message)
+                        self.assertEqual(message["resume_after"], 0)
+                        with self.assertRaises(WebSocketDisconnect):
+                            socket.receive_json()
+                    _wait_for(client, lambda: client.get("/api/active-sessions").json() == [])
+                    with client.websocket_connect("/api/session") as socket:
+                        socket.send_json({"type": "open_session", "session_id": selected, "attachment_id": "page"})
+                        message = socket.receive_json()
+                        self.assertEqual(message["type"], "session_ready")
+                        self.assertEqual(message["session_id"], selected)
+                self.assertTrue(failed.closed)
+                self.assertEqual([message["type"] for message in failed.sent], ["open_session"])
+                self.assertEqual(pending, [])
+
+    def test_reopening_with_different_preferences_attaches_to_existing_bridge(self) -> None:
+        bridge = FakeBridge(replies={
+            "open_session": [{"type": "session_ready", "session_id": "shared"}],
+            "provider_set": [{"type": "provider_changed", "provider": "second", "model": "openai/second"}],
+        })
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({
+                    "type": "open_session", "session_id": "shared",
+                    "attachment_id": "page", "provider": "first",
+                })
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+            with client.websocket_connect("/api/session") as second:
+                second.send_json({
+                    "type": "open_session", "session_id": "shared",
+                    "attachment_id": "page", "provider": "second",
+                })
+                self.assertTrue(second.receive_json()["replayed"])
+                snapshot = second.receive_json()
+                self.assertEqual(snapshot["type"], "runtime_state")
+                self.assertEqual(snapshot["provider"], "first")
+                self.assertFalse(bridge.closed)
+                self.assertEqual([message["type"] for message in bridge.sent], ["open_session"])
+                second.send_json({"type": "provider_set", "provider": "second"})
+                self.assertEqual(second.receive_json()["type"], "provider_changed")
+
+    def test_new_bridge_ignores_the_previous_process_cursor(self) -> None:
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({
+                    "type": "open_session", "session_id": "s1", "attachment_id": "page",
+                    "after_event": 1000,
+                })
+                message = socket.receive_json()
+                self.assertEqual(message["type"], "session_ready")
+                self.assertEqual(message["transcript"]["event_sequence"], 1)
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "README.md").write_text("Hello RADE", encoding="utf-8")
+        (self.root / "src").mkdir()
+        self.store = JsonlSessionStore(self.root / ".RADE" / "sessions")
+        self.config = self.root / "config"
+        self.config.mkdir()
+        (self.config / "provider_config.json").write_text(json.dumps({
+            "main_agent": {"provider": "first", "vision_provider": ""},
+            "subagent": {"provider": "", "vision_provider": ""},
+            "subagent_roles": {},
+            "providers": {
+                "first": {"model": "openai/first"},
+                "second": {"model": "openai/second"},
+            },
+        }), encoding="utf-8")
+        (self.config / "agent_config.json").write_text(json.dumps({
+            "max_same_tool_calls": 5,
+            "output_reserve_tokens": 100,
+            "generate_session_title": False,
+            "max_generation_tokens": None,
+            "provider": {"request_timeout_seconds": 300, "max_retries": 2},
+            "scratch_workspace_root": str(self.root / "scratch"),
+            "workspace_instruction_files": ["AGENTS.md"],
+            "skills": {"global_paths": ["skills"], "workspace_paths": []},
+            "context": {"compression": {"enabled": True, "trigger_ratio": None, "keep_recent_units": 4, "user_anchor_token_budget": 2000}},
+            "main_agent": {"tools": {"read_file": True}},
+            "subagent_roles": {},
+            "mcp": {"enabled": False, "servers": {}},
+        }), encoding="utf-8")
+        (self.config / "skills").mkdir()
+        (self.config / "plugins").mkdir()
+
+    @contextmanager
+    def client(self, bridge: FakeBridge | None = None):
+        workspace = Workspace(self.root)
+        settings = SettingsStore(self.config)
+        registry = session_host.ActiveSessionRegistry(self.store, workspace, settings.directory)
+        app = gui_server.create_app(workspace, self.store, settings, registry)
+        client = TestClient(
+            app,
+            base_url="http://127.0.0.1",
+            headers={"host": "127.0.0.1"},
+        )
+        process = FakeBridgeProcess()
+        patcher = patch.object(bridge_process.BridgeProcess, "spawn", AsyncMock(return_value=process))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        if bridge is not None:
+            patcher = patch.object(process, "open_channel", side_effect=lambda channel_id: process.track(bridge))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with client:
+            client.portal.call(registry.start)
+            try:
+                yield client
+            finally:
+                client.portal.call(registry.close_all)
+
+    def test_server_builds_open_session_from_browser_session_choices(self) -> None:
+        bridge = FakeBridge(replies={
+            "open_session": [{"type": "session_ready", "session_id": "resumed"}],
+            "user_turn": [{"type": "bye"}, None],
+        })
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "resumed",
+                        "attachment_id": "page-1",
+                        "provider": "second",
+                        "workspace": "/",
+                    }
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "bye")
+
+        # The workspace is not asserted: the server resolves the path the
+        # browser sends against the host, so the value it forwards has no
+        # host-independent form to compare with.
+        opening = bridge.sent[0]
+        self.assertEqual(opening["type"], "open_session")
+        self.assertEqual(opening["session_id"], "resumed")
+        self.assertEqual(opening["provider"], "second")
+        self.assertEqual(bridge.sent[1]["text"], "hi")
+
+    def test_rejects_unconfigured_provider_before_spawning(self) -> None:
+        bridge = FakeBridge()
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({"type": "open_session", "provider": "unknown", "attachment_id": "page-1"})
+                message = socket.receive_json()
+
+        self.assertEqual(message["type"], "fatal")
+        self.assertEqual(bridge.sent, [])
+
+    def test_rejects_an_opening_message_that_is_not_open_session(self) -> None:
+        bridge = FakeBridge()
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                message = socket.receive_json()
+
+        self.assertEqual(message["error"]["type"], "ProtocolError")
+        self.assertEqual(bridge.sent, [])
+
+    def test_requires_an_attachment_identity(self) -> None:
+        bridge = FakeBridge()
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({"type": "open_session", "session_id": "s1"})
+                message = socket.receive_json()
+
+        self.assertEqual(message["error"]["type"], "ProtocolError")
+        self.assertIn("attachment_id", message["error"]["message"])
+        self.assertEqual(bridge.sent, [])
+
+    def test_runs_multiple_turns_on_the_same_bridge(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready", "session_id": "s1"}],
+                "user_turn": [
+                    {"type": "turn_completed", "turn_id": "done", "usage": None}
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "one"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t2", "text": "two"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+
+            self.assertEqual(
+                [message["type"] for message in bridge.sent],
+                ["open_session", "user_turn", "user_turn"],
+            )
+            self.assertFalse(bridge.closed)
+
+    def test_a_page_reading_a_running_session_is_sent_every_event(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready", "session_id": "s1"}],
+                "user_turn": [
+                    {
+                        "type": "assistant_delta",
+                        "turn_id": "t1",
+                        "text": "one",
+                        "model_call_index": 0,
+                    }
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hello"}
+                )
+                # Reading the delta proves the Runtime holds it for a page.
+                self.assertEqual(first.receive_json()["type"], "assistant_delta")
+
+                session = client.get("/api/sessions/s1").json()
+                active_sessions = client.get("/api/active-sessions").json()
+
+                self.assertEqual(session["event_sequence"], 1)
+                self.assertEqual(active_sessions[0]["event_sequence"], 1)
+
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json(
+                        {
+                            "type": "open_session",
+                            "session_id": "s1",
+                            "attachment_id": "page-2",
+                            "attach_only": True,
+                            "takeover": True,
+                            "after_event": session["event_sequence"],
+                        }
+                    )
+                    self.assertEqual(
+                        second.receive_json()["type"], "assistant_delta"
+                    )
+                    state = second.receive_json()
+
+                    # The page now holds both events, so its cursor is the
+                    # newest one and a reconnect asks for nothing.
+                    self.assertEqual(state["event_sequence"], 2)
+
+                    with client.websocket_connect("/api/session") as third:
+                        third.send_json(
+                            {
+                                "type": "open_session",
+                                "session_id": "s1",
+                                "attachment_id": "page-3",
+                                "attach_only": True,
+                                "takeover": True,
+                                "after_event": state["event_sequence"],
+                            }
+                        )
+                        self.assertEqual(
+                            third.receive_json()["type"], "runtime_state"
+                        )
+
+    def test_an_idle_runtime_does_not_resend_the_events_its_journal_holds(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready", "session_id": "s1"}],
+                "user_turn": [
+                    {"type": "assistant_message", "turn_id": "t1", "content": "world"},
+                    {"type": "turn_completed", "turn_id": "t1", "usage": None}
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hello"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "assistant_message")
+                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+
+            stored = Session("s1")
+            stored.begin_turn("t1")
+            stored.add_item("user", "hello")
+            stored.add_item("assistant", "world")
+            stored.finish_turn("completed", "t1")
+            self.store.append_events("s1", stored.journal, workspace=self.root)
+
+            session = client.get("/api/sessions/s1").json()
+            active_sessions = client.get("/api/active-sessions").json()
+
+            # 'ready' and the completion the journal already holds.
+            self.assertEqual(
+                [item["content"] for item in session["items"]],
+                ["hello", "world"],
+            )
+            self.assertEqual(session["event_sequence"], 3)
+            self.assertEqual(active_sessions[0]["event_sequence"], 3)
+
+            with client.websocket_connect("/api/session") as second:
+                second.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "s1",
+                        "attachment_id": "page-2",
+                        "attach_only": True,
+                        "takeover": True,
+                        "after_event": session["event_sequence"],
+                    }
+                )
+                state = second.receive_json()
+
+        self.assertEqual(state["type"], "runtime_state")
+        self.assertEqual(state["event_sequence"], 3)
+
+    def test_deleting_a_session_closes_its_idle_runtime_first(self) -> None:
+        stored = Session("s1")
+        stored.begin_turn("t1")
+        stored.add_item("user", "hello")
+        stored.finish_turn("completed", "t1")
+        self.store.append_events("s1", stored.journal, workspace=self.root)
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+
+            response = client.delete("/api/sessions/s1")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(bridge.closed)
+            self.assertEqual(client.get("/api/active-sessions").json(), [])
+
+    def test_releasing_an_idle_runtime_closes_its_bridge(self) -> None:
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+
+            response = client.delete(
+                "/api/active-sessions/s1",
+                params={"attachment_id": "page-1"},
+            )
+
+            self.assertEqual(response.json(), {"released": True})
+            self.assertTrue(bridge.closed)
+            self.assertEqual(client.get("/api/active-sessions").json(), [])
+
+    def test_stale_model_release_does_not_close_a_replacement_runtime(self) -> None:
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "s1",
+                        "attachment_id": "page-1",
+                        "provider": "second",
+                    }
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+
+            response = client.delete(
+                "/api/active-sessions/s1",
+                params={"provider": "first", "attachment_id": "page-1"},
+            )
+
+            self.assertEqual(response.json(), {"released": False})
+            self.assertFalse(bridge.closed)
+
+    def test_stale_page_release_does_not_close_a_taken_over_runtime(self) -> None:
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json(
+                        {
+                            "type": "open_session",
+                            "session_id": "s1",
+                            "attachment_id": "page-2",
+                            "attach_only": True,
+                            "takeover": True,
+                        }
+                    )
+                    self.assertEqual(first.receive_json()["type"], "attachment_replaced")
+                    while True:
+                        state = second.receive_json()
+                        if state["type"] == "runtime_state":
+                            break
+                    self.assertEqual(state["phase"], "inactive")
+
+                    response = client.delete(
+                        "/api/active-sessions/s1",
+                        params={
+                            "provider": "first",
+                            "attachment_id": "page-1",
+                        },
+                    )
+
+                    self.assertEqual(response.json(), {"released": False})
+                    self.assertFalse(bridge.closed)
+
+    def test_relays_permission_changes_and_restores_runtime_state(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [
+                    {
+                        "type": "session_ready",
+                        "session_id": "s1",
+                        "permission_preset": "ask_for_approval",
+                    }
+                ],
+                "permission_set": [
+                    {"type": "permission_changed", "preset": "full_access"}
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "s1",
+                        "attachment_id": "page-1",
+                    }
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "work"}
+                )
+                first.send_json(
+                    {"type": "permission_set", "preset": "full_access"}
+                )
+                self.assertEqual(first.receive_json()["phase"], "starting")
+                changed = first.receive_json()
+                self.assertEqual(
+                    {key: changed[key] for key in ("type", "preset", "event_sequence")},
+                    {
+                        "type": "permission_changed",
+                        "preset": "full_access",
+                        "event_sequence": 3,
+                    },
+                )
+
+            with client.websocket_connect("/api/session") as second:
+                second.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "s1",
+                        "attachment_id": "page-1",
+                        "attach_only": True,
+                        "after_event": 3,
+                    }
+                )
+                self.assertEqual(
+                    second.receive_json()["permission_preset"],
+                    "full_access",
+                )
+                second.send_json({"type": "cancel", "turn_id": "t1"})
+
+        self.assertEqual(bridge.sent[-2]["type"], "permission_set")
+
+    def test_changes_permission_before_any_turn_without_starting_execution(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [
+                    {
+                        "type": "session_ready",
+                        "session_id": "empty",
+                        "permission_preset": "ask_for_approval",
+                    },
+                    {
+                        "type": "runtime_state",
+                        "phase": "inactive",
+                        "turn_id": None,
+                        "approval": None,
+                        "question": None,
+                        "provider": "first",
+                        "permission_preset": "ask_for_approval",
+                        "context_window": None,
+                        "jobs": [],
+                    },
+                ],
+                "permission_set": [
+                    {"type": "permission_changed", "preset": "full_access"}
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "empty",
+                        "attachment_id": "page-1",
+                    }
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                self.assertEqual(socket.receive_json()["phase"], "inactive")
+
+                socket.send_json(
+                    {"type": "permission_set", "preset": "full_access"}
+                )
+                self.assertEqual(
+                    socket.receive_json()["type"],
+                    "permission_changed",
+                )
+
+        self.assertEqual(
+            [message["type"] for message in bridge.sent],
+            ["open_session", "permission_set"],
+        )
+
+    def test_relays_session_configuration_without_a_user_turn(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [
+                    {"type": "session_ready", "session_id": "empty"},
+                ],
+                "provider_set": [
+                    {
+                        "type": "provider_changed",
+                        "provider": "second",
+                        "model": "openai/second",
+                    }
+                ],
+                "workspace_set": [
+                    {
+                        "type": "workspace_changed",
+                        "workspace": str(self.root.resolve()),
+                    }
+                ],
+                "runtime_refresh": [
+                    {"type": "runtime_refreshed", "provider": "second", "model": "openai/second"}
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "empty",
+                        "attachment_id": "page-1",
+                    }
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json({"type": "provider_set", "provider": "second"})
+                self.assertEqual(
+                    socket.receive_json()["type"],
+                    "provider_changed",
+                )
+                socket.send_json(
+                    {"type": "workspace_set", "workspace": str(self.root)}
+                )
+                self.assertEqual(
+                    socket.receive_json()["type"],
+                    "workspace_changed",
+                )
+                socket.send_json({"type": "runtime_refresh"})
+                self.assertEqual(socket.receive_json()["type"], "runtime_refreshed")
+
+        self.assertEqual(
+            [message["type"] for message in bridge.sent],
+            ["open_session", "provider_set", "workspace_set", "runtime_refresh"],
+        )
+
+    def test_creates_a_persistent_scratch_workspace_for_a_session(self) -> None:
+        with self.client() as client:
+            response = client.post(
+                "/api/workspaces/scratch",
+                json={"session_id": "scratch-session"},
+            )
+            reopened = client.post(
+                "/api/workspaces/scratch",
+                json={"session_id": "scratch-session"},
+            )
+
+        expected = (self.root / "scratch" / "scratch-session").resolve()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"workspace": str(expected)})
+        self.assertEqual(reopened.json(), response.json())
+        self.assertTrue(expected.is_dir())
+
+    def test_lists_scratch_sessions_without_changing_store_shape(self) -> None:
+        with self.client() as client:
+            response = client.post(
+                "/api/workspaces/scratch",
+                json={"session_id": "scratch-session"},
+            )
+        scratch = Path(response.json()["workspace"])
+        session = Session("scratch-session")
+        session.begin_turn("turn-1")
+        session.add_item("user", "临时会话")
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, scratch)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=scratch,
+        )
+
+        with self.client() as client:
+            groups = client.get("/api/sessions").json()
+
+        self.assertEqual(groups[0]["workspace"], str(scratch.resolve()))
+        self.assertTrue(groups[0]["scratch"])
+
+    def test_session_list_does_not_require_scratch_configuration(self) -> None:
+        session = Session("project-session")
+        session.begin_turn("turn-1")
+        session.add_item("user", "项目会话")
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=self.root,
+        )
+        document = json.loads(
+            (self.config / "agent_config.json").read_text(encoding="utf-8")
+        )
+        document.pop("scratch_workspace_root")
+        (self.config / "agent_config.json").write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+
+        with self.client() as client:
+            response = client.get("/api/sessions")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [{
+            "workspace": str(self.root.resolve()),
+            "sessions": [{
+                "session_id": "project-session",
+                "title": "项目会话",
+            }],
+        }])
+
+    def test_scratch_creation_reports_missing_configuration(self) -> None:
+        document = json.loads(
+            (self.config / "agent_config.json").read_text(encoding="utf-8")
+        )
+        document.pop("scratch_workspace_root")
+        (self.config / "agent_config.json").write_text(
+            json.dumps(document),
+            encoding="utf-8",
+        )
+
+        with self.client() as client:
+            response = client.post(
+                "/api/workspaces/scratch",
+                json={"session_id": "scratch-session"},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("missing required config field", response.json()["detail"])
+        self.assertIn("scratch_workspace_root", response.json()["detail"])
+
+    def test_deleting_a_scratch_session_removes_its_workspace(self) -> None:
+        scratch = create_scratch_workspace(
+            self.root / "scratch", "scratch-session"
+        ).path
+        (scratch / "result.txt").write_text("done", encoding="utf-8")
+        session = Session("scratch-session")
+        session.begin_turn("turn-1")
+        session.add_item("user", "临时会话")
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, scratch)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=scratch,
+        )
+
+        with self.client() as client:
+            response = client.delete("/api/sessions/scratch-session")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(scratch.exists())
+
+    def test_deleting_a_shared_scratch_session_keeps_its_workspace(self) -> None:
+        scratch = create_scratch_workspace(
+            self.root / "scratch", "first-session"
+        ).path
+        for session_id in ("first-session", "second-session"):
+            session = Session(session_id)
+            session.begin_turn("turn-1")
+            session.add_item("user", "临时会话")
+            session.finish_turn("completed")
+            self.store.bind_workspace(session_id, scratch)
+            self.store.append_events(
+                session_id,
+                session.journal,
+                workspace=scratch,
+            )
+
+        with self.client() as client:
+            self.assertEqual(
+                client.delete("/api/sessions/second-session").status_code, 200
+            )
+            self.assertTrue(scratch.is_dir())
+            response = client.delete("/api/sessions/first-session")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(scratch.exists())
+
+    def test_reconnect_restores_a_user_question(self) -> None:
+        question = {
+            "type": "user_question",
+            "turn_id": "t1",
+            "request_id": "t1:1",
+            "question": "Which cache?",
+            "options": [{"id": "sqlite", "label": "SQLite"}],
+            "allow_free_text": False,
+        }
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready", "session_id": "shared"}],
+                "user_turn": [question],
+                "user_question_response": [
+                    {"type": "turn_completed", "turn_id": "t1", "usage": None},
+                    None,
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {"type": "open_session", "session_id": "shared", "attachment_id": "page-1"}
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "choose"}
+                )
+                self.assertEqual(first.receive_json()["type"], "user_question")
+
+            with client.websocket_connect("/api/session") as second:
+                second.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-1",
+                        "attach_only": True,
+                        "after_event": 2,
+                    }
+                )
+                state = second.receive_json()
+                self.assertEqual(state["question"], question)
+                second.send_json(
+                    {
+                        "type": "user_question_response",
+                        "request_id": "t1:1",
+                        "option_id": "sqlite",
+                    }
+                )
+                self.assertEqual(second.receive_json()["type"], "turn_completed")
+
+        self.assertEqual(bridge.sent[-1]["option_id"], "sqlite")
+
+    def test_does_not_forward_unknown_or_lifecycle_messages(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready"}],
+                "user_turn": [{"type": "bye"}, None],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({"type": "open_session", "session_id": "s1", "attachment_id": "page-1"})
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                # A page must not shut the bridge down or restart it.
+                socket.send_json({"type": "shutdown"})
+                socket.send_json({"type": "open_session", "session_id": "other", "attachment_id": "page-1"})
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "bye")
+
+        self.assertEqual(
+            [message["type"] for message in bridge.sent],
+            ["open_session", "user_turn"],
+        )
+
+    def test_cancel_is_forwarded_to_the_bridge(
+        self,
+    ) -> None:
+        bridge = FakeBridge(replies={"open_session": [{"type": "session_ready"}]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({"type": "open_session", "session_id": "s1", "attachment_id": "page-1"})
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                # The fake ends its stream on cancel, as an exiting
+                # bridge would.
+                socket.send_json({"type": "cancel", "turn_id": "t1"})
+                _wait_for(client, lambda: bridge.closed)
+
+        self.assertEqual(bridge.cancelled, 1)
+        self.assertEqual(
+            [m["type"] for m in bridge.sent],
+            ["open_session", "user_turn", "cancel"],
+        )
+
+    def test_reconnects_to_the_same_runtime_and_restores_approval(self) -> None:
+        bridge = FakeBridge(
+            replies={
+                "open_session": [{"type": "session_ready", "session_id": "shared"}],
+                "user_turn": [
+                    {
+                        "type": "approval_request",
+                        "turn_id": "t1",
+                        "request_id": "t1:1",
+                        "command": "ls",
+                    }
+                ],
+                "approval_response": [
+                    {"type": "turn_completed", "turn_id": "t1", "usage": None},
+                    None,
+                ],
+            }
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({"type": "open_session", "session_id": "shared", "attachment_id": "page-1"})
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "list"}
+                )
+                self.assertEqual(
+                    first.receive_json()["type"], "approval_request"
+                )
+
+            self.assertFalse(bridge.closed)
+            with client.websocket_connect("/api/session") as second:
+                second.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-2",
+                        "attach_only": True,
+                        "after_event": 2,
+                    }
+                )
+                state = second.receive_json()
+                self.assertEqual(state["phase"], "waiting_approval")
+                self.assertEqual(state["approval"]["request_id"], "t1:1")
+                second.send_json(
+                    {
+                        "type": "approval_response",
+                        "request_id": "t1:1",
+                        "approved": True,
+                    }
+                )
+                self.assertEqual(
+                    second.receive_json()["type"], "turn_completed"
+                )
+
+        self.assertEqual(
+            [message["type"] for message in bridge.sent],
+            ["open_session", "user_turn", "approval_response"],
+        )
+        self.assertTrue(bridge.sent[-1]["approved"])
+
+    def test_idle_view_detach_reuses_bridge_for_the_next_turn(self) -> None:
+        bridge = FakeBridge(replies={
+            "open_session": [{"type": "session_ready", "session_id": "shared"}],
+            "user_turn": [{"type": "turn_completed", "turn_id": "t1", "usage": None}],
+        })
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({"type": "open_session", "session_id": "shared", "attachment_id": "page-1"})
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+            self.assertFalse(bridge.closed)
+            with client.websocket_connect("/api/session") as second:
+                second.send_json({
+                    "type": "open_session", "session_id": "shared", "attachment_id": "page-1",
+                    "after_event": 1,
+                })
+                self.assertEqual(second.receive_json()["type"], "runtime_state")
+                second.send_json({"type": "user_turn", "turn_id": "t1", "text": "continue"})
+                self.assertEqual(second.receive_json()["type"], "turn_completed")
+            self.assertEqual([m["type"] for m in bridge.sent], ["open_session", "user_turn"])
+            self.assertFalse(bridge.closed)
+        self.assertTrue(bridge.closed)
+
+    def test_opening_a_page_with_another_provider_preserves_the_idle_owner(self) -> None:
+        bridge = FakeBridge(replies={
+            "open_session": [{"type": "session_ready", "session_id": "shared"}],
+            "permission_set": [{"type": "permission_changed", "preset": "full_access"}],
+        })
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({
+                    "type": "open_session",
+                    "session_id": "shared",
+                    "attachment_id": "page-1",
+                    "provider": "first",
+                })
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json({
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-2",
+                        "provider": "second",
+                    })
+                    self.assertEqual(second.receive_json()["type"], "attachment_replaced")
+
+                self.assertFalse(bridge.closed)
+                self.assertEqual(len(bridge.sent), 1)
+                self.assertEqual(client.get("/api/active-sessions").json()[0]["provider"], "first")
+                first.send_json({"type": "permission_set", "preset": "full_access"})
+                self.assertEqual(first.receive_json()["type"], "permission_changed")
+
+    def test_background_reconnect_does_not_replace_another_page(self) -> None:
+        bridge = FakeBridge(
+            replies={"open_session": [{"type": "session_ready", "session_id": "shared"}]}
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-1",
+                    }
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                self.assertEqual(first.receive_json()["phase"], "starting")
+
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json(
+                        {
+                            "type": "open_session",
+                            "session_id": "shared",
+                            "attachment_id": "page-2",
+                            "attach_only": True,
+                        }
+                    )
+                    replaced = second.receive_json()
+
+                self.assertEqual(
+                    replaced,
+                    {"type": "attachment_replaced", "phase": "starting"},
+                )
+                bridge.emit(
+                    {
+                        "type": "assistant_delta",
+                        "turn_id": "t1",
+                        "text": "still attached",
+                        "model_call_index": 0,
+                    }
+                )
+                self.assertEqual(first.receive_json()["text"], "still attached")
+                first.send_json({"type": "cancel", "turn_id": "t1"})
+                _wait_for(client, lambda: bridge.closed)
+
+    def test_explicit_takeover_replaces_the_previous_page(self) -> None:
+        bridge = FakeBridge(
+            replies={"open_session": [{"type": "session_ready", "session_id": "shared"}]}
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-1",
+                    }
+                )
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                self.assertEqual(first.receive_json()["phase"], "starting")
+
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json(
+                        {
+                            "type": "open_session",
+                            "session_id": "shared",
+                            "attachment_id": "page-2",
+                            "attach_only": True,
+                            "after_event": 2,
+                            "takeover": True,
+                        }
+                    )
+                    self.assertEqual(
+                        first.receive_json(),
+                        {"type": "attachment_replaced", "phase": "starting"},
+                    )
+                    state = second.receive_json()
+                    self.assertEqual(state["phase"], "starting")
+
+                    bridge.emit(
+                        {
+                            "type": "assistant_delta",
+                            "turn_id": "t1",
+                            "text": "new owner",
+                            "model_call_index": 0,
+                        }
+                    )
+                    self.assertEqual(second.receive_json()["text"], "new owner")
+                    second.send_json({"type": "cancel", "turn_id": "t1"})
+                    _wait_for(client, lambda: bridge.closed)
+
+    def test_replays_events_and_completion_emitted_while_detached(self) -> None:
+        bridge = FakeBridge(
+            replies={"open_session": [{"type": "session_ready", "session_id": "shared"}]}
+        )
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({"type": "open_session", "session_id": "shared", "attachment_id": "page-1"})
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                )
+                self.assertEqual(first.receive_json()["phase"], "starting")
+
+            self.assertFalse(bridge.closed)
+            bridge.emit(
+                {
+                    "type": "assistant_delta",
+                    "turn_id": "t1",
+                    "text": "done",
+                    "model_call_index": 0,
+                },
+                {"type": "turn_completed", "turn_id": "t1", "usage": None},
+            )
+            _wait_for(
+                client,
+                lambda: client.get("/api/active-sessions").json()[0]["phase"] == "idle",
+            )
+
+            active_sessions = client.get("/api/active-sessions").json()
+            self.assertEqual(active_sessions[0]["session_id"], "shared")
+            with client.websocket_connect("/api/session") as second:
+                second.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "shared",
+                        "attachment_id": "page-1",
+                        "attach_only": True,
+                        "after_event": 2,
+                    }
+                )
+                delta = second.receive_json()
+                completed = second.receive_json()
+                state = second.receive_json()
+
+            self.assertEqual(state["phase"], "idle")
+            self.assertEqual(delta["text"], "done")
+            self.assertEqual(completed["type"], "turn_completed")
+            self.assertFalse(bridge.closed)
+
+        self.assertEqual(
+            [message["type"] for message in bridge.sent],
+            ["open_session", "user_turn"],
+        )
+
+    def test_reconnecting_marks_old_snapshots_as_replay_before_current_state(self) -> None:
+        snapshot = bridge_protocol.runtime_state_message(
+            cache_usage=None,
+            phase="inactive", turn_id=None, approval=None, question=None,
+            provider="first", permission_preset="ask_for_approval",
+            context_window=None, jobs=[],
+        )
+        bridge = FakeBridge(replies={"open_session": [snapshot]})
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({
+                    "type": "open_session", "session_id": "shared", "attachment_id": "page-1",
+                })
+                self.assertNotIn("replayed", first.receive_json())
+                first.send_json({"type": "user_turn", "turn_id": "t1", "text": "work"})
+                _wait_for(client, lambda: len(bridge.sent) == 2)
+
+            with client.websocket_connect("/api/session") as second:
+                second.send_json({
+                    "type": "open_session", "session_id": "shared", "attachment_id": "page-2",
+                    "attach_only": True,
+                })
+                replay = second.receive_json()
+                self.assertTrue(second.receive_json()["replayed"])
+                current = second.receive_json()
+                self.assertEqual(replay["phase"], "inactive")
+                self.assertTrue(replay["replayed"])
+                self.assertEqual(current["phase"], "starting")
+                self.assertEqual(current["turn_id"], "t1")
+                self.assertNotIn("replayed", current)
+                self.assertFalse(bridge.closed)
+                self.assertEqual(bridge.cancelled, 0)
+                bridge.emit({"type": "turn_completed", "turn_id": "t1", "usage": None})
+                self.assertEqual(second.receive_json()["type"], "turn_completed")
+
+    def test_replays_a_detached_fatal_then_allows_a_fresh_runtime(self) -> None:
+        first = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        second = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
+        bridges = [first, second]
+
+        def open_channel(self, channel_id: str) -> FakeBridge:
+            return bridges.pop(0)
+
+        with (
+            patch.object(
+                FakeBridgeProcess,
+                "open_channel",
+                open_channel,
+            ),
+            self.client() as client,
+        ):
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-1"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+
+            first.emit(
+                {
+                    "type": "fatal",
+                    "error": {
+                        "type": "RuntimeError",
+                        "message": "broken",
+                        "details": {},
+                    },
+                },
+                None,
+            )
+            _wait_for(client, lambda: first.closed)
+
+            runtime = client.get("/api/active-sessions").json()[0]
+            self.assertEqual(runtime["event_sequence"], 1)
+
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "s1",
+                        "attachment_id": "page-2",
+                        "attach_only": True,
+                        "takeover": True,
+                        "after_event": runtime["event_sequence"],
+                    }
+                )
+                state = socket.receive_json()
+                fatal = socket.receive_json()
+
+            self.assertEqual(state["type"], "runtime_state")
+            self.assertEqual(state["event_sequence"], 1)
+            self.assertEqual(fatal["type"], "fatal")
+            self.assertEqual(fatal["event_sequence"], 2)
+            _wait_for(client, lambda: client.get("/api/active-sessions").json() == [])
+
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {"type": "open_session", "session_id": "s1", "attachment_id": "page-3"}
+                )
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+
+        self.assertEqual(first.sent[0]["type"], "open_session")
+        self.assertEqual(second.sent[0]["type"], "open_session")
+
+    def test_runs_different_sessions_concurrently(self) -> None:
+        """Two pages on different sessions must not block each other."""
+        bridges: list[FakeBridge] = []
+
+        def open_channel(self, channel_id: str) -> FakeBridge:
+            # Each channel has an independent message queue.
+            bridge = FakeBridge(replies={"open_session": [{"type": "session_ready"}]})
+            bridges.append(bridge)
+            return bridge
+
+        with (
+            patch.object(
+                FakeBridgeProcess,
+                "open_channel",
+                open_channel,
+            ),
+            self.client() as client,
+        ):
+            with client.websocket_connect("/api/session") as first:
+                first.send_json({"type": "open_session", "session_id": "one", "attachment_id": "page-1"})
+                self.assertEqual(first.receive_json()["type"], "session_ready")
+                first.send_json(
+                    {"type": "user_turn", "turn_id": "t1", "text": "one"}
+                )
+                _wait_for(client, lambda: len(bridges[0].sent) == 2)
+                self.assertEqual(first.receive_json()["phase"], "starting")
+
+                # Open and run a second session while the first turn is active.
+                with client.websocket_connect("/api/session") as second:
+                    second.send_json({"type": "open_session", "session_id": "two", "attachment_id": "page-2"})
+                    self.assertEqual(
+                        second.receive_json()["type"],
+                        "session_ready",
+                    )
+                    second.send_json(
+                        {"type": "user_turn", "turn_id": "t2", "text": "two"}
+                    )
+                    _wait_for(client, lambda: len(bridges[1].sent) == 2)
+                    self.assertEqual(second.receive_json()["phase"], "starting")
+                    self.assertEqual(
+                        {
+                            item["session_id"]: item["phase"]
+                            for item in client.get("/api/active-sessions").json()
+                        },
+                        {"one": "starting", "two": "starting"},
+                    )
+                    for index, socket in enumerate((first, second), start=1):
+                        bridges[index - 1].emit({
+                            "type": "assistant_delta",
+                            "turn_id": f"t{index}",
+                            "text": f"reply-{index}",
+                            "model_call_index": 0,
+                        })
+                        self.assertEqual(socket.receive_json()["text"], f"reply-{index}")
+                    second.send_json({"type": "cancel", "turn_id": "t2"})
+                    _wait_for(client, lambda: bridges[1].closed)
+
+                self.assertFalse(bridges[0].closed)
+                self.assertEqual(bridges[0].cancelled, 0)
+                bridges[0].emit({
+                    "type": "assistant_delta",
+                    "turn_id": "t1",
+                    "text": "still running",
+                    "model_call_index": 0,
+                })
+                self.assertEqual(first.receive_json()["text"], "still running")
+                first.send_json({"type": "cancel", "turn_id": "t1"})
+                _wait_for(client, lambda: bridges[0].closed)
+
+        self.assertEqual(
+            [bridge.sent[0]["session_id"] for bridge in bridges],
+            ["one", "two"],
+        )
+
+    def test_attach_only_does_not_start_a_missing_runtime(self) -> None:
+        bridge = FakeBridge()
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json(
+                    {
+                        "type": "open_session",
+                        "session_id": "missing",
+                        "attachment_id": "page-1",
+                        "provider": "second",
+                        "attach_only": True,
+                    }
+                )
+                state = socket.receive_json()
+
+        self.assertEqual(state["phase"], "inactive")
+        self.assertEqual(bridge.sent, [])
+
+    def test_lists_models_without_requiring_keys(self) -> None:
+        with self.client() as client:
+            self.assertEqual(
+                client.get("/api/models").json(),
+                {
+                    "default": "first",
+                    "models": [
+                        {"id": "first", "model": "openai/first"},
+                        {"id": "second", "model": "openai/second"},
+                    ],
+                },
+            )
+
+    def test_models_are_read_from_current_configuration(self) -> None:
+        with self.client() as client:
+            document = json.loads((self.config / "provider_config.json").read_text())
+            document["main_agent"]["provider"] = "second"
+            document["providers"]["third"] = {"model": "openai/third"}
+            (self.config / "provider_config.json").write_text(json.dumps(document), encoding="utf-8")
+
+            response = client.get("/api/models").json()
+
+        self.assertEqual(response["default"], "second")
+        self.assertIn({"id": "third", "model": "openai/third"}, response["models"])
+
+    def test_settings_api_redacts_and_updates_provider(self) -> None:
+        with self.client() as client:
+            before = client.get("/api/settings").json()
+            response = client.put("/api/settings/providers/third", json={
+                "expected_revision": before["revision"],
+                "model": "openai/third",
+                "url": "https://example.test/v1",
+                "max_context_tokens": 2000,
+                "api_key": {"action": "set", "value": "secret"},
+                "set_default": True,
+            })
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["default_provider"], "third")
+        self.assertNotIn("secret", json.dumps(body))
+        self.assertIn("RADE_THIRD_API_KEY=secret", (self.config / ".env").read_text())
+
+    def test_memory_api_returns_global_and_workspace_documents(self) -> None:
+        memory = MemoryStore(
+            self.config / "MEMORY.md",
+            self.config / "sessions",
+        )
+        memory.write_updates(
+            self.root,
+            global_memory=MemoryDocument(preferences=("Use Chinese.",)),
+            workspace_memory=MemoryDocument(
+                facts=("This workspace uses FastAPI.",),
+                decisions=("Keep Bridge as the runtime boundary.",),
+            ),
+        )
+
+        with self.client() as client:
+            response = client.get("/api/memory")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {
+            "global": {
+                "preferences": ["Use Chinese."],
+                "facts": [],
+                "decisions": [],
+            },
+            "workspaces": [{
+                "workspace": str(self.root.resolve()),
+                "memory": {
+                    "preferences": [],
+                    "facts": ["This workspace uses FastAPI."],
+                    "decisions": ["Keep Bridge as the runtime boundary."],
+                },
+            }],
+        })
+
+    def test_searches_history_with_bounded_snippets_and_browser_offsets(self) -> None:
+        session = Session("searchable")
+        session.add_item("user", "before " * 30 + "🙂 中文 NEEDLE " + "after " * 40)
+        session.add_item("assistant", "another needle")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(session.session_id, session.journal, workspace=self.root)
+        with self.client() as client:
+            response = client.get("/api/sessions/search", params={"q": "needle", "limit": 1, "per_session_limit": 2})
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertTrue(data["has_more"])
+            self.assertEqual(len(data["matches"]), 1)
+            match = data["matches"][0]
+            self.assertEqual(match["session_id"], session.session_id)
+            self.assertEqual(match["item_index"], 0)
+            self.assertFalse(match["scratch"])
+            self.assertTrue(match["prefix_omitted"])
+            self.assertTrue(match["suffix_omitted"])
+            self.assertNotIn("text", match)
+            snippet = match["snippet"].encode("utf-16-le")
+            self.assertEqual(snippet[match["match_start"] * 2:match["match_end"] * 2].decode("utf-16-le"), "NEEDLE")
+            self.assertLessEqual(len(match["snippet"]), 180)
+            self.assertEqual(client.get("/api/sessions/search", params={"q": "missing", "limit": 50, "per_session_limit": 2}).json(), {"matches": [], "has_more": False})
+            for params in [
+                {"q": "needle", "limit": 0, "per_session_limit": 2},
+                {"q": "needle", "limit": 50, "per_session_limit": 0},
+                {"q": "x" * 201, "limit": 50, "per_session_limit": 2},
+                {"q": "needle", "limit": 50},
+                {"q": "needle", "per_session_limit": 2},
+            ]:
+                self.assertEqual(client.get("/api/sessions/search", params=params).status_code, 422)
+
+    def test_search_returns_limited_session_previews_with_more_indicator(self) -> None:
+        session = Session("frequent-matches")
+        for index in range(10):
+            session.add_item("assistant", f"needle {index}")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(session.session_id, session.journal, workspace=self.root)
+        with self.client() as client:
+            data = client.get("/api/sessions/search", params={"q": "needle", "limit": 50, "per_session_limit": 2}).json()
+            expanded = client.get("/api/sessions/search", params={"q": "needle", "limit": 50, "per_session_limit": 5}).json()
+            limited = client.get("/api/sessions/search", params={"q": "needle", "limit": 1, "per_session_limit": 5}).json()
+        self.assertEqual([match["item_index"] for match in data["matches"]], [0, 1])
+        self.assertTrue(all(match["has_more_in_session"] for match in data["matches"]))
+        self.assertFalse(data["has_more"])
+        self.assertEqual([match["item_index"] for match in expanded["matches"]], [0, 1, 2, 3, 4])
+        self.assertEqual(len(limited["matches"]), 1)
+        self.assertTrue(limited["has_more"])
+
+    def test_reads_history_written_by_the_tui(self) -> None:
+        self.store.bind_workspace("from-tui", self.root)
+        session = Session("from-tui")
+        session.begin_turn("turn-1")
+        session.add_item("user", "TUI 对话")
+        session.model_completed(1, usage=TokenUsage(1000, 20, 1020, 750, None),
+                                has_tool_calls=False)
+        session.auxiliary_model_completed(AuxiliaryModelCall(
+            task="compression", scope=None, attempt=1, status="completed",
+            started_at_utc=datetime.now(timezone.utc), duration_ms=100,
+            usage=TokenUsage(500, 10, 510, 450, None),
+        ), model="test/main")
+        session.add_item("assistant", "你好", provider_data={
+            "openai_responses": [{"type": "reasoning", "encrypted_content": "native-state"}],
+        })
+        session.finish_turn("completed")
+        self.store.append_events("from-tui", session.journal, workspace=self.root)
+        with self.client() as client:
+            self.assertEqual(
+                client.get("/api/sessions").json(),
+                [
+                    {
+                        "workspace": str(self.root.resolve()),
+                        "sessions": [
+                            {"session_id": "from-tui", "title": "TUI 对话"}
+                        ],
+                    }
+                ],
+            )
+            with patch.object(self.store, "load", wraps=self.store.load) as load:
+                data = client.get("/api/sessions/from-tui").json()
+                self.assertEqual(load.call_count, 1)
+
+        self.assertEqual(data["items"][0]["content"], "TUI 对话")
+        self.assertEqual(data["permission_preset"], "ask_for_approval")
+        self.assertEqual(data["cache_usage"], {"input_tokens": 1500, "cache_read_tokens": 1200})
+        self.assertNotIn("provider_data", data["items"][1])
+        self.assertNotIn("native-state", json.dumps(data))
+        self.assertEqual(
+            self.store.load("from-tui").items[1].provider_data["openai_responses"][0]["encrypted_content"],
+            "native-state",
+        )
+
+    def test_forks_a_session_from_a_backend_projected_user_anchor(self) -> None:
+        session = Session("source")
+        session.begin_turn("turn-1")
+        session.add_item("user", "first question")
+        session.add_item("assistant", "first answer")
+        session.finish_turn("completed")
+        session.set_archived_summary("keep this summary", 2)
+        session.begin_turn("turn-2")
+        session.add_item("user", "edit this question")
+        session.add_item("assistant", "discard this answer")
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=self.root,
+        )
+        self.store.set_title("source", "Generated conversation title", "generated")
+
+        with self.client() as client:
+            source = client.get("/api/sessions/source").json()
+            self.assertEqual(
+                [target["item_index"] for target in source["editable_user_messages"]],
+                [2],
+            )
+            response = client.post(
+                "/api/sessions/source/fork",
+                json={"anchor_id": source["editable_user_messages"][0]["anchor_id"]},
+            )
+            groups = client.get("/api/sessions").json()
+
+        self.assertEqual(response.status_code, 201)
+        forked = response.json()
+        self.assertNotEqual(forked["session_id"], "source")
+        self.assertEqual(
+            [item["content"] for item in forked["items"]],
+            ["first question", "first answer"],
+        )
+        self.assertEqual(len(forked["editable_user_messages"]), 1)
+        summaries = {
+            item["session_id"]: item
+            for item in groups[0]["sessions"]
+        }
+        self.assertIn("source", summaries)
+        self.assertEqual(summaries["source"]["title"], "Generated conversation title")
+        self.assertEqual(
+            summaries[forked["session_id"]]["title"],
+            "Generated conversation title",
+        )
+        self.assertEqual(self.store.title_source_for(forked["session_id"]), "generated")
+        self.assertEqual(
+            summaries[forked["session_id"]]["forked_from"],
+            "source",
+        )
+        self.assertEqual(
+            self.store.load(forked["session_id"]).archived_summary,
+            "keep this summary",
+        )
+
+    def test_rejects_fork_while_a_user_turn_is_pending(self) -> None:
+        session = Session("source")
+        session.begin_turn("stored-turn")
+        session.add_item("user", "edit this question")
+        session.add_item("assistant", "old answer")
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=self.root,
+        )
+        anchor = self.store.editable_user_messages("source")[0]["anchor_id"]
+        bridge = FakeBridge(replies={
+            "open_session": [{"type": "session_ready", "session_id": "source"}],
+        })
+        original_send = bridge.send
+
+        def hold_user_turn(message: dict) -> None:
+            if message["type"] == "user_turn":
+                bridge.sent.append(message)
+                return
+            original_send(message)
+
+        bridge.send = hold_user_turn  # type: ignore[method-assign]
+        with self.client(bridge) as client:
+            with client.websocket_connect("/api/session") as socket:
+                socket.send_json({
+                    "type": "open_session",
+                    "session_id": "source",
+                    "attachment_id": "page-1",
+                })
+                self.assertEqual(socket.receive_json()["type"], "session_ready")
+                socket.send_json({
+                    "type": "user_turn",
+                    "turn_id": "pending-turn",
+                    "text": "replacement",
+                })
+                _wait_for(client, lambda: len(bridge.sent) == 2)
+
+                response = client.post(
+                    "/api/sessions/source/fork",
+                    json={"anchor_id": anchor},
+                )
+
+        self.assertEqual(response.status_code, 409)
+
+    def test_schedule_listing_includes_latest_run_and_session_availability(self) -> None:
+        scheduler = SchedulerService(
+            self.config / "schedule.jsonl",
+            runner=lambda schedule, run: None,
+        )
+        schedule = scheduler.create_schedule(
+            trigger=OneShotTrigger(datetime.now(timezone.utc)),
+            prompt="scheduled prompt",
+            workspace=str(self.root),
+            origin_session_id="origin",
+            schedule_session_id="scheduled-session",
+        )
+        run = scheduler.poll_once(datetime.now(timezone.utc))[0]
+        session = Session("scheduled-session")
+        session.set_permission_preset(PermissionPreset.FULL_ACCESS)
+        session.begin_turn(run.turn_id)
+        session.add_item("user", schedule.action.prompt)
+        session.finish_turn("completed")
+        self.store.bind_workspace(session.session_id, self.root)
+        self.store.append_events(
+            session.session_id,
+            session.journal,
+            workspace=self.root,
+        )
+
+        with self.client() as client, patch.object(JsonlSessionStore, "load", side_effect=AssertionError("schedule listing must not load Session")):
+            item = client.get("/api/schedules").json()[0]
+
+        self.assertEqual(item["schedule_id"], schedule.schedule_id)
+        self.assertEqual(item["permission_preset"], "full_access")
+        self.assertEqual(
+            item["trigger"],
+            {"type": "once", "at": schedule.trigger.at.isoformat()},
+        )
+        self.assertIsNone(item["end_at"])
+        self.assertTrue(item["session_available"])
+        self.assertEqual(item["latest_run"]["run_id"], run.run_id)
+        self.assertEqual(item["latest_run"]["status"], "completed")
+
+    def test_schedule_update_accepts_trigger_and_end_at(self) -> None:
+        scheduler = SchedulerService(self.config / "schedule.jsonl")
+        schedule = scheduler.create_schedule(
+            trigger=IntervalTrigger(1200),
+            prompt="scheduled prompt",
+            workspace=str(self.root),
+            origin_session_id="origin",
+            schedule_session_id="scheduled-session",
+        )
+
+        self.store.bind_workspace(schedule.schedule_session_id, self.root)
+        self.store.set_permission_preset(schedule.schedule_session_id, PermissionPreset.FULL_ACCESS, self.root)
+        with self.client() as client, patch.object(JsonlSessionStore, "load", side_effect=AssertionError("schedule update must not load Session")):
+            response = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={
+                    "trigger": {
+                        "type": "cron",
+                        "expression": "0 10 * * *",
+                        "timezone": "Asia/Shanghai",
+                    },
+                    "end_at": "2099-12-31T23:59:00+08:00",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["schedule_id"], schedule.schedule_id)
+        self.assertEqual(body["schedule_session_id"], "scheduled-session")
+        self.assertEqual(body["permission_preset"], "full_access")
+        self.assertEqual(
+            body["trigger"],
+            {
+                "type": "cron",
+                "expression": "0 10 * * *",
+                "timezone": "Asia/Shanghai",
+            },
+        )
+        self.assertEqual(body["end_at"], "2099-12-31T23:59:00+08:00")
+
+    def test_schedule_update_rejects_invalid_trigger_input(self) -> None:
+        scheduler = SchedulerService(self.config / "schedule.jsonl")
+        schedule = scheduler.create_schedule(
+            trigger=IntervalTrigger(1200),
+            prompt="scheduled prompt",
+            workspace=str(self.root),
+            origin_session_id="origin",
+            schedule_session_id="scheduled-session",
+        )
+
+        with self.client() as client:
+            response = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={
+                    "trigger": {
+                        "type": "interval",
+                        "seconds": 60,
+                        "start_at": 123,
+                    }
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("start_at must be", response.json()["detail"])
+        self.assertEqual(scheduler.schedules[0].trigger, IntervalTrigger(1200))
+
+    def test_schedule_update_rejects_invalid_end_at_input(self) -> None:
+        scheduler = SchedulerService(self.config / "schedule.jsonl")
+        schedule = scheduler.create_schedule(
+            trigger=IntervalTrigger(1200),
+            prompt="scheduled prompt",
+            workspace=str(self.root),
+            origin_session_id="origin",
+            schedule_session_id="scheduled-session",
+        )
+
+        with self.client() as client:
+            response = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={"end_at": 123},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("end_at must be", response.json()["detail"])
+        self.assertIsNone(scheduler.schedules[0].end_at)
+
+    def test_schedule_update_rejects_invalid_and_unknown_fields(self) -> None:
+        scheduler = SchedulerService(self.config / "schedule.jsonl")
+        schedule = scheduler.create_schedule(
+            trigger=IntervalTrigger(1200),
+            prompt="scheduled prompt",
+            workspace=str(self.root),
+            origin_session_id="origin",
+            schedule_session_id="scheduled-session",
+        )
+
+        with self.client() as client:
+            blank_prompt = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={"prompt": " "},
+            )
+            coerced_enabled = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={"enabled": 1},
+            )
+            unknown = client.put(
+                f"/api/schedules/{schedule.schedule_id}",
+                json={"unknown": True},
+            )
+
+        self.assertEqual(blank_prompt.status_code, 400)
+        self.assertIn("prompt must be", blank_prompt.json()["detail"])
+        self.assertEqual(coerced_enabled.status_code, 400)
+        self.assertIn("enabled must be", coerced_enabled.json()["detail"])
+        self.assertEqual(unknown.status_code, 400)
+        self.assertIn("unsupported schedule update field", unknown.json()["detail"])
+
+    def test_rejects_a_session_id_that_escapes_the_sessions_directory(
+        self,
+    ) -> None:
+        with self.client() as client:
+            response = client.get("/api/sessions/..%5Cescape")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_workspace_listing_rejects_traversal(self) -> None:
+        with self.client() as client:
+            listing = client.get("/api/workspace").json()
+            self.assertEqual(listing["root"], str(self.root.resolve()))
+            self.assertIn(
+                {"name": "src", "type": "directory"},
+                listing["entries"],
+            )
+            for path in ("..", "/tmp"):
+                self.assertEqual(
+                    client.get(
+                        "/api/workspace",
+                        params={"path": path},
+                    ).status_code,
+                    400,
+                )
+
+    def test_workspace_listing_accepts_cursor(self) -> None:
+        for name in ("a.txt", "b.txt", "c.txt"):
+            (self.root / name).write_text(name, encoding="utf-8")
+
+        with self.client() as client:
+            first = client.get(
+                "/api/workspace", params={"path": "."}
+            ).json()
+            cursor = next(
+                entry["name"]
+                for entry in first["entries"]
+                if entry["name"] == "a.txt"
+            )
+            second = client.get(
+                "/api/workspace",
+                params={"path": ".", "cursor": cursor},
+            ).json()
+
+        self.assertNotIn(
+            {"name": "a.txt", "type": "file"}, second["entries"]
+        )
+        self.assertIn(
+            {"name": "b.txt", "type": "file"}, second["entries"]
+        )
+
+    def test_workspace_listing_uses_the_explicit_workspace(self) -> None:
+        other = self.root / "other-workspace"
+        other.mkdir()
+        (other / "selected.txt").write_text("selected", encoding="utf-8")
+
+        with self.client() as client:
+            listing = client.get(
+                "/api/workspace",
+                params={"path": ".", "workspace": str(other)},
+            ).json()
+
+        self.assertEqual(listing["root"], str(other.resolve()))
+        self.assertIn(
+            {"name": "selected.txt", "type": "file"},
+            listing["entries"],
+        )
+        self.assertNotIn(
+            {"name": "README.md", "type": "file"},
+            listing["entries"],
+        )
+
+    def test_opens_the_selected_workspace_in_the_native_file_manager(self) -> None:
+        selected = self.root / "项目 files"
+        selected.mkdir()
+        for platform, command in (("win32", None), ("darwin", ["open", "-a", "Finder"]), ("linux", ["xdg-open"])):
+            with self.subTest(platform=platform), self.client() as client:
+                with (
+                    patch("interfaces.gui.routes.workspace.sys.platform", platform),
+                    patch("interfaces.gui.routes.workspace.open_windows_folder") as open_windows,
+                    patch("interfaces.gui.routes.workspace.subprocess.Popen") as popen,
+                ):
+                    response = client.post(
+                        "/api/workspace/open", json={"workspace": str(selected)},
+                    )
+                self.assertEqual(response.status_code, 204)
+                if command is None:
+                    open_windows.assert_called_once_with(selected.resolve())
+                    popen.assert_not_called()
+                else:
+                    popen.assert_called_once_with([*command, str(selected.resolve())])
+                    open_windows.assert_not_called()
+
+    def test_open_workspace_rejects_invalid_directories(self) -> None:
+        with (
+            self.client() as client,
+            patch("interfaces.gui.routes.workspace.open_windows_folder") as open_windows,
+            patch("interfaces.gui.routes.workspace.subprocess.Popen") as popen,
+        ):
+            for path in (self.root / "README.md", self.root / "missing"):
+                response = client.post("/api/workspace/open", json={"workspace": str(path)})
+                self.assertEqual(response.status_code, 400)
+            self.assertEqual(client.post("/api/workspace/open", json={"workspace": ""}).status_code, 422)
+            open_windows.assert_not_called()
+            popen.assert_not_called()
+
+    def test_open_workspace_reports_file_manager_errors(self) -> None:
+        with (
+            self.client() as client,
+            patch("interfaces.gui.routes.workspace.sys.platform", "win32"),
+            patch("interfaces.gui.routes.workspace.open_windows_folder", side_effect=OSError("cannot open")),
+        ):
+            response = client.post("/api/workspace/open", json={"workspace": str(self.root)})
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("无法打开工作区文件夹", response.json()["detail"])
+
+    @unittest.skipUnless(
+        SYMLINKS_AVAILABLE,
+        "creating symlinks needs Developer Mode or administrator rights "
+        "on Windows",
+    )
+    def test_workspace_listing_rejects_external_symlinks(self) -> None:
+        (self.root / "outside").symlink_to(
+            self.root.parent,
+            target_is_directory=True,
+        )
+        with self.client() as client:
+            self.assertEqual(
+                client.get(
+                    "/api/workspace",
+                    params={"path": "outside"},
+                ).status_code,
+                400,
+            )
+
+    def test_serves_a_workspace_image_through_a_signed_url(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        (self.root / "src" / "diagram.png").write_bytes(png_bytes(8, 8))
+        self.store.bind_workspace("image-session", self.root)
+        with self.client() as client:
+            signed = client.post(
+                "/api/image-url",
+                json={
+                    "path": "src/diagram.png",
+                    "session_id": "image-session",
+                },
+            )
+            response = client.get(signed.json()["url"])
+
+            self.assertEqual(signed.status_code, 200)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["content-type"], "image/png")
+
+    def test_image_url_rejects_an_unknown_session(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        with self.client() as client:
+            response = client.post(
+                "/api/image-url",
+                json={"path": "image.png", "session_id": "missing"},
+            )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_the_signed_image_type_comes_from_the_bytes(self) -> None:
+        """A mislabelled extension must not set the served type."""
+        from tests.image_fixtures import jpeg_bytes
+
+        (self.root / "lying.png").write_bytes(jpeg_bytes(8, 8))
+        with self.client() as client:
+            signed = client.post(
+                "/api/image-url", json={"path": "lying.png"}
+            )
+            response = client.get(signed.json()["url"])
+
+            self.assertEqual(response.headers["content-type"], "image/jpeg")
+
+    def test_the_image_url_endpoint_refuses_non_images(self) -> None:
+        """It must not become a way to read arbitrary workspace files."""
+        with self.client() as client:
+            self.assertEqual(
+                client.post(
+                    "/api/image-url", json={"path": "README.md"}
+                ).status_code,
+                404,
+            )
+
+    def test_the_image_url_endpoint_rejects_traversal(self) -> None:
+        secret = self.root.parent / "secret.png"
+        secret.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+        self.addCleanup(secret.unlink)
+        with self.client() as client:
+            for path in ("../secret.png", "/etc/hosts", "src/../../secret.png"):
+                with self.subTest(path=path):
+                    self.assertEqual(
+                        client.post(
+                            "/api/image-url", json={"path": path}
+                        ).status_code,
+                        404,
+                    )
+
+    @unittest.skipUnless(
+        SYMLINKS_AVAILABLE,
+        "creating symlinks needs Developer Mode or administrator rights "
+        "on Windows",
+    )
+    def test_the_image_url_endpoint_rejects_external_symlinks(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        outside = self.root.parent / "outside.png"
+        outside.write_bytes(png_bytes(8, 8))
+        self.addCleanup(outside.unlink)
+        (self.root / "link.png").symlink_to(outside)
+        with self.client() as client:
+            self.assertEqual(
+                client.post(
+                    "/api/image-url", json={"path": "link.png"}
+                ).status_code,
+                404,
+            )
+
+    def test_the_image_url_endpoint_404s_an_unreadable_file(self) -> None:
+        """An unreadable file is a missing image, not a server fault."""
+        from tests.image_fixtures import png_bytes
+
+        path = self.root / "locked.png"
+        path.write_bytes(png_bytes(8, 8))
+        path.chmod(0o000)
+        self.addCleanup(path.chmod, 0o644)
+        if os.access(path, os.R_OK):
+            self.skipTest("this user can read a mode-000 file")
+        with self.client() as client:
+            self.assertEqual(
+                client.post(
+                    "/api/image-url", json={"path": "locked.png"}
+                ).status_code,
+                404,
+            )
+
+    def test_the_signed_image_route_serves_a_large_image(self) -> None:
+        """The 5 MiB ceiling bounds model delivery, not display."""
+        from agent_core.media import MAX_IMAGE_BYTES
+        from tests.image_fixtures import png_bytes
+
+        path = self.root / "huge.png"
+        path.write_bytes(
+            png_bytes(8, 8) + b"\x00" * (MAX_IMAGE_BYTES + 1024)
+        )
+        with self.client() as client:
+            signed = client.post(
+                "/api/image-url", json={"path": "huge.png"}
+            )
+            self.assertEqual(client.get(signed.json()["url"]).status_code, 200)
+
+    def test_signed_image_url_rejects_a_tampered_token(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        with self.client() as client:
+            signed = client.post(
+                "/api/image-url", json={"path": "image.png"}
+            ).json()["url"]
+            # Tamper the first signature character: the last one shares
+            # its low bits with base64 padding, so ``a`` and ``b`` there
+            # decode to the same signature.
+            prefix, _, signature = signed.rpartition(".")
+            replacement = "a" if signature[0] != "a" else "b"
+
+            self.assertEqual(
+                client.get(
+                    f"{prefix}.{replacement}{signature[1:]}"
+                ).status_code,
+                404,
+            )
+
+    def test_signed_image_url_expires(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        with self.client() as client:
+            with patch("interfaces.gui.routes.media.time.time", return_value=1000):
+                signed = client.post(
+                    "/api/image-url", json={"path": "image.png"}
+                ).json()["url"]
+            with patch(
+                "interfaces.gui.routes.media.time.time",
+                return_value=1000 + media.IMAGE_URL_TTL_SECONDS + 1,
+            ):
+                response = client.get(signed)
+
+        self.assertEqual(response.status_code, 410)
+
+    def test_upload_names_an_attachment_after_its_bytes(self) -> None:
+        """A declared media type never decides what an upload is."""
+        from tests.image_fixtures import jpeg_bytes
+
+        with self.client() as client:
+            data = client.post(
+                "/api/attachments",
+                files=[("files", ("photo.png", jpeg_bytes(8, 8), "image/png"))],
+            ).json()
+
+        attachment = data["attachments"][0]
+        self.assertEqual(attachment["type"], "image")
+        self.assertEqual(attachment["mime_type"], "image/jpeg")
+        self.assertEqual(attachment["filename"], "photo.png")
+        self.assertGreater(attachment["size_bytes"], 0)
+        self.assertTrue(attachment["path"].endswith(".jpg"))
+        self.assertTrue(
+            (self.root / attachment["path"]).is_file(),
+            attachment["path"],
+        )
+
+    def test_upload_accepts_an_arbitrary_file(self) -> None:
+        with self.client() as client:
+            response = client.post(
+                "/api/attachments",
+                files=[
+                    (
+                        "files",
+                        ("archive.custom", b"Hello RADE", "application/x-custom"),
+                    )
+                ],
+            )
+
+        self.assertEqual(response.status_code, 200)
+        attachment = response.json()["attachments"][0]
+        self.assertEqual(
+            attachment,
+            {
+                "type": "file",
+                "path": attachment["path"],
+                "filename": "archive.custom",
+                "mime_type": "application/x-custom",
+                "size_bytes": 10,
+            },
+        )
+        self.assertTrue(attachment["path"].endswith(".custom"))
+        self.assertEqual((self.root / attachment["path"]).read_bytes(), b"Hello RADE")
+
+    def test_upload_does_not_treat_a_broken_image_as_image_input(self) -> None:
+        from tests.image_fixtures import png_bytes
+
+        with self.client() as client:
+            response = client.post(
+                "/api/attachments",
+                files=[("files", ("broken.png", png_bytes(40, 25)[:45], "image/png"))],
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["attachments"][0]["type"], "file")
+
+    def test_rejects_foreign_origins_and_hosts(self) -> None:
+        with self.client(FakeBridge()) as client:
+            with self.assertRaises(WebSocketDisconnect):
+                with client.websocket_connect(
+                    "/api/session",
+                    headers={"origin": "https://other.example"},
+                ):
+                    pass
+            self.assertEqual(
+                client.get(
+                    "/api/sessions",
+                    headers={"host": "other.example"},
+                ).status_code,
+                400,
+            )
+
+
+async def _wait_for_async(condition, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError("timed out waiting for the runtime")
+        await asyncio.sleep(0.01)
+
+
+def _wait_for(client, condition, timeout: float = 2.0) -> None:
+    """Wait for a condition the server's own tasks produce.
+
+    The test client runs the application's event loop only while a
+    request is in flight, so polling from the test thread would never
+    schedule those tasks.  Each poll therefore issues a request of its
+    own: the real server's loop runs continuously, and this keeps the
+    loop turning the same way.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        client.get("/api/models")
+    raise AssertionError("timed out waiting for the relay")
+
+
+if __name__ == "__main__":
+    unittest.main()

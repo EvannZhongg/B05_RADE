@@ -1,0 +1,177 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from agent_core import (
+    LLMProvider,
+    LLMResponse,
+    SubagentRole,
+    Workspace,
+    WorkspaceInstruction,
+    WorkspaceInstructions,
+)
+from agent_core.prompting import render_subagent_prompt, render_system_prompt
+from agent_core.mcp.manager import McpServerInstructions
+from agent_core.skills import Skill, SkillRegistry
+
+
+SYSTEM_TEMPLATE = "I am RADE.\n\nCurrent workspace: {{workspace}}"
+SUBAGENT_TEMPLATE = (
+    "Role {{role}}: {{role_description}}\n\n"
+    "Current workspace: {{workspace}}"
+)
+
+
+class _TextOnlyProvider(LLMProvider):
+    """A role needs a provider; the prompt does not depend on which."""
+
+    @property
+    def max_context_tokens(self) -> int:
+        return 1000
+
+    def count_input_tokens(self, request) -> int:
+        return 1
+
+    def stream(self, request, on_text_delta, on_reasoning_delta=None):
+        return LLMResponse(content="unused")
+
+
+class PromptsTest(unittest.TestCase):
+    def instructions(self, root: Path) -> WorkspaceInstructions:
+        return WorkspaceInstructions(
+            documents=(
+                WorkspaceInstruction(
+                    ".RADE/AGENTS.md", "global rule"
+                ),
+                WorkspaceInstruction(
+                    "<workspace>/CLAUDE.md", "claude rule"
+                ),
+                WorkspaceInstruction(
+                    "<workspace>/AGENTS.md", "agent rule"
+                ),
+            ),
+            fingerprint="fingerprint",
+        )
+
+    def test_loads_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Workspace(Path(directory))
+            prompt = render_system_prompt(SYSTEM_TEMPLATE, workspace)
+
+        self.assertTrue(prompt)
+        self.assertIn("I am RADE", prompt)
+        self.assertIn(f"Current workspace: {workspace.path}", prompt)
+        self.assertNotIn("{{workspace}}", prompt)
+        self.assertNotIn(f"{{{{{workspace.path}}}}}", prompt)
+
+    def test_system_prompt_includes_workspace_instruction_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = Workspace(root)
+            prompt = render_system_prompt(
+                SYSTEM_TEMPLATE,
+                workspace,
+                instructions=self.instructions(root),
+            )
+
+        self.assertLess(prompt.index("global rule"), prompt.index("claude rule"))
+        self.assertLess(prompt.index("claude rule"), prompt.index("agent rule"))
+        self.assertIn("Earlier sources override later sources", prompt)
+
+    def test_mcp_instructions_append_after_existing_main_and_subagent_prefixes(self) -> None:
+        role = SubagentRole(
+            name="reviewer", description="Review code.", instructions="Report findings.",
+            tools=("mcp__review-kit_analyzer__echo",), provider=_TextOnlyProvider(),
+        )
+        guide = "Use echo for review.\n\nPreserve this second paragraph."
+        entries = (
+            McpServerInstructions("review-kit:analyzer", guide),
+            McpServerInstructions("docs", "Search docs first."),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = Workspace(root)
+            skills = SkillRegistry((Skill("review", "Inspect code.", root),))
+            for render, args in (
+                (render_system_prompt, (SYSTEM_TEMPLATE, workspace, skills)),
+                (render_subagent_prompt, (SUBAGENT_TEMPLATE, workspace, role, skills)),
+            ):
+                with self.subTest(render=render.__name__):
+                    prefix = render(*args, instructions=self.instructions(root))
+                    prompt = render(
+                        *args, instructions=self.instructions(root), mcp_instructions=entries,
+                    )
+                    self.assertNotIn("## MCP Server Instructions", prefix)
+                    self.assertTrue(prompt.startswith(prefix + "\n\n## MCP Server Instructions"))
+                    self.assertEqual(prompt.count(guide), 1)
+                    self.assertIn(f"### review-kit:analyzer\n\n{guide}", prompt)
+                    self.assertNotIn("Tools:", prompt)
+                    self.assertNotIn(role.tools[0], prompt)
+                    self.assertLess(prompt.index("### review-kit:analyzer"), prompt.index("### docs"))
+                    self.assertTrue(prompt.endswith("Search docs first."))
+
+    def test_loads_subagent_prompt_with_workspace_and_role(self) -> None:
+        role = SubagentRole(
+            name="researcher",
+            description="Read the workspace and report findings.",
+            tools=("read_file",),
+            provider=_TextOnlyProvider(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Workspace(Path(directory))
+            prompt = render_subagent_prompt(
+                SUBAGENT_TEMPLATE, workspace, role
+            )
+
+        self.assertTrue(prompt)
+        self.assertIn(f"Current workspace: {workspace.path}", prompt)
+        self.assertIn("researcher", prompt)
+        self.assertIn(role.description, prompt)
+        self.assertNotIn("{{workspace}}", prompt)
+        self.assertNotIn("{{role}}", prompt)
+        self.assertNotIn("{{role_description}}", prompt)
+
+    def test_subagent_prompt_inherits_workspace_instructions(self) -> None:
+        role = SubagentRole(
+            name="researcher",
+            description="Read the workspace and report findings.",
+            tools=("read_file",),
+            provider=_TextOnlyProvider(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prompt = render_subagent_prompt(
+                SUBAGENT_TEMPLATE,
+                Workspace(root),
+                role,
+                instructions=self.instructions(root),
+            )
+
+        self.assertIn("global rule", prompt)
+        self.assertIn("claude rule", prompt)
+        self.assertIn("agent rule", prompt)
+
+    def test_subagent_prompt_includes_role_instructions_after_template(self) -> None:
+        role = SubagentRole(
+            name="reviewer",
+            description="Review code.",
+            instructions="Inspect the diff and report only concrete findings.",
+            tools=("read_file",),
+            provider=_TextOnlyProvider(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            prompt = render_subagent_prompt(
+                SUBAGENT_TEMPLATE,
+                Workspace(Path(directory)),
+                role,
+            )
+
+        self.assertLess(
+            prompt.index(role.description),
+            prompt.index(role.instructions),
+        )
+        self.assertIn("## Role Instructions", prompt)
+
+
+if __name__ == "__main__":
+    unittest.main()

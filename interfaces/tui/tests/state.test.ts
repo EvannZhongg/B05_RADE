@@ -1,0 +1,861 @@
+import { describe, expect, it } from 'vitest';
+import { initialRuntimeState, MessageDecoder, formatArguments } from '@rade/protocol';
+import type { Incoming } from '@rade/protocol/internal';
+import { initialState, reducer, type State } from '../src/state.js';
+
+it('shares protocol defaults while keeping initial UI state separate', () => {
+  const first = initialRuntimeState();
+  first.jobs.push({ job_id: 'other', kind: 'shell', status: 'running', details: {} });
+  first.runtime_warnings!.push('other session warning');
+  const next = initialRuntimeState();
+  expect(next.phase).toBe('inactive');
+  expect(next.jobs).toEqual([]);
+  expect(next.runtime_warnings).toEqual([]);
+  expect(initialState).toMatchObject({
+    status: 'opening',
+    permissionPreset: next.permission_preset,
+    turnId: next.turn_id,
+    cacheUsage: next.cache_usage,
+    contextWindow: next.context_window,
+    plan: next.plan,
+  });
+});
+
+const READY = {
+  type: 'session_ready' as const,
+  protocol_version: 3 as const,
+  session_id: 'abc12345-0000',
+  workspace: '/tmp/work',
+  provider: 'deepseek',
+  model: 'deepseek/deepseek-chat',
+  resumed: false,
+  message_count: 0,
+  permission_preset: 'ask_for_approval' as const,
+};
+
+const RUNTIME_READY = {
+  type: 'runtime_state' as const, cache_usage: null,
+  phase: 'idle' as const,
+  turn_id: null,
+  provider: 'deepseek',
+  permission_preset: 'ask_for_approval' as const,
+  approval: null,
+  question: null,
+  jobs: [],
+  context_window: {
+    input_tokens: 10,
+    system_prompt_tokens: 4,
+    max_input_tokens: 900,
+    max_context_tokens: 1000,
+    output_reserve_tokens: 100,
+    compression_threshold: 720,
+    compression_count: 0,
+    compression_summary: null,
+  },
+  plan: null,
+};
+
+it('updates a session picker title from a structured title event', () => {
+  const state: State = { ...initialState, picker: { kind: 'sessions',
+    list: [{ session_id: 's', title: 'initial' }], selectedIndex: 0,
+  } };
+  const updated = reducer(state, { type: 'message', message: {
+    type: 'session_title_updated', session_id: 's', title: 'Generated title', title_source: 'generated',
+  } });
+  expect(updated.picker).toMatchObject({ list: [{ title: 'Generated title' }] });
+});
+
+describe('plan', () => {
+  it('restores and updates the current plan outside the transcript', () => {
+    let state = reducer(initialState, {
+      type: 'message',
+      message: {
+        ...RUNTIME_READY,
+        plan: {
+          plan_id: 'plan-1',
+          goal: 'Ship plans',
+          revision: 1,
+          steps: [{ id: 'runtime', title: 'Build runtime', status: 'in_progress' }],
+        },
+      },
+    });
+    expect(state.plan?.revision).toBe(1);
+
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'plan_updated',
+        plan: {
+          plan_id: 'plan-1',
+          goal: 'Ship plans',
+          revision: 2,
+          steps: [{ id: 'runtime', title: 'Build runtime', status: 'completed' }],
+        },
+      },
+    });
+    expect(state.plan).toBeNull();
+    expect(state.entries).toEqual([]);
+  });
+
+  it('shows update_plan as a normal live tool call', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'tool_call',
+        turn_id: 't1',
+        tool_call: { id: 'plan-call', name: 'update_plan', arguments: { goal: 'Ship', steps: [] } },
+        tool_index: 1,
+        tool_count: 1,
+      },
+    });
+
+    expect(state.entries).toMatchObject([
+      { kind: 'tool', id: 'plan-call', name: 'update_plan', state: 'running' },
+    ]);
+  });
+});
+
+function ready(): State {
+  return reducer(
+    reducer(initialState, { type: 'message', message: READY }),
+    { type: 'message', message: RUNTIME_READY },
+  );
+}
+
+describe('MessageDecoder', () => {
+  it('emits complete lines only', () => {
+    const decoder = new MessageDecoder();
+    expect(decoder.push('{"type":"shut')).toEqual([]);
+    expect(decoder.push('down"}\n')).toEqual([{ type: 'shutdown' }]);
+  });
+
+  it('handles several messages in one chunk', () => {
+    const decoder = new MessageDecoder();
+    const messages = decoder.push('{"type":"shutdown"}\n{"type":"shutdown"}\n');
+    expect(messages).toHaveLength(2);
+  });
+
+  it('skips blank lines', () => {
+    const decoder = new MessageDecoder();
+    expect(decoder.push('\n\n{"type":"shutdown"}\n')).toHaveLength(1);
+  });
+
+  it('throws on malformed json', () => {
+    const decoder = new MessageDecoder();
+    expect(() => decoder.push('not json\n')).toThrow();
+  });
+});
+
+describe('permissions', () => {
+  it('restores the preset from session readiness and records later changes', () => {
+    let state = ready();
+    expect(state.permissionPreset).toBe('ask_for_approval');
+
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'permission_changed', preset: 'full_access' },
+    });
+
+    expect(state.permissionPreset).toBe('full_access');
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: 'notice',
+      text: 'Permissions changed to Full Access.',
+    });
+
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'permission_changed', preset: 'workspace_access' },
+    });
+    expect(state.permissionPreset).toBe('workspace_access');
+    expect(state.entries.at(-1)).toMatchObject({
+      text: 'Permissions changed to Workspace Access.',
+    });
+  });
+});
+
+describe('helpers', () => {
+  it('formats tool arguments compactly', () => {
+    expect(formatArguments({ command: 'ls -la' })).toBe('command=ls -la');
+    expect(formatArguments({})).toBe('');
+  });
+});
+
+describe('reducer', () => {
+  it('shows background job status updates', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'job_status',
+        turn_id: 't1',
+        job_id: 'job-1',
+        kind: 'shell',
+        status: 'running',
+        details: { command: 'ls' },
+      },
+    });
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: 'notice',
+      text: 'Background shell job-1: running.',
+    });
+  });
+
+  it('becomes idle when the execution plane is ready', () => {
+    const state = ready();
+    expect(state.status).toBe('idle');
+    expect(state.model).toBe('deepseek/deepseek-chat');
+    expect(state.contextWindow?.input_tokens).toBe(10);
+  });
+
+  it('does not unlock submission from session readiness alone', () => {
+    const state = reducer(initialState, { type: 'message', message: READY });
+    expect(state.status).toBe('opening');
+    expect(state.sessionId).toBe(READY.session_id);
+  });
+
+  it('keeps MCP startup status out of the persistent transcript', () => {
+    const state = reducer(initialState, {
+      type: 'message',
+      message: { type: 'mcp_server_status', server: 'mineru', status: 'ready', tool_count: 2 },
+    });
+    expect(state.mcpStatus).toBe('MCP mineru: ready (2 tools)');
+    expect(state.entries).toEqual([]);
+    expect(reducer(state, { type: 'message', message: RUNTIME_READY }).mcpStatus).toBeNull();
+  });
+
+  it('notes resumed sessions', () => {
+    const state = reducer(initialState, {
+      type: 'message',
+      message: { ...READY, resumed: true, message_count: 4 },
+    });
+    expect(state.entries[0]).toMatchObject({ kind: 'notice', level: 'info' });
+  });
+
+  it('shows runtime warnings without blocking startup', () => {
+    const state = reducer(initialState, {
+      type: 'message',
+      message: { ...RUNTIME_READY, runtime_warnings: ['Skipping invalid skill.'] },
+    });
+    expect(state.status).toBe('idle');
+    expect(state.entries[0]).toMatchObject({
+      kind: 'notice',
+      level: 'warning',
+      text: 'Skipping invalid skill.',
+    });
+  });
+
+  it('accumulates deltas into one assistant entry', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'hi' });
+    for (const text of ['He', 'llo', '!']) {
+      state = reducer(state, {
+        type: 'message',
+        message: { type: 'assistant_delta', turn_id: 't1', text, model_call_index: 1 },
+      });
+    }
+    const assistants = state.entries.filter((entry) => entry.kind === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ text: 'Hello!', settled: false });
+    expect(state.status).toBe('streaming');
+  });
+
+  it('settles the streamed entry instead of duplicating it', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'hi' });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'assistant_delta', turn_id: 't1', text: 'Hel', model_call_index: 1 },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'assistant_message',
+        turn_id: 't1',
+        content: 'Hello!',
+        timestamp_utc: '2026-09-09T08:00:00.000000Z',
+        model_call_index: 1,
+      },
+    });
+    const assistants = state.entries.filter((entry) => entry.kind === 'assistant');
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0]).toMatchObject({ text: 'Hello!', settled: true });
+  });
+
+  it('accumulates reasoning deltas into one entry', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'hi' });
+    for (const text of ['Let me ', 'weigh ', 'the options.']) {
+      state = reducer(state, {
+        type: 'message',
+        message: { type: 'reasoning_delta', turn_id: 't1', text, model_call_index: 1 },
+      });
+    }
+    const reasoning = state.entries.filter((entry) => entry.kind === 'reasoning');
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({
+      text: 'Let me weigh the options.',
+      settled: false,
+    });
+  });
+
+  it('closes the reasoning entry once the answer is settled', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'hi' });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'reasoning_delta', turn_id: 't1', text: 'weighing', model_call_index: 1 },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'assistant_message',
+        turn_id: 't1',
+        content: 'Hello!',
+        timestamp_utc: '2026-09-09T08:00:00.000000Z',
+        model_call_index: 1,
+      },
+    });
+
+    expect(state.entries.map((entry) => entry.kind)).toEqual([
+      'user',
+      'reasoning',
+      'assistant',
+    ]);
+    expect(state.entries[1]).toMatchObject({ text: 'weighing', settled: true });
+  });
+
+  it('closes reasoning at the end of a turn and opens a new entry later', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'hi' });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'reasoning_delta', turn_id: 't1', text: 'first', model_call_index: 1 },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'turn_completed', turn_id: 't1', usage: null },
+    });
+    expect(state.entries.at(-1)).toMatchObject({ kind: 'reasoning', settled: true });
+
+    state = reducer(state, { type: 'submit', turnId: 't2', text: 'again' });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'reasoning_delta', turn_id: 't2', text: 'second', model_call_index: 1 },
+    });
+    const reasoning = state.entries.filter((entry) => entry.kind === 'reasoning');
+    expect(reasoning).toHaveLength(2);
+    expect(reasoning[0]).toMatchObject({ text: 'first', settled: true });
+    expect(reasoning[1]).toMatchObject({ text: 'second', settled: false });
+  });
+
+  it('resolves a tool entry in place', () => {
+    let state = ready();
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'tool_call',
+        turn_id: 't1',
+        tool_call: { id: 'call-1', name: 'shell', arguments: { command: 'ls' } },
+        tool_index: 1,
+        tool_count: 1,
+      },
+    });
+    expect(state.entries.filter((entry) => entry.kind === 'tool')).toHaveLength(1);
+
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'tool_result',
+        turn_id: 't1',
+        tool_call_id: 'call-1',
+        name: 'shell',
+        ok: false,
+        error: { type: 'PermissionError', message: 'denied' },
+        tool_index: 1,
+        tool_count: 1,
+      },
+    });
+    const tools = state.entries.filter((entry) => entry.kind === 'tool');
+    expect(tools).toHaveLength(1);
+    expect(tools[0]).toMatchObject({ state: 'error' });
+  });
+
+  it('tracks an approval request and clears it once answered', () => {
+    let state = ready();
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'approval_request',
+        turn_id: 't1',
+        request_id: 't1:1',
+        command: 'rm -rf build',
+      },
+    });
+    expect(state.status).toBe('awaiting_approval');
+    expect(state.approval).toEqual({
+      requestId: 't1:1',
+      command: 'rm -rf build',
+      choice: 'allow',
+    });
+
+    state = reducer(state, { type: 'approval_choice', choice: 'deny' });
+    expect(state.approval?.choice).toBe('deny');
+
+    state = reducer(state, { type: 'approval_resolved' });
+    expect(state.approval).toBeNull();
+    expect(state.status).toBe('running');
+  });
+
+  it('preserves the approval kind for computer interactions', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'approval_request',
+        turn_id: 't1',
+        request_id: 't1:1',
+        command: "computer_screenshot({'label': 'desktop'})",
+        kind: 'computer',
+      },
+    });
+
+    expect(state.approval?.kind).toBe('computer');
+  });
+
+  it('tracks a user question and selects the recommended option', () => {
+    let state = ready();
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'user_question',
+        turn_id: 't1',
+        request_id: 't1:1',
+        question: 'Which cache?',
+        options: [
+          { id: 'memory', label: 'Memory' },
+          { id: 'sqlite', label: 'SQLite', recommended: true },
+        ],
+        allow_free_text: true,
+      },
+    });
+
+    expect(state.status).toBe('awaiting_user');
+    expect(state.question?.selectedIndex).toBe(1);
+    state = reducer(state, { type: 'question_choice', selectedIndex: 2 });
+    expect(state.question?.selectedIndex).toBe(2);
+    state = reducer(state, { type: 'question_resolved' });
+    expect(state.question).toBeNull();
+    expect(state.status).toBe('running');
+  });
+
+  it('restores a pending user question from the runtime snapshot', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        ...RUNTIME_READY,
+        phase: 'waiting_user',
+        turn_id: 't1',
+        question: {
+          type: 'user_question',
+          turn_id: 't1',
+          request_id: 't1:1',
+          question: 'Which cache?',
+          options: [
+            { id: 'memory', label: 'Memory' },
+            { id: 'sqlite', label: 'SQLite', recommended: true },
+          ],
+          allow_free_text: true,
+        },
+      },
+    });
+
+    expect(state.status).toBe('awaiting_user');
+    expect(state.question).toMatchObject({
+      requestId: 't1:1',
+      question: 'Which cache?',
+      selectedIndex: 1,
+      allowFreeText: true,
+    });
+  });
+
+  it('updates usage on each model completion without ending the turn', () => {
+    let state = ready();
+    state = reducer(state, { type: 'message', message: {
+      ...RUNTIME_READY, cache_usage: { input_tokens: 100, cache_read_tokens: 58 },
+    } });
+    expect(state.cacheUsage).toEqual({ input_tokens: 100, cache_read_tokens: 58 });
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'model_completed',
+        cache_usage: { input_tokens: 100, cache_read_tokens: 58 },
+        turn_id: 't1',
+        model_call_index: 1,
+        usage: {
+          input_tokens: 10, output_tokens: 2, total_tokens: 12,
+          cache_read_tokens: 8, cache_write_tokens: null,
+        },
+      },
+    });
+    expect(state.status).toBe('streaming');
+    expect(state.turnId).toBe('t1');
+    expect(state.usage?.total_tokens).toBe(12);
+    expect(state.usage?.cache_read_tokens).toBe(8);
+    expect(state.usage?.cache_write_tokens).toBeNull();
+    expect(state.cacheUsage).toEqual({ input_tokens: 100, cache_read_tokens: 58 });
+    expect(reducer(state, { type: 'submit', turnId: 't2', text: 'continue' }).usage)
+      .toEqual(state.usage);
+    expect(reducer(state, {
+      type: 'message', message: { type: 'user_turn_received', turn_id: 't2' },
+    }).usage).toEqual(state.usage);
+    const messages: Incoming[] = [
+      { type: 'provider_changed', provider: 'next', model: 'next/model' },
+      { type: 'workspace_changed', workspace: '/next' },
+    ];
+    for (const message of messages) {
+      expect(reducer(state, { type: 'message', message }).usage).toBeNull();
+      expect(reducer(state, { type: 'message', message }).cacheUsage).toEqual(state.cacheUsage);
+    }
+    state = reducer(state, { type: 'message', message: {
+      type: 'model_completed', turn_id: 't1', model_call_index: 2, usage: null,
+      cache_usage: { input_tokens: 100, cache_read_tokens: 58 },
+    } });
+    expect(state.usage).toBeNull();
+    expect(state.cacheUsage).toEqual({ input_tokens: 100, cache_read_tokens: 58 });
+    expect(state.status).toBe('streaming');
+    expect(state.turnId).toBe('t1');
+  });
+
+  it('applies authoritative compression cache totals without replacing main usage', () => {
+    let state = reducer(ready(), { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, { type: 'message', message: {
+      type: 'model_completed', turn_id: 't1', model_call_index: 1,
+      usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120,
+        cache_read_tokens: 50, cache_write_tokens: null },
+      cache_usage: { input_tokens: 100, cache_read_tokens: 50 },
+    } });
+    const message: Incoming = {
+      type: 'compression_completed', turn_id: 't1',
+      cache_usage: { input_tokens: 1100, cache_read_tokens: 850 },
+    };
+    const updated = reducer(state, { type: 'message', message });
+    expect(updated.cacheUsage).toEqual(message.cache_usage);
+    expect(updated.usage).toBe(state.usage);
+    expect(updated.entries).toBe(state.entries);
+    expect(updated.status).toBe(state.status);
+    expect(updated.turnId).toBe('t1');
+    expect(reducer(updated, { type: 'message', message: { ...message, replayed: true } }).cacheUsage)
+      .toEqual(updated.cacheUsage);
+  });
+
+  it('records the current context window', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'context_window',
+        turn_id: null,
+        input_tokens: 120,
+        system_prompt_tokens: 40,
+        max_input_tokens: 900,
+        max_context_tokens: 1000,
+        output_reserve_tokens: 100,
+        compression_threshold: 720,
+        compression_count: 2,
+        compression_summary: "Archived context",
+      },
+    });
+    expect(state.contextWindow?.input_tokens).toBe(120);
+    expect(state.contextWindow?.compression_count).toBe(2);
+  });
+
+  it('shows steering only after the runtime applies it', () => {
+    let state = reducer(ready(), { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, { type: 'steer_submitted' });
+    expect(state.pendingSteers).toBe(1);
+
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'user_steer_applied',
+        turn_id: 't1',
+        steer_id: 's1',
+        text: 'check tests first',
+        timestamp_utc: '2026-09-16T10:00:00Z',
+      },
+    });
+
+    expect(state.pendingSteers).toBe(0);
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: 'user',
+      text: 'check tests first',
+    });
+  });
+
+  it('reports a cancelled turn', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, {
+      type: 'message',
+      message: { ...RUNTIME_READY, phase: 'idle', turn_id: null },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'turn_cancelled', turn_id: 't1' },
+    });
+    expect(state.status).toBe('idle');
+    expect(state.entries.at(-1)).toMatchObject({ text: 'Cancelled.' });
+  });
+
+  it('keeps the session usable after a failed turn', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, {
+      type: 'message',
+      message: { ...RUNTIME_READY, phase: 'idle', turn_id: null },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'turn_failed',
+        turn_id: 't1',
+        error: { type: 'ValueError', message: 'boom', details: {} },
+      },
+    });
+    expect(state.status).toBe('idle');
+    expect(state.entries.at(-1)).toMatchObject({ level: 'error' });
+  });
+
+  it('keeps a startup failure unavailable after the turn error arrives', () => {
+    let state = ready();
+    state = reducer(state, { type: 'submit', turnId: 't1', text: 'work' });
+    state = reducer(state, {
+      type: 'message',
+      message: { ...RUNTIME_READY, phase: 'failed', turn_id: null },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'turn_failed',
+        turn_id: 't1',
+        error: { type: 'RuntimeError', message: 'startup failed', details: {} },
+      },
+    });
+
+    expect(state.status).toBe('runtime_failed');
+    expect(state.turnId).toBeNull();
+    expect(state.entries.at(-1)).toMatchObject({ level: 'error' });
+  });
+
+  it('ignores cancellation while idle', () => {
+    const state = ready();
+    expect(reducer(state, { type: 'cancelling' })).toBe(state);
+  });
+});
+
+describe('sessions', () => {
+  it('keeps hook feedback out of the human transcript and shows hook denials', () => {
+    let state = reducer(ready(), { type: 'message', message: {
+      type: 'session_items', items: [
+        { role: 'user', content: 'work' },
+        { role: 'user', origin: 'hook_feedback', content: 'internal feedback' },
+      ],
+    } });
+    expect(state.entries.filter((entry) => entry.kind === 'user')).toHaveLength(1);
+    state = reducer(state, { type: 'message', message: {
+      type: 'hook_completed', turn_id: 't', session_id: 's', invocation_id: 'i',
+      hook_id: 'rules:check', event: 'PreToolUse', status: 'completed', decision: 'deny',
+      reason: 'protected file', duration_ms: 1, tool_call_id: 'call',
+    } });
+    expect(state.entries.at(-1)).toMatchObject({ kind: 'notice', text: 'protected file' });
+  });
+
+  it('fills the open picker with the workspace sessions', () => {
+    let state = reducer(ready(), { type: 'picker_opened', kind: 'sessions' });
+    expect(state.picker).toEqual({ kind: 'sessions', list: null, selectedIndex: 0 });
+
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'sessions_listed',
+        sessions: [
+          { session_id: 'newer', title: 'about the parser' },
+          { session_id: 'older', title: 'about the tests' },
+        ],
+      },
+    });
+    expect(state.picker).toMatchObject({ list: [
+      { session_id: 'newer' }, { session_id: 'older' },
+    ] });
+
+    state = reducer(state, { type: 'picker_choice', selectedIndex: 1 });
+    expect(state.picker?.selectedIndex).toBe(1);
+
+    state = reducer(state, { type: 'picker_closed' });
+    expect(state.picker).toBeNull();
+  });
+
+  it('drops a listing that arrives after the picker closed', () => {
+    const state = ready();
+    expect(
+      reducer(state, {
+        type: 'message',
+        message: {
+          type: 'sessions_listed',
+          sessions: [{ session_id: 'newer', title: 'about the parser' }],
+        },
+      }),
+    ).toBe(state);
+  });
+
+  it('keeps late responses from replacing another picker and distinguishes an empty list', () => {
+    let state = reducer(ready(), { type: 'picker_opened', kind: 'workspaces' });
+    expect(reducer(state, { type: 'message', message: { type: 'sessions_listed', sessions: [] } })).toBe(state);
+    state = reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: [] } });
+    expect(state.picker).toEqual({ kind: 'workspaces', list: [], selectedIndex: 0 });
+    state = reducer(state, { type: 'picker_opened', kind: 'sessions' });
+    expect(reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: ['/other'] } })).toBe(state);
+    state = reducer(state, { type: 'picker_closed' });
+    expect(reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: ['/other'] } })).toBe(state);
+  });
+
+  it('keeps the resumed notice above the replayed conversation', () => {
+    let state = reducer(ready(), {
+      type: 'message',
+      message: { ...READY, resumed: true, message_count: 2 },
+    });
+    state = reducer(state, {
+      type: 'message',
+      message: {
+        type: 'session_items',
+        items: [
+          { role: 'user', content: 'first question' },
+          { role: 'assistant', content: 'first answer', timestamp_utc: '2026-09-16T10:00:00Z' },
+        ],
+      },
+    });
+
+    expect(state.entries.map((entry) => entry.kind)).toEqual([
+      'notice',
+      'user',
+      'assistant',
+    ]);
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: 'assistant',
+      text: 'first answer',
+      settled: true,
+    });
+  });
+
+  it('rebuilds a stored turn as reasoning, a tool call and its outcome', () => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'session_items',
+        items: [
+          { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+          {
+            role: 'assistant',
+            content: null,
+            reasoning: 'weighing it',
+            tool_calls: [
+              { id: 'call-1', name: 'shell', arguments: { command: 'ls' } },
+              { id: 'call-2', name: 'shell', arguments: { command: 'pwd' } },
+            ],
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'call-1',
+            content: JSON.stringify({ ok: true, output: 'file.txt' }),
+          },
+          {
+            role: 'tool',
+            tool_call_id: 'call-2',
+            content: JSON.stringify({
+              ok: false,
+              error: { type: 'PermissionError', message: 'denied' },
+            }),
+          },
+        ],
+      },
+    });
+
+    expect(state.entries).toMatchObject([
+      { kind: 'user', text: 'run it' },
+      { kind: 'reasoning', text: 'weighing it' },
+      { kind: 'tool', name: 'shell', index: 1, count: 2, state: 'ok' },
+      {
+        kind: 'tool',
+        name: 'shell',
+        index: 2,
+        count: 2,
+        state: 'error',
+        error: { type: 'PermissionError', message: 'denied' },
+      },
+    ]);
+  });
+
+  it.each(['tool_media', 'tool_delivery'] as const)('renders an interrupted tool call and %s images as a notice', (origin) => {
+    const state = reducer(ready(), {
+      type: 'message',
+      message: {
+        type: 'session_items',
+        items: [
+          {
+            role: 'assistant',
+            content: null,
+            tool_calls: [{ id: 'call-1', name: 'shell', arguments: { command: 'ls' } }],
+          },
+          {
+            role: 'user',
+            origin,
+            content: [
+              { type: 'text', text: 'tool media' },
+              { type: 'image', path: '.RADE/a.png', mime_type: 'image/png' },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(state.entries).toMatchObject([
+      { kind: 'tool', state: 'error' },
+      { kind: 'notice', text: 'Viewing 1 image(s): .RADE/a.png' },
+    ]);
+  });
+
+  it('preserves the current session until a new session is ready', () => {
+    let state = reducer(ready(), {
+      type: 'message',
+      message: { type: 'assistant_delta', turn_id: 't1', text: 'partial', model_call_index: 1 },
+    });
+    state = reducer(state, { type: 'picker_opened', kind: 'sessions' });
+
+    const original = state;
+    state = reducer(state, { type: 'session_opening' });
+
+    expect(state).toEqual({ ...original, status: 'opening', picker: null });
+    state = reducer(state, { type: 'message', message: { ...READY, session_id: 'next' } });
+    expect(state.sessionId).toBe('next');
+    expect(state.status).toBe('opening');
+    expect(state.entries).toEqual([]);
+    expect(state.contextWindow).toBeNull();
+  });
+
+  it('keeps the current conversation usable when the bridge retains it after a failed switch', () => {
+    const original = reducer(ready(), { type: 'message', message: {
+      type: 'session_items', items: [{ role: 'user', content: 'original history' }],
+    } });
+    let state = reducer(original, { type: 'session_opening' });
+    state = reducer(state, { type: 'message', message: {
+      type: 'session_open_failed', session_id: 'occupied',
+      error: { type: 'SessionInUseError', message: 'occupied' }, runtime: RUNTIME_READY,
+    } });
+    expect(state.status).toBe('idle');
+    expect(state.sessionId).toBe(original.sessionId);
+    expect(state.entries[0]).toEqual(original.entries[0]);
+    expect(state.contextWindow).toEqual(original.contextWindow);
+    state = reducer(state, { type: 'picker_closed' });
+    expect(state.picker).toBeNull();
+    expect(state.status).toBe('idle');
+    expect(state.sessionId).toBe(original.sessionId);
+  });
+});

@@ -1,0 +1,50 @@
+{
+  "main_agent": {"provider": "openai", "vision_provider": ""},
+  "fast_model": {"provider": ""},
+  "subagent": {"provider": "", "vision_provider": ""},
+  "subagent_roles": {},
+  "image_generation": {
+    "provider": "openrouter",
+    "model": "openrouter/openai/gpt-5.4-image-2",
+    "default_aspect_ratio": "1:1",
+    "default_image_size": "1K"
+  },
+  "providers": {
+    "openai": {
+      "model": "gpt-5",
+      "url": "https://api.openai.com/v1",
+      "key": "${OPENAI_KEY}",
+      "api": "responses"
+    },
+    "anthropic": {
+      "model": "anthropic/claude-sonnet-4-5",
+      "url": "https://api.anthropic.com",
+      "key": "${ANTHROPIC_KEY}"
+    },
+    "gemini": {
+      "model": "gemini/gemini-2.5-flash",
+      "url": "https://generativelanguage.googleapis.com",
+      "key": "${GEMINI_KEY}"
+    },
+    "deepseek": {
+      "model": "deepseek/deepseek-flash",
+      "url": "https://api.deepseek.com",
+      "key": "${DEEPSEEK_API_KEY}"
+    },
+    "qwen": {
+      "model": "dashscope/qwen-plus",
+      "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "key": "${DASHSCOPE_API_KEY}"
+    },
+    "openrouter": {
+      "model": "openai/gpt-5",
+      "url": "https://openrouter.ai/api/v1",
+      "key": "${OPENROUTER_KEY}",
+      "api": "chat_completions"
+    },
+    "ollama": {
+      "model": "ollama/llama3.1",
+      "url": "http://localhost:11434"
+    }
+  }
+}

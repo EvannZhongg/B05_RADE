@@ -1,0 +1,92 @@
+#!/usr/bin/env node
+import { render } from 'ink';
+import { resolve } from 'node:path';
+import { App } from './app.js';
+
+type Options = {
+  workspace: string;
+};
+
+const USAGE = `Usage: RADE [options]
+
+Options:
+  --workspace <path>      Workspace directory (default: current directory)
+  --temporary             Use a persistent RADE-managed scratch workspace
+  -h, --help              Show this message
+`;
+
+function parseArguments(argv: string[]): Options {
+  const options: Options = {
+    workspace: process.cwd(),
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--help' || argument === '-h') {
+      process.stdout.write(USAGE);
+      process.exit(0);
+    }
+    const value = argv[index + 1];
+    if (value === undefined) {
+      process.stderr.write(`Missing value for ${argument}\n`);
+      process.exit(2);
+    }
+    index += 1;
+    switch (argument) {
+      case '--workspace':
+        options.workspace = resolve(value);
+        break;
+      default:
+        process.stderr.write(`Unknown option: ${argument}\n${USAGE}`);
+        process.exit(2);
+    }
+  }
+
+  return options;
+}
+
+const options = parseArguments(process.argv.slice(2));
+
+const python = process.env.RADE_PYTHON;
+if (!python) {
+  process.stderr.write(
+    'RADE_PYTHON is not set. Run RADE through the "RADE" command.\n',
+  );
+  process.exit(2);
+}
+
+/**
+ * Whether to ask Ink for the kitty keyboard protocol, which is what makes
+ * Shift+Enter distinguishable from Enter.
+ *
+ * Ink's own 'auto' mode probes the terminal with `CSI ? u` and waits 200ms for
+ * a reply. Terminals that answer late — Apple Terminal does — answer after Ink
+ * stopped listening, and the reply is then typed into the UI as `[?0u`. So the
+ * protocol is only requested where support is known from the environment, and
+ * never probed.
+ */
+function supportsKittyKeyboard(): boolean {
+  const env = process.env;
+  if (env['KITTY_WINDOW_ID']) return true;
+  if (env['GHOSTTY_RESOURCES_DIR'] || env['TERM'] === 'xterm-ghostty') return true;
+  if (env['WEZTERM_PANE'] !== undefined) return true;
+  if (env['TERM_PROGRAM'] === 'WezTerm' || env['TERM_PROGRAM'] === 'ghostty') return true;
+  return false;
+}
+
+render(
+  <App
+    python={python}
+    workspace={options.workspace}
+  />,
+  {
+    // Ink would otherwise unmount on Ctrl+C; we use it to cancel a turn.
+    exitOnCtrlC: false,
+    patchConsole: false,
+    // Lets these terminals report Shift+Enter as a distinct key so it can
+    // insert a newline. Elsewhere Ctrl+J is the portable way to add one.
+    ...(supportsKittyKeyboard()
+      ? { kittyKeyboard: { mode: 'enabled' as const, flags: ['disambiguateEscapeCodes' as const] } }
+      : {}),
+  },
+);

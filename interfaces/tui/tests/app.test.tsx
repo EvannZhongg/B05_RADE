@@ -1,0 +1,1165 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import React from 'react';
+import { render } from 'ink-testing-library';
+import type { ApprovalKind, Incoming } from '@rade/protocol/internal';
+
+const sent: any[] = [];
+let emit: (message: Incoming, channelId?: string) => void = () => {};
+let autoReady = true;
+let bridgeCount = 0;
+let shutdownCount = 0;
+const sentChannels: string[] = [];
+const closedChannels: string[] = [];
+let activeMockChannel = 'session-1';
+const readyByChannel = new Map<string, any>();
+const stateByChannel = new Map<string, any>();
+
+vi.mock('@rade/client', () => ({
+  BridgeClient: class {
+    constructor(private options: any) {
+      emit = (message, channelId = activeMockChannel) => {
+        if (message.type === 'session_ready') readyByChannel.set(channelId, message);
+        if (message.type === 'runtime_state') stateByChannel.set(channelId, message);
+        options.onMessage(message, channelId);
+      };
+      bridgeCount += 1;
+    }
+    send(message: any, channelId: string) {
+      activeMockChannel = channelId;
+      sent.push(message);
+      sentChannels.push(channelId);
+      if (autoReady && message.type === 'session_snapshot') {
+        setTimeout(() => {
+          emit({ ...readyByChannel.get(channelId), resumed: true }, channelId);
+          emit(stateByChannel.get(channelId), channelId);
+        }, 10);
+      }
+      if (autoReady && message.type === 'open_session') {
+        setTimeout(() => {
+            emit({
+              type: 'session_ready', protocol_version: 3,
+              session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
+              workspace: message.workspace,
+              provider: 'test',
+              model: 'test/model',
+              resumed: false,
+              message_count: 0,
+              permission_preset: 'ask_for_approval',
+            }, channelId);
+            emit({
+              type: 'runtime_state', cache_usage: null,
+              phase: 'inactive',
+              turn_id: null,
+              provider: 'test',
+              permission_preset: 'ask_for_approval',
+              context_window: null,
+              jobs: [],
+              approval: null,
+              question: null,
+              plan: null,
+            }, channelId);
+          }, 10);
+      }
+    }
+    cancel(turnId: string, channelId: string) {
+      sent.push({ type: '__cancel', turn_id: turnId });
+      sentChannels.push(channelId);
+    }
+    closeChannel(channelId: string) {
+      closedChannels.push(channelId);
+      this.options.onChannelClosed?.(channelId);
+    }
+    shutdown() { shutdownCount += 1; }
+    diagnostics() {
+      return '';
+    }
+  },
+}));
+
+const { App } = await import('../src/app.js');
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type Frame = () => string | undefined;
+
+/**
+ * Polls an assertion instead of sleeping for a fixed delay, so the suite does
+ * not race Ink when the machine is busy. The condition must also survive one
+ * event-loop turn before we return: Ink detaches its stdin listener while focus
+ * hands over to the approval prompt and only re-attaches it in a passive
+ * effect, so a frame can look right slightly before keys are accepted.
+ */
+async function waitFor(assertion: () => void, timeout = 1500): Promise<void> {
+  const deadline = Date.now() + timeout;
+  let passes = 0;
+  for (;;) {
+    try {
+      assertion();
+      passes += 1;
+      if (passes === 2) return;
+    } catch (error) {
+      passes = 0;
+      if (Date.now() >= deadline) throw error;
+    }
+    await wait(10);
+  }
+}
+
+function renderApp() {
+  return render(
+    <App
+      python="python3"
+      workspace="/w"
+    />,
+  );
+}
+
+/** The status bar shows the model once the Session control plane is ready. */
+const waitForReady = (lastFrame: Frame) =>
+  waitFor(() => expect(lastFrame()).toContain('test/model'));
+
+const approvalResponse = () => sent.find((m) => m.type === 'approval_response');
+const questionResponse = () => sent.find((m) => m.type === 'user_question_response');
+const turns = () => sent.filter((m) => m.type === 'user_turn');
+const steers = () => sent.filter((m) => m.type === 'user_steer');
+
+/** Types text and waits until Ink has parsed it into the draft. */
+async function typeDraft(
+  stdin: { write: (data: string) => void },
+  lastFrame: Frame,
+  text: string,
+): Promise<void> {
+  stdin.write(text);
+  await waitFor(() => expect(lastFrame()).toContain(text));
+}
+
+const requestApproval = (command: string, kind?: ApprovalKind): void => {
+  emit({ type: 'approval_request', turn_id: 't1', request_id: 't1:1', command, kind });
+};
+
+const requestQuestion = (allowFreeText = true): void => {
+  emit({
+    type: 'user_question',
+    turn_id: 't1',
+    request_id: 't1:1',
+    question: 'Which cache?',
+    options: [
+      { id: 'memory', label: 'Memory', description: 'Fast' },
+      { id: 'sqlite', label: 'SQLite', description: 'Persistent', recommended: true },
+    ],
+    allow_free_text: allowFreeText,
+  });
+};
+
+function lineContaining(frame: string | undefined, text: string): number {
+  return (frame ?? '').split('\n').findIndex((line) => line.includes(text));
+}
+
+describe('App', () => {
+  it('opens the session picker on occupancy and can retry the same selection', async () => {
+    autoReady = false;
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1));
+    expect(sent.some((m) => m.type === 'load_session')).toBe(false);
+    const fail = () => emit({
+      type: 'session_open_failed', session_id: 'occupied',
+      error: { type: 'SessionInUseError', message: 'occupied' },
+    });
+    fail();
+    await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
+    expect(sent.some((m) => m.type === 'list_sessions')).toBe(true);
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', title: 'Retry session' }] });
+    await waitFor(() => expect(lastFrame()).toContain('Retry session'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
+    fail();
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', title: 'Retry session' }] });
+    await waitFor(() => expect(lastFrame()).toContain('Retry session'));
+    autoReady = true;
+    stdin.write('\r');
+    await waitForReady(lastFrame);
+    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(3);
+    expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(1);
+    expect(turns()).toHaveLength(0);
+    unmount();
+  });
+
+  beforeEach(() => {
+    sent.length = 0;
+    sentChannels.length = 0;
+    closedChannels.length = 0;
+    readyByChannel.clear();
+    stateByChannel.clear();
+    activeMockChannel = 'session-1';
+    bridgeCount = 0;
+    shutdownCount = 0;
+    autoReady = true;
+  });
+
+  it('updates cache hits after each model call while the turn is still running', async () => {
+    const { lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'context_window', turn_id: 't1',
+      input_tokens: 120, system_prompt_tokens: 40, max_input_tokens: 900, max_context_tokens: 1000,
+      output_reserve_tokens: 100, compression_threshold: 800,
+      compression_count: 0, compression_summary: null,
+    });
+    emit({ type: 'assistant_delta', turn_id: 't1', text: 'working', model_call_index: 1 });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: unknown'));
+    emit({
+      type: 'model_completed', turn_id: 't1', model_call_index: 1, usage: {
+        input_tokens: 1000, output_tokens: 20, total_tokens: 1020,
+        cache_read_tokens: 995, cache_write_tokens: null,
+      },
+      cache_usage: { input_tokens: 1000, cache_read_tokens: 995 },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: 99.5%'));
+    emit({ type: 'assistant_delta', turn_id: 't1', text: ' continuing', model_call_index: 2 });
+    await waitFor(() => {
+      expect(lastFrame()).toContain('working');
+      expect(lastFrame()).toContain('Cache hit: 99.5%');
+    });
+    emit({
+      type: 'model_completed', turn_id: 't1', model_call_index: 2, usage: {
+        input_tokens: 100, output_tokens: 20, total_tokens: 120,
+        cache_read_tokens: 0, cache_write_tokens: null,
+      },
+      cache_usage: { input_tokens: 1100, cache_read_tokens: 995 },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: 90.5%'));
+    emit({ type: 'model_completed', turn_id: 't1', model_call_index: 3, usage: null,
+      cache_usage: { input_tokens: 1100, cache_read_tokens: 995 } });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: 90.5%'));
+    emit({
+      type: 'compression_completed', turn_id: 't1',
+      cache_usage: { input_tokens: 2100, cache_read_tokens: 1990 },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: 94.8%'));
+    emit({
+      type: 'compression_completed', turn_id: 't1',
+      cache_usage: { input_tokens: 3100, cache_read_tokens: 2985 },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('Cache hit: 96.3%'));
+    unmount();
+  });
+
+  it('renders plan progress from structured protocol state', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'plan_updated',
+      plan: {
+        plan_id: 'plan-1',
+        goal: 'Ship plans',
+        revision: 1,
+        steps: [
+          { id: 'inspect', title: 'Inspect architecture', status: 'completed', outcome: 'Architecture mapped.' },
+          { id: 'frontend', title: 'Connect frontends', status: 'in_progress' },
+          { id: 'verify', title: 'Verify recovery', status: 'pending' },
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(lastFrame()).toContain('Plan');
+      expect(lastFrame()).toContain('✓ Inspect architecture');
+      expect(lastFrame()).toContain('Architecture mapped.');
+      expect(lastFrame()).toContain('◉ Connect frontends');
+      expect(lastFrame()).toContain('○ Verify recovery');
+    });
+  });
+
+  it('opens the session with the workspace', async () => {
+    renderApp();
+    await waitFor(() =>
+      expect(sent[0]).toMatchObject({
+        type: 'open_session',
+        workspace: '/w',
+        session_id: null,
+      }),
+    );
+  });
+
+  it('submits a typed turn once the runtime is idle', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, 'hello there');
+    stdin.write('\r');
+    await waitFor(() =>
+      expect(sent.find((m) => m.type === 'user_turn')).toMatchObject({ text: 'hello there' }),
+    );
+  });
+
+  it('keeps an opening draft without submitting before runtime synchronization', async () => {
+    autoReady = false;
+    const { stdin, lastFrame } = renderApp();
+    await typeDraft(stdin, lastFrame, 'wait for sync');
+    stdin.write('\r');
+    await wait(20);
+    expect(turns()).toHaveLength(0);
+    expect(lastFrame()).toContain('wait for sync');
+
+    emit({
+      type: 'session_ready', protocol_version: 3,
+      session_id: 'sess-1234',
+      workspace: '/w',
+      provider: 'test',
+      model: 'test/model',
+      resumed: false,
+      message_count: 0,
+      permission_preset: 'ask_for_approval',
+    });
+    emit({
+      type: 'runtime_state', cache_usage: null,
+      phase: 'inactive',
+      turn_id: null,
+      provider: 'test',
+      permission_preset: 'ask_for_approval',
+      context_window: null,
+      jobs: [],
+      approval: null,
+      question: null,
+      plan: null,
+    });
+    await waitForReady(lastFrame);
+    stdin.write('\r');
+    await waitFor(() => expect(turns()[0]).toMatchObject({ text: 'wait for sync' }));
+  });
+
+  it('opens /permissions and sends the selected preset', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/permissions');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Ask for approval'));
+
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Workspace Access'));
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Full Access'));
+    stdin.write('\r');
+
+    await waitFor(() => expect(sent).toContainEqual({
+      type: 'permission_set',
+      preset: 'full_access',
+    }));
+    expect(turns()).toHaveLength(0);
+  });
+
+  it('refreshes the runtime without creating a turn or restarting the bridge', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/refresh');
+    stdin.write('\r');
+    await waitFor(() => expect(sent).toContainEqual({ type: 'runtime_refresh' }));
+    expect(turns()).toHaveLength(0);
+    expect(bridgeCount).toBe(1);
+    await typeDraft(stdin, lastFrame, 'continue afterwards');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('continue afterwards'));
+    expect(turns()).toHaveLength(0);
+    emit({ type: 'runtime_refreshed', provider: 'test', model: 'test/updated' });
+    await waitFor(() => expect(lastFrame()).toContain('Runtime refreshed.'));
+    expect(lastFrame()).toContain('test/updated');
+    stdin.write('\r');
+    await waitFor(() => expect(turns()).toContainEqual(expect.objectContaining({ text: 'continue afterwards' })));
+  });
+
+  it('opens /model and switches through provider_set', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/model');
+    stdin.write('\r');
+    await waitFor(() => expect(sent).toContainEqual({ type: 'settings_get' }));
+    emit({
+      type: 'settings_snapshot',
+      settings: {
+        revision: 'r1',
+        config_directory: '/config',
+        default_provider: 'test',
+        providers: [
+          { id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
+          { id: 'second', model: 'test/second', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
+        ],
+        routing: { main_agent: 'test', vision_provider: null, subagent: null, subagent_vision_provider: null, roles: {} },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
+      },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('❯ test · test/model'));
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ second · test/second'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent).toContainEqual({ type: 'provider_set', provider: 'second' }));
+    expect(turns()).toHaveLength(0);
+  });
+
+  it('shows /provider configuration without sending a turn', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/provider');
+    stdin.write('\r');
+    emit({
+      type: 'settings_snapshot',
+      settings: {
+        revision: 'r1', config_directory: '/config', default_provider: 'test',
+        providers: [{ id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } }],
+        routing: { main_agent: 'test', vision_provider: null, subagent: null, subagent_vision_provider: null, roles: {} },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
+      },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('Configuration · /config'));
+    expect(turns()).toHaveLength(0);
+  });
+
+  it('lists the commands after a slash and runs the highlighted one', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    stdin.write('/');
+    await waitFor(() => expect(lastFrame()).toContain('❯ /permissions'));
+
+    const frame = lastFrame() ?? '';
+    const menuLine = lineContaining(frame, '❯ /permissions');
+    const ruleLine = frame.split('\n').findIndex((line) => line.includes('─'));
+    expect(menuLine).toBeGreaterThanOrEqual(0);
+    expect(menuLine).toBeLessThan(ruleLine);
+
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Ask for approval'));
+    // The command opened the permission card instead of becoming a turn.
+    expect(turns()).toHaveLength(0);
+  });
+
+  it('switches to another conversation and replays it', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(sent.find((m) => m.type === 'list_sessions')).toBeDefined());
+    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+
+    emit({
+      type: 'sessions_listed',
+      sessions: [
+        { session_id: 'newer', title: 'about the parser' },
+        { session_id: 'older', title: 'about the tests' },
+      ],
+    });
+    await waitFor(() => expect(lastFrame()).toContain('❯ about the parser'));
+
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ about the tests'));
+    stdin.write('\r');
+
+    // Session switching stays on the existing process.
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
+    expect(sent.filter((m) => m.type === 'open_session')[1]).toMatchObject({
+      session_id: 'older',
+    });
+    expect(lastFrame()).not.toContain('❯ about the tests');
+    expect(bridgeCount).toBe(1);
+    expect(shutdownCount).toBe(0);
+
+    emit({
+      type: 'session_items',
+      items: [
+        { role: 'user', content: 'earlier question' },
+        {
+          role: 'assistant',
+          content: 'earlier answer',
+          timestamp_utc: '2026-09-16T10:00:00Z',
+        },
+      ],
+    });
+    await waitFor(() => expect(lastFrame()).toContain('earlier question'));
+    expect(lastFrame()).toContain('earlier answer');
+    expect(turns()).toHaveLength(0);
+  });
+
+  it('keeps independent runtime channels and snapshots the original when switching back', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    const firstChannel = sentChannels[sent.findIndex(message => message.type === 'open_session')];
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'second', title: 'Second runtime' }] });
+    await waitFor(() => expect(lastFrame()).toContain('Second runtime'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter(message => message.type === 'open_session')).toHaveLength(2));
+    await waitForReady(lastFrame);
+    const secondIndex = sent.findIndex(message => message.type === 'open_session' && message.session_id === 'second');
+    const secondChannel = sentChannels[secondIndex];
+    expect(secondChannel).not.toBe(firstChannel);
+    emit({ type: 'assistant_delta', turn_id: 'background', text: 'hidden first session', model_call_index: 1 }, firstChannel);
+    await wait(30);
+    expect(lastFrame()).not.toContain('hidden first session');
+
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'sess-1234', title: 'Original runtime' }] });
+    await waitFor(() => expect(lastFrame()).toContain('Original runtime'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.some(message => message.type === 'session_snapshot')).toBe(true));
+    await waitForReady(lastFrame);
+    const snapshotIndex = sent.findIndex(message => message.type === 'session_snapshot');
+    expect(sentChannels[snapshotIndex]).toBe(firstChannel);
+    expect(sent.filter(message => message.type === 'open_session')).toHaveLength(2);
+    expect(closedChannels).toEqual([]);
+    emit({ type: 'assistant_delta', turn_id: 'background', text: 'hidden second session', model_call_index: 1 }, secondChannel);
+    await typeDraft(stdin, lastFrame, 'continue original runtime');
+    stdin.write('\r');
+    await waitFor(() => expect(turns()).toHaveLength(1));
+    expect(sentChannels[sent.findIndex(message => message.type === 'user_turn')]).toBe(firstChannel);
+    expect(lastFrame()).not.toContain('hidden second session');
+    expect(bridgeCount).toBe(1);
+    unmount();
+    expect(shutdownCount).toBe(1);
+  });
+
+  it('opens a fresh workspace session, chats immediately, then resumes a session there', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({ type: 'session_items', items: [{ role: 'user', content: 'old workspace history' }] });
+    await waitFor(() => expect(lastFrame()).toContain('old workspace history'));
+    await typeDraft(stdin, lastFrame, '/workspaces');
+    stdin.write('\r');
+    await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
+    emit({ type: 'workspaces_listed', workspaces: ['/w', '/next'] });
+    await waitFor(() => expect(lastFrame()).toContain('❯ /w'));
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ /next'));
+    autoReady = false;
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
+    expect(sent.filter((m) => m.type === 'open_session')[1]).toEqual({
+      type: 'open_session', workspace: '/next', session_id: null,
+    });
+    expect(lastFrame()).toContain('old workspace history');
+
+    await typeDraft(stdin, lastFrame, 'hello new workspace');
+    stdin.write('\r');
+    await wait(30);
+    expect(turns()).toHaveLength(0);
+    emit({
+      type: 'session_ready', protocol_version: 3, session_id: 'fresh', workspace: '/next',
+      provider: 'test', model: 'test/model', resumed: false, message_count: 0,
+      permission_preset: 'ask_for_approval',
+    });
+    await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
+    await waitFor(() => expect(lastFrame()).not.toContain('old workspace history'));
+    stdin.write('\r');
+    await wait(30);
+    expect(turns()).toHaveLength(0);
+    const snapshot = {
+      type: 'runtime_state' as const, phase: 'inactive' as const, turn_id: null,
+      provider: 'test', workspace: '/next', permission_preset: 'ask_for_approval' as const,
+      context_window: null, cache_usage: null, jobs: [], approval: null, question: null, plan: null,
+    };
+    emit(snapshot);
+    await waitFor(() => expect(lastFrame()).not.toContain('opening session…'));
+    stdin.write('\r');
+    await waitFor(() => expect(turns()).toHaveLength(1));
+    expect(turns()[0].text).toBe('hello new workspace');
+
+    emit(snapshot);
+    emit({ type: 'turn_completed', turn_id: turns()[0].turn_id, usage: null });
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(sent.some((m) => m.type === 'list_sessions')).toBe(true));
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'next-history', title: 'Next history' }] });
+    await waitFor(() => expect(lastFrame()).toContain('Next history'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(3));
+    expect(sent.filter((m) => m.type === 'open_session')[2]).toEqual({
+      type: 'open_session', workspace: '/next', session_id: 'next-history',
+    });
+    expect(sent.some((m) => m.type === 'workspace_set')).toBe(false);
+    expect(bridgeCount).toBe(1);
+    expect(shutdownCount).toBe(0);
+    unmount();
+  });
+
+  it('can close an empty workspace list without changing the session', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, '/workspaces');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Workspaces'));
+    emit({ type: 'workspaces_listed', workspaces: [] });
+    await waitFor(() => expect(lastFrame()).toContain('No workspaces with conversation history.'));
+    stdin.write('\r');
+    await wait(30);
+    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
+    stdin.write('\u001b');
+    await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
+    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
+    unmount();
+  });
+
+  it('starts new sessions on repeated selection of the same Windows workspace', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    for (let count = 2; count <= 3; count += 1) {
+      await typeDraft(stdin, lastFrame, '/workspaces');
+      stdin.write('\r');
+      await waitFor(() => expect(lastFrame()).toContain('Workspaces'));
+      emit({ type: 'workspaces_listed', workspaces: ['F:\\项目'] });
+      await waitFor(() => expect(lastFrame()).toContain('❯ F:\\项目'));
+      stdin.write('\r');
+      await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(count));
+      expect(sent.filter((m) => m.type === 'open_session').at(-1)).toEqual({
+        type: 'open_session', workspace: 'F:/项目', session_id: null,
+      });
+      await waitFor(() => expect(lastFrame()).toContain('RADE · F:/项目'));
+    }
+    expect(bridgeCount).toBe(1);
+    unmount();
+  });
+
+  it('returns to the workspace picker after a failed workspace open', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'session_open_failed', session_id: null,
+      error: { type: 'ValueError', message: 'workspace must be an existing directory: /deleted' },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('workspace must be an existing directory'));
+    expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true);
+    emit({ type: 'workspaces_listed', workspaces: ['/w'] });
+    await waitFor(() => expect(lastFrame()).toContain('❯ /w'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
+    await waitForReady(lastFrame);
+    unmount();
+  });
+
+  it('can choose a workspace instead of retrying an occupied session', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'session_open_failed', session_id: 'occupied',
+      error: { type: 'SessionInUseError', message: 'occupied' },
+    });
+    await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
+    stdin.write('\u001b');
+    await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
+    await typeDraft(stdin, lastFrame, '/workspaces');
+    stdin.write('\r');
+    await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
+    emit({ type: 'workspaces_listed', workspaces: ['/next'] });
+    await waitFor(() => expect(lastFrame()).toContain('❯ /next'));
+    stdin.write('\r');
+    await waitForReady(lastFrame);
+    expect(sent.filter((m) => m.type === 'open_session').at(-1)).toMatchObject({
+      workspace: '/next', session_id: null,
+    });
+    unmount();
+  });
+
+  it.each(['/sessions', '/workspaces'])('keeps %s from switching during a turn', async (command) => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({ type: 'assistant_delta', turn_id: 't1', text: 'working', model_call_index: 1 });
+    await waitFor(() => expect(lastFrame()).toContain('working'));
+    await typeDraft(stdin, lastFrame, command);
+    stdin.write('\r');
+    await wait(30);
+    expect(sent.some((m) => m.type === 'list_sessions' || m.type === 'list_workspaces')).toBe(false);
+    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
+    expect(lastFrame()).toContain(command);
+    unmount();
+  });
+
+  it('continues the original session after selecting an occupied GUI session and pressing Escape', async () => {
+    const { stdin, lastFrame, unmount } = renderApp();
+    await waitForReady(lastFrame);
+    emit({ type: 'session_items', items: [{ role: 'user', content: 'original conversation' }] });
+    await waitFor(() => expect(lastFrame()).toContain('original conversation'));
+    const snapshot = {
+      type: 'runtime_state' as const, phase: 'idle' as const, turn_id: null,
+      provider: 'test', workspace: '/w', permission_preset: 'ask_for_approval' as const,
+      context_window: null, cache_usage: null, jobs: [], approval: null, question: null, plan: null,
+    };
+    autoReady = false;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await typeDraft(stdin, lastFrame, '/sessions');
+      stdin.write('\r');
+      await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+      emit({ type: 'sessions_listed', sessions: [{ session_id: 'gui-session', title: 'Open in GUI' }] });
+      await waitFor(() => expect(lastFrame()).toContain('Open in GUI'));
+      stdin.write('\r');
+      await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(attempt + 1));
+      // Let the picker close before the failure reopens it, so Escape is not
+      // delivered to the handler of the previous frame.
+      await waitFor(() => expect(lastFrame()).not.toContain('↑/↓ select'));
+      emit({
+        type: 'session_open_failed', session_id: 'gui-session',
+        error: { type: 'SessionInUseError', message: 'occupied' },
+      });
+      await waitFor(() => expect(lastFrame()).toContain('↑/↓ select'));
+      expect(lastFrame()).toContain('in use in another window');
+      expect(lastFrame()).toContain('original conversation');
+      stdin.write('\u001b');
+      await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
+      await typeDraft(stdin, lastFrame, `continue original ${attempt}`);
+      stdin.write('\r');
+      await waitFor(() => expect(turns()).toHaveLength(attempt));
+      expect(turns().at(-1).text).toBe(`continue original ${attempt}`);
+      expect(sentChannels[sent.lastIndexOf(turns().at(-1))]).toBe('session-1');
+      emit(snapshot);
+      emit({ type: 'turn_completed', turn_id: turns().at(-1).turn_id, usage: null });
+      await waitForReady(lastFrame);
+    }
+    expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(1);
+    expect(bridgeCount).toBe(1);
+    expect(shutdownCount).toBe(0);
+    unmount();
+  });
+
+  it('replays a long conversation without walking into the render limit', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    emit({
+      type: 'sessions_listed',
+      sessions: [{ session_id: 'older', title: 'a long conversation' }],
+    });
+    await waitFor(() => expect(lastFrame()).toContain('a long conversation'));
+    stdin.write('\r');
+    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
+
+    // The whole conversation arrives in one message, so the transcript has
+    // to commit it in one step: committing item by item from a single
+    // update exhausts React's nested-update limit.
+    emit({
+      type: 'session_items',
+      items: Array.from({ length: 60 }, (_, index) => ({
+        role: index % 2 === 0 ? 'user' : 'assistant',
+        content: `replayed line ${index + 1}`,
+      })),
+    });
+
+    await waitFor(() => expect(lastFrame()).toContain('replayed line 60'));
+    expect(lastFrame()).toContain('ask anything…');
+  });
+
+  it('closes the session picker on escape without switching', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    await typeDraft(stdin, lastFrame, '/sessions');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+
+    stdin.write('\u001b');
+    await waitFor(() => expect(lastFrame()).not.toContain('Loading…'));
+    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
+  });
+
+  it('sends steering while the agent is busy', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    await typeDraft(stdin, lastFrame, 'first');
+    stdin.write('\r');
+    await waitFor(() => expect(turns()).toHaveLength(1));
+
+    await typeDraft(stdin, lastFrame, 'second');
+    stdin.write('\r');
+    // The draft clears immediately and the message targets the active turn.
+    await waitFor(() => expect(lastFrame()).not.toContain('second'));
+    expect(turns()).toHaveLength(1);
+    await waitFor(() => expect(steers()).toHaveLength(1));
+    expect(steers()[0]).toMatchObject({ turn_id: turns()[0].turn_id, text: 'second' });
+  });
+
+  it('keeps the input above the one-line status when a turn starts running', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    await typeDraft(stdin, lastFrame, 'run task');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
+
+    const inputLine = lineContaining(lastFrame(), 'steer the current turn…');
+    const statusLine = lineContaining(lastFrame(), 'test/model');
+    expect(statusLine).toBe(inputLine + 2);
+    expect((lastFrame() ?? '').split('\n')[statusLine]).toContain('esc to cancel');
+  });
+
+  it('defaults to allow and confirms with enter', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestApproval('ls -la');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
+
+    stdin.write('\r');
+    await waitFor(() =>
+      expect(approvalResponse()).toMatchObject({ request_id: 't1:1', approved: true }),
+    );
+  });
+
+  it('denies after moving the selection with an arrow key', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestApproval('rm -rf /');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
+
+    stdin.write('\u001b[C'); // right arrow
+    await waitFor(() => expect(lastFrame()).toContain('❯ Deny'));
+
+    stdin.write('\r');
+    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: false }));
+  });
+
+  it('toggles back to allow with the left arrow', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestApproval('ls -la');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
+
+    stdin.write('\u001b[C'); // right arrow
+    await waitFor(() => expect(lastFrame()).toContain('❯ Deny'));
+    stdin.write('\u001b[D'); // left arrow
+    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
+
+    stdin.write('\r');
+    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: true }));
+  });
+
+  it('denies the command when escape is pressed', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestApproval('ls -la');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
+
+    stdin.write('\u001b');
+    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: false }));
+  });
+
+  it('selects and returns a question option', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestQuestion(false);
+    await waitFor(() => expect(lastFrame()).toContain('❯ SQLite'));
+
+    stdin.write('\u001b[A');
+    await waitFor(() => expect(lastFrame()).toContain('❯ Memory'));
+    stdin.write('\r');
+    await waitFor(() => expect(questionResponse()).toMatchObject({ option_id: 'memory' }));
+  });
+
+  it('accepts a free-text question answer', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    requestQuestion(true);
+    await waitFor(() => expect(lastFrame()).toContain('Which cache?'));
+
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ 其他答案'));
+    await typeDraft(stdin, lastFrame, 'Redis');
+    stdin.write('\r');
+    await waitFor(() => expect(questionResponse()).toMatchObject({ text: 'Redis' }));
+  });
+
+  it('cancels the active turn on escape', async () => {
+    const { stdin, lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    await typeDraft(stdin, lastFrame, 'long task');
+    stdin.write('\r');
+    // Wait for the busy status: escape only cancels once the turn is running.
+    await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
+
+    stdin.write('\u001b');
+    await waitFor(() => expect(sent).toContainEqual({ type: '__cancel', turn_id: 'turn-1' }));
+  });
+
+  it('renders streamed reasoning before the answer', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'reasoning_delta',
+      turn_id: 't1',
+      text: 'weighing ',
+      model_call_index: 1,
+    });
+    emit({
+      type: 'reasoning_delta',
+      turn_id: 't1',
+      text: 'the options',
+      model_call_index: 1,
+    });
+    // Both deltas land in one live entry, so the frame carries the whole text.
+    await waitFor(() => expect(lastFrame()).toContain('weighing the options'));
+  });
+
+  it('grows model output downward from the top of the TUI', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'assistant_delta',
+      turn_id: 't1',
+      text: 'first output',
+      model_call_index: 1,
+    });
+    await waitFor(() => expect(lastFrame()).toContain('first output'));
+
+    expect(lineContaining(lastFrame(), 'first output')).toBeLessThan(3);
+    expect(lineContaining(lastFrame(), 'first output')).toBeLessThan(
+      lineContaining(lastFrame(), 'steer the current turn…'),
+    );
+  });
+
+  it('keeps short multiline output in the viewport until it fills downward', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'assistant_delta',
+      turn_id: 't1',
+      text: 'line one\nline two\nline three\nline four\nline five',
+      model_call_index: 1,
+    });
+    await waitFor(() => expect(lastFrame()).toContain('line five'));
+
+    const first = lineContaining(lastFrame(), 'line one');
+    const fifth = lineContaining(lastFrame(), 'line five');
+    const input = lineContaining(lastFrame(), 'steer the current turn…');
+    expect(first).toBeLessThan(3);
+    expect(fifth).toBe(first + 4);
+    expect(input).toBeGreaterThan(fifth + 1);
+  });
+
+  it('lets long model output grow through the terminal stream', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'assistant_delta',
+      turn_id: 't1',
+      text: Array.from({ length: 30 }, (_, index) => `output line ${index + 1}`).join('\n'),
+      model_call_index: 1,
+    });
+
+    await waitFor(() => {
+      const frame = lastFrame() ?? '';
+      expect(frame).toContain('output line 1');
+      expect(frame).toContain('output line 30');
+      expect(frame).toContain('steer the current turn…');
+      expect(frame).toContain('test/model');
+    });
+  });
+
+  it('keeps completed output in the transcript viewport', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'assistant_delta',
+      turn_id: 't1',
+      text: 'completed answer',
+      model_call_index: 1,
+    });
+    emit({
+      type: 'assistant_message',
+      turn_id: 't1',
+      content: 'completed answer',
+      timestamp_utc: '2026-09-15T12:00:00Z',
+    });
+    emit({
+      type: 'runtime_state', cache_usage: null,
+      phase: 'idle',
+      turn_id: null,
+      provider: 'test',
+      permission_preset: 'ask_for_approval',
+      context_window: null,
+      jobs: [],
+      approval: null,
+      question: null,
+      plan: null,
+    });
+    emit({ type: 'turn_completed', turn_id: 't1', usage: null });
+
+    await waitFor(() => {
+      expect(lastFrame()).toContain('completed answer');
+      expect(lastFrame()).toContain('test/model');
+    });
+  });
+
+  it('renders streamed text and the approval prompt', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+    emit({
+      type: 'assistant_delta',
+      turn_id: 't1',
+      text: 'partial answer',
+      model_call_index: 1,
+    });
+    await waitFor(() => expect(lastFrame()).toContain('partial answer'));
+
+    requestApproval('echo hi');
+    await waitFor(() => {
+      expect(lastFrame()).toContain('Shell command requires approval');
+      expect(lastFrame()).toContain('echo hi');
+    });
+  });
+
+  it('renders approval above the input and model status', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    requestApproval('echo hi');
+    await waitFor(() => expect(lastFrame()).toContain('Shell command requires approval'));
+
+    const approvalLine = lineContaining(lastFrame(), 'Shell command requires approval');
+    const inputLine = lineContaining(lastFrame(), 'steer the current turn…');
+    const modelLine = lineContaining(lastFrame(), 'test/model');
+    expect(approvalLine).toBeLessThan(inputLine);
+    expect(modelLine).toBe(inputLine + 2);
+  });
+
+  it('labels computer approvals distinctly', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    requestApproval("computer_action({'action': 'click'})", 'computer');
+    await waitFor(() => expect(lastFrame()).toContain('Computer interaction requires approval'));
+  });
+
+  it('labels file approvals and sends the user decision', async () => {
+    const { lastFrame, stdin } = renderApp();
+    await waitForReady(lastFrame);
+
+    requestApproval('*** Update File: notes.txt', 'file');
+    await waitFor(() => expect(lastFrame()).toContain('File change requires approval'));
+    expect(lastFrame()).toContain('*** Update File: notes.txt');
+    stdin.write('\r');
+    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: true }));
+  });
+
+  it('labels MCP approvals distinctly', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    requestApproval('mcp__server__tool({})', 'mcp');
+    await waitFor(() => expect(lastFrame()).toContain('MCP tool call requires approval'));
+  });
+
+  it('uses one status line before and after startup', async () => {
+    autoReady = false;
+    const { lastFrame } = renderApp();
+    await waitFor(() => expect(lastFrame()).toContain('opening session…'));
+
+    expect(
+      lineContaining(lastFrame(), 'opening session…') -
+        lineContaining(lastFrame(), 'steer the current turn…'),
+    ).toBe(2);
+
+    emit({
+      type: 'session_ready', protocol_version: 3,
+      session_id: 'sess-1234',
+      workspace: '/w',
+      provider: 'test',
+      model: 'test/model',
+      resumed: false,
+      message_count: 0,
+      permission_preset: 'ask_for_approval',
+    });
+    emit({
+      type: 'runtime_state', cache_usage: null,
+      phase: 'inactive',
+      turn_id: null,
+      provider: 'test',
+      permission_preset: 'ask_for_approval',
+      context_window: null,
+      jobs: [],
+      approval: null,
+      question: null,
+      plan: null,
+    });
+    await waitForReady(lastFrame);
+
+    expect(
+      lineContaining(lastFrame(), 'test/model') -
+        lineContaining(lastFrame(), 'ask anything…'),
+    ).toBe(2);
+  });
+
+  it('updates a later tool when it completes before an earlier call', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'tool_call',
+      turn_id: 't1',
+      tool_call: { id: 'call-a', name: 'subagent', arguments: { task: 'A' } },
+      tool_index: 1,
+      tool_count: 3,
+    });
+    emit({
+      type: 'tool_call',
+      turn_id: 't1',
+      tool_call: { id: 'call-b', name: 'subagent', arguments: { task: 'B' } },
+      tool_index: 2,
+      tool_count: 3,
+    });
+    emit({
+      type: 'tool_call',
+      turn_id: 't1',
+      tool_call: { id: 'call-c', name: 'subagent', arguments: { task: 'C' } },
+      tool_index: 3,
+      tool_count: 3,
+    });
+    await waitFor(() => {
+      expect(lastFrame()).toContain('[1/3]');
+      expect(lastFrame()).toContain('[2/3]');
+      expect(lastFrame()).toContain('[3/3]');
+    });
+
+    emit({
+      type: 'tool_result',
+      turn_id: 't1',
+      tool_call_id: 'call-b',
+      name: 'subagent',
+      ok: true,
+      error: null,
+      tool_index: 2,
+      tool_count: 3,
+    });
+
+    await waitFor(() => {
+      const frame = lastFrame() ?? '';
+      expect(frame).toContain('[1/3]');
+      expect(frame).toContain('subagent task=A');
+      expect(frame).toContain('[2/3] ✓ subagent task=B');
+      expect(frame).toContain('[3/3]');
+      expect(frame).toContain('subagent task=C');
+    });
+  });
+
+  it('shows the index for a single tool call', async () => {
+    const { lastFrame } = renderApp();
+    await waitForReady(lastFrame);
+
+    emit({
+      type: 'tool_call',
+      turn_id: 't1',
+      tool_call: { id: 'call-1', name: 'shell', arguments: { command: 'ls' } },
+      tool_index: 1,
+      tool_count: 1,
+    });
+
+    await waitFor(() => expect(lastFrame()).toContain('[1/1]'));
+  });
+});

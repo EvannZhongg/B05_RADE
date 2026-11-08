@@ -1,0 +1,173 @@
+<div align="center">
+  <img src="docs/RADE-banner.png" alt="RADE" width="560">
+  <br><br>
+  <a href="README.md">English</a> &middot; <b>简体中文</b>
+</div>
+
+RADE 是一个开源的轻量级个人 Agent 应用。它提供本地 Workspace 操作、人工授权、会话持久化、上下文管理、长期记忆、计划、子 Agent、定时任务，以及 Skill、Plugin、MCP 扩展能力，并提供 TUI、GUI 和飞书移动端接入。
+
+```text
+TUI ────────────────── Bridge ── agent_runtime ── agent_core
+RADE-server（常驻宿主）
+├─ HTTP / WebSocket（可选）── GUI
+├─ IM（飞书）
+└─ Session Host ── Bridge ── agent_runtime ── agent_core
+```
+
+- `agent_core` 提供与前端无关的 Agent 机制。
+- `agent_runtime` 读取应用配置并把 Core 组装成可运行实例。
+- Bridge 作为独立进程，是前端驱动 Runtime 的唯一通道。
+- TUI、GUI 与移动端宿主通过 Bridge 协议共享执行状态和交互语义；Bridge 子进程通道使用 newline-delimited JSON。
+
+## 主要能力
+
+- **受控本地执行**：Session 支持 `Ask for approval`、`Workspace Access` 和 `Full Access` 三种权限 preset；Shell 根据 scope 进入 Workspace 沙箱或宿主环境，文件 Tool 始终限制在当前 Workspace。
+- **桌面自动化**：主 Agent 可通过 `computer_screenshot` 与 `computer_action` 观察并操作可见桌面，覆盖截图、点击、拖拽、滚动、按键与文本输入；两项 Tool 默认开启且只对主 Agent 可见，调用时按当前权限 preset 确认。动作默认返回截图，可通过 `screenshot: false` 跳过。Windows 还支持裁剪窗口范围内的可见画面和窗口相对坐标。执行窗口动作时，将最近一次截图路径作为 `observation`，并使用该窗口的 `hwnd:<十进制>` 作为目标。
+- **Web 检索**：`web_fetch` 直接或通过 DeepSeek 读取公开网页；启用 `web_search` 后默认使用 DuckDuckGo 检索，也可切换为 Exa 或 DeepSeek。
+- **完整 Agent Loop**：支持流式响应、Tool 批次、上下文压缩、steer、取消、计划和后台 Job。
+- **可恢复 Session**：对话和执行事件写入 append-only JSONL Journal，TUI 与 GUI 可读取同一类 Session。
+- **记忆与定时任务**：维护全局及 Workspace 长期记忆，并可创建 one-shot、interval 和 cron 任务。
+- **模型与媒体**：OpenAI-compatible 端点通过原生 OpenAI SDK 接入，其他路由及图片生成使用 LiteLLM；可为主 Agent、视觉、图片生成、辅助模型调用及不同子 Agent 角色独立路由 Provider。
+- **扩展系统**：支持 standalone Skill、Plugin 提供的 Skill / Agent / MCP / [Hook](docs/plugin-hooks.md) 组件，以及独立 MCP Server。
+- **多种前端**：TUI 适合终端工作流；GUI 提供多会话、附件、文件树、设置、记忆和定时任务管理；飞书支持工作区与会话选择、文本流式对话、提问和审批卡片。
+
+## 快速开始
+
+环境要求：Python >= 3.11、Node.js >= 22 和 [uv](https://docs.astral.sh/uv/)。
+
+```bash
+git clone https://github.com/EvannZhongg/B05_RADE.git
+cd B05_RADE
+npm install
+npm run build
+uv tool install --editable ".[server]"
+```
+
+需要通过项目环境使用 GUI 的 HTTP / WebSocket 接入时，安装 server extra：
+
+```bash
+uv sync --extra server
+```
+
+先在项目根目录启动 TUI。
+
+```bash
+RADE
+```
+
+首次启动会在项目根目录初始化 `.RADE/`。退出 TUI 后，创建 `.RADE/.env` 并填入默认 Provider 所需的环境变量，例如：
+
+```dotenv
+OPENAI_KEY=your-api-key
+```
+
+配置完成后重新启动 TUI：
+
+```bash
+RADE
+```
+
+或启动 GUI / IM 共享服务：
+
+```bash
+RADE-server
+```
+
+GUI 默认监听 <http://127.0.0.1:8737>。
+
+飞书移动端支持工作区与会话选择、普通文本流式对话、提问和审批卡片；配置与启动见 [移动端接入](interfaces/mobile/README.md)。`RADE-server` 统一管理并列运行的 HTTP 与 IM 适配器，共享活动 Session 和 Bridge。`RADE-server --no-http` 不加载 HTTP 依赖，也不监听本地端口。同一配置目录通过进程锁保证单实例，重复启动会明确报错。
+
+## 模块文档
+
+第三方前端可通过已安装的 `RADE-bridge` 命令使用
+[公开 stdio 协议](docs/bridge-protocol.md)，或使用轻量的
+[`@rade/client` TypeScript SDK](interfaces/client/README.md)。
+
+公开契约：
+
+| 文档 | 负责范围 |
+| --- | --- |
+| [`docs/bridge-protocol`](docs/bridge-protocol.md) | 第三方客户端的 stdio 传输、命令、事件、Runtime phase、transcript 检查点与错误规则 |
+| [`docs/bridge-api-design`](docs/bridge-api-design.md) | 哪些消息属于公开或内部、各自的所有者以及版本决策 |
+| [`docs/plugin-hooks`](docs/plugin-hooks.md) | 命令 Hook 的声明、检查点、调用载荷与决策 |
+| [`docs/plugin-interop`](docs/plugin-interop.md) | Plugin 组件的装配、静态校验、错误隔离与重新装配 |
+
+Runtime 层：
+
+| 文档 | 负责范围 |
+| --- | --- |
+| [`agent_core`](agent_core/README.md) | Agent Loop、上下文、Session、Tool、执行、权限、记忆、计划、Job、Scheduler、Provider、Skill 与 MCP 机制 |
+| [`agent_runtime`](agent_runtime/README.md) | 配置、Prompt、Plugin 发现、Runtime 装配、Execution Plane、Session 绑定和 Turn 入口 |
+
+前端与 SDK：
+
+| 文档 | 负责范围 |
+| --- | --- |
+| [`interfaces`](interfaces/README.md) | 共享宿主模块、启动入口、Bridge 进程与通道附着，以及允许复用 Core 的边界 |
+| [`interfaces/bridge`](interfaces/bridge/README.md) | 独立 Bridge 进程、协议路由、事件转换和前端交互转发 |
+| [`interfaces/protocol`](interfaces/protocol/README.md) | TypeScript 协议包：导出面、构建与改动清单 |
+| [`interfaces/client`](interfaces/client/README.md) | 公开 Node/TypeScript stdio 客户端、进程生命周期及集成示例 |
+| [`interfaces/tui`](interfaces/tui/README.md) | Ink 终端界面、命令、输入状态和 Bridge 子进程接入 |
+| [`interfaces/gui`](interfaces/gui/README.md) | FastAPI 服务、React 界面、多会话连接、HTTP / WebSocket API 与媒体访问 |
+| [`interfaces/mobile`](interfaces/mobile/README.md) | 飞书收发、工作区与会话选择、流式文本、提问、审批与共享宿主配置 |
+
+## 配置与数据
+
+`agent_runtime` 首次启动时创建配置目录，并负责读取与更新其中的应用配置：
+
+| 路径 | 内容 |
+| --- | --- |
+| `.RADE/provider_config.json` | Provider、模型和角色路由（含可选的 `fast_model`） |
+| `.RADE/agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Workspace Instructions 与 scratch Workspace 设置 |
+| `.RADE/im_channels.json` | IM 通道、凭证与飞书授权用户 |
+| `.RADE/tool_config.json` | Web Search、Web Fetch 的 provider 选择与 API key |
+| `.RADE/.env` | 配置引用的密钥和环境变量 |
+| `.RADE/prompts/` | 主 Agent、子 Agent、压缩与记忆 Prompt |
+| `.RADE/skills/` | standalone Skill |
+| `.RADE/plugins/` | Plugin capability package |
+| `.RADE/AGENTS.md` | 项目级 Workspace Instruction |
+| `.RADE/MEMORY.md` | 全局长期记忆 |
+| `.RADE/sessions/` | Session Journal、Workspace 记忆、Artifact、子 Agent 记录与 Session 级辅助调用用量日志 |
+| `.RADE/schedule.jsonl` | 定时任务及运行记录 |
+| `<workspace>/.RADE/attachments/` | 上传附件和 Agent 生成的图片 |
+
+默认配置与内置资源位于 [`agent_runtime/defaults/`](agent_runtime/defaults)。具体装配方式见 [`agent_runtime/README.md`](agent_runtime/README.md)。
+
+## 开发与测试
+
+Python 测试使用 Mock Provider，不需要真实 API Key：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[gui,test]"
+python -m pytest --durations=20
+```
+
+在 Windows 上改用 `.venv\Scripts\Activate.ps1` 激活环境。
+
+Pytest 默认用 4 个独立进程按测试类并行运行；串行调试使用 `-n 0`，资源较少时使用 `-n 2`。完整测试包含安装包验证及真实本地 MCP/沙箱进程；日常迭代可用 `--ignore=tests/test_bridge_client.py` 跳过安装包验证。独立插件测试包的运行方式见 [docs/plugin-interop.md](docs/plugin-interop.md)。
+
+server extra 包含 FastAPI、Uvicorn、WebSocket 后端和 multipart 支持；Windows、macOS 与 Linux 使用相同的安装方式。TUI 与 `RADE-server --no-http` 无需安装该可选依赖。
+
+前端构建、类型检查和测试：
+
+```bash
+npm run build
+npm run typecheck
+npm test
+```
+
+Linux 沙箱集成测试需要可用的 bubblewrap 和 user namespace；未满足运行条件时测试会明确 skip。
+
+Windows 上 Shell Tool 使用 PowerShell 7，因此需要另外安装 PowerShell 7。
+
+## Contributors
+
+- [AKArrok](https://github.com/AKArrok)：提出并验证 Session Journal 尾记录追加问题（[#2](https://github.com/EvannZhongg/Nosis/pull/2)）。
+- [George Pickett](https://github.com/georgeatparallel)：贡献 Parallel Search MCP 集成（[#4](https://github.com/EvannZhongg/Nosis/pull/4)）。
+- [Pocket99](https://github.com/Pocket99)：贡献最初的 GUI，含会话、Workspace 浏览与模型切换（[#1](https://github.com/EvannZhongg/Nosis/pull/1)）。
+
+## 许可
+
+[MIT](LICENSE)

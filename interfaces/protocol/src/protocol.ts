@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 export type JSONValue =
   | string
@@ -41,7 +41,7 @@ export type ProtocolError = {
   details?: { readonly [key: string]: JSONValue };
 };
 
-export type ApprovalKind = 'shell' | 'file' | 'computer' | 'mcp';
+export type ApprovalKind = 'shell' | 'file' | 'mcp';
 
 export type RuntimeFailure = ProtocolError & {
   details: { readonly [key: string]: JSONValue };
@@ -220,7 +220,7 @@ export type Incoming = (
   | RuntimeState
   | {
       type: 'session_ready';
-      protocol_version: 3;
+      protocol_version: typeof PROTOCOL_VERSION;
       session_id: string;
       workspace: string;
       provider: string;
@@ -268,7 +268,6 @@ export type Incoming = (
   | {
       type: 'tool_media';
       turn_id: string;
-      present_to_user: boolean;
       attachments: UserAttachment[];
     }
   | ({

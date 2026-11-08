@@ -32,34 +32,23 @@ def child(args):
     config.default_config_directory = lambda: args.config
     config.initialize_config_directory(args.config)
 
-    original = config.ModelConfig.provider_class.fget
-    instrumented = False
-    bridge = None
+    import httpx
+    import agent_core.providers.openai_provider as module
 
-    def provider_class(model_config):
-        nonlocal instrumented
-        cls = original(model_config)
-        if cls.__name__ == "OpenAIProvider" and not instrumented:
-            import httpx
-            import agent_core.providers.openai_provider as module
-            native_client = module.OpenAI
+    native_client = module.OpenAI
 
-            def request_started(request):
-                marker = re.search(r"RADE-benchmark-[a-zA-Z0-9_-]+", request.content.decode())
-                if marker:
-                    bridge.emit(type="benchmark_request", marker=marker.group(), at=time.perf_counter())
+    def request_started(request):
+        marker = re.search(r"RADE-benchmark-[a-zA-Z0-9_-]+", request.content.decode())
+        if marker:
+            bridge.emit(type="benchmark_request", marker=marker.group(), at=time.perf_counter())
 
-            def make_client(**kwargs):
-                if "http_client" in kwargs:
-                    kwargs["http_client"].event_hooks["request"].append(request_started)
-                    return native_client(**kwargs)
-                return native_client(**kwargs, http_client=httpx.Client(event_hooks={"request": [request_started]}))
+    def make_client(**kwargs):
+        if "http_client" in kwargs:
+            kwargs["http_client"].event_hooks["request"].append(request_started)
+            return native_client(**kwargs)
+        return native_client(**kwargs, http_client=httpx.Client(event_hooks={"request": [request_started]}))
 
-            module.OpenAI = make_client
-            instrumented = True
-        return cls
-
-    config.ModelConfig.provider_class = property(provider_class)
+    module.OpenAI = make_client
     if args.multiplex:
         from interfaces.bridge.server import BridgeServer
         bridge = BridgeServer(sys.stdin, output, config_directory=args.config)
@@ -184,16 +173,15 @@ def benchmark(args):
             workspace = root / mode / "workspace"
             workspace.mkdir(parents=True)
             config.mkdir(exist_ok=True)
-            shutil.copyfile(ROOT / "agent_runtime/defaults/agent_config.json", config / "agent_config.json")
+            shutil.copyfile(code / "agent_runtime/defaults/agent_config.json", config / "agent_config.json")
             if args.assembly_only:
                 workspace = ROOT
                 agent = json.loads((args.config / "agent_config.json").read_text(encoding="utf-8"))
                 for name in ("prompts", "plugins", "skills"):
                     if (args.config / name).is_dir():
                         shutil.copytree(args.config / name, config / name, ignore=shutil.ignore_patterns("__pycache__", ".git"))
-                for name in ("AGENTS.md", "tool_config.json"):
-                    if (args.config / name).is_file():
-                        shutil.copyfile(args.config / name, config / name)
+                if (args.config / "AGENTS.md").is_file():
+                    shutil.copyfile(args.config / "AGENTS.md", config / "AGENTS.md")
                 provider_document = original
             else:
                 agent = json.loads((config / "agent_config.json").read_text(encoding="utf-8"))

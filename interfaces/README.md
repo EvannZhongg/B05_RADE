@@ -5,8 +5,7 @@
 ```text
 RADE ── launch.py ── TUI ── Bridge 子进程 ── agent_runtime ── agent_core
 RADE-server ── application_host
-        ├─ gui/      可选 HTTP / WebSocket + React
-        ├─ mobile/   IM 控制器与飞书收发进程
+        ├─ gui/      HTTP / WebSocket + React
         └─ Session Host ── Bridge 子进程 ── agent_runtime ── agent_core
 ```
 
@@ -17,18 +16,18 @@ RADE-server ── application_host
 | 模块 | 职责 |
 | --- | --- |
 | `launch.py` | `RADE` 启动器：初始化配置目录、定位 Node 与 TUI bundle、处理 `--temporary`、以子进程运行 Ink UI |
-| `application_host.py` | 常驻应用宿主：配置目录进程锁、共享 Session Host、并列 HTTP / IM 适配器与整体生命周期 |
+| `application_host.py` | 常驻应用宿主：配置目录进程锁、Session Host 和 HTTP 生命周期 |
 | `bridge_process.py` | 一个前端持有的 Bridge 子进程及其通道收发 |
 | `session_host.py` | 活动 Session 注册表、页面附着与事件续传缓存 |
 | `bridge/`、`protocol/`、`client/` | 协议适配、TS 类型、公开 SDK |
-| `tui/`、`gui/`、`mobile/` | 三个前端的实现 |
+| `tui/`、`gui/` | 两个前端的实现 |
 
 ## 启动入口
 
 | 命令 | 入口 | 进程归属 |
 | --- | --- | --- |
 | `RADE` | `launch.py:main()` | 自行拥有 Bridge 子进程；UI 作为子进程运行并被等待 |
-| `RADE-server` | `application_host.main()` | 常驻应用宿主，拥有共享 Session Host、Bridge、HTTP 与 IM；`--no-http` 仅关闭 HTTP 适配器 |
+| `RADE-server` | `application_host.main()` | GUI 宿主，持有 Session Host、Bridge 和 HTTP 服务 |
 
 `launch.py` 之所以用 `subprocess.call` 等待而不是 `execvp`，是因为 Windows 上 `execvp` 会另起进程并结束自己，终端提示符会先回来并与 UI 争抢控制台输入。它同时通过 `RADE_PYTHON` 把当前解释器交给前端，Bridge 因此运行在拥有 `agent_core` 的那个 Python 环境里。
 
@@ -36,13 +35,11 @@ RADE-server ── application_host
 
 ## 应用宿主与单实例
 
-`run_application_host()` 解析配置目录后，先在该目录的 `server.lock` 上取得非阻塞操作系统文件锁，再初始化配置并启动宿主。同一配置目录的第二个进程明确报错，不启动 Bridge、IM 或 HTTP，也不通过 HTTP 请求识别已有实例。锁随句柄关闭或进程退出释放，锁文件保留；不同配置目录的锁互不影响。
+`run_application_host()` 解析配置目录后，先在该目录的 `server.lock` 上取得非阻塞操作系统文件锁，再初始化配置并启动宿主。同一配置目录的第二个进程明确报错，不启动 Bridge 或 HTTP，也不通过 HTTP 请求识别已有实例。锁随句柄关闭或进程退出释放，锁文件保留；不同配置目录的锁互不影响。
 
-`ApplicationHost` 持有 `JsonlSessionStore`、`SettingsStore` 和 `ActiveSessionRegistry`。它先启动共享 Bridge，再并行运行 HTTP 与 IM 适配器，慢速 IM 连接不阻止 HTTP 启动。适配器启动失败会记录错误并释放自身资源，其余适配器继续运行；最后一个适配器失败时服务报错退出，不自动重试。宿主停止时先等待适配器关闭，再关闭 Session 与 Bridge。
+`ApplicationHost` 持有 `JsonlSessionStore`、`SettingsStore` 和 `ActiveSessionRegistry`。它先启动共享 Bridge，再启动 HTTP 服务。关闭时先停止 HTTP，再关闭活动 Session 和 Bridge。Ctrl+C、SIGTERM 和 Windows Ctrl+Break 由宿主管理。
 
-默认 HTTP 适配器监听 `127.0.0.1:8737`；端口占用只影响该适配器，不影响 IM。HTTP 不参与单实例判断，FastAPI lifespan 不负责启动或关闭共享资源。
-
-`RADE-server --no-http` 不导入 FastAPI、Uvicorn 或 GUI 路由，不需要 `[server]` HTTP 可选依赖，也不监听本地端口。飞书收发使用出站长连接。未启用 IM 通道时不创建收发进程，共享 Bridge 及其 Scheduler 仍保持运行。Ctrl+C、SIGTERM 和 Windows Ctrl+Break 都由宿主管理关闭。
+HTTP 服务默认监听 `127.0.0.1:8737`。FastAPI lifespan 只管理 HTTP 应用，Session 和 Bridge 由宿主关闭。
 
 ## Bridge 进程与通道
 
@@ -54,7 +51,7 @@ RADE-server ── application_host
 
 `ActiveSession` 是生命周期与 WebSocket 无关的运行时通道：它缓存 Bridge 的权威 `runtime_state` 与 transcript 检查点，按 `event_sequence` 支持断线续传，并记录当前控制附着。页面切换或临时断线不会取消 Turn；一个 Session 同时只有一个控制页面，只有显式的 takeover 才替换现有附着。
 
-`ActiveSessionRegistry` 按 Session 保存这些对象，被 GUI 的 `server.py`、`routes/` 和移动端的 `controller.py`、`service.py` 共同复用，不依赖 FastAPI。
+`ActiveSessionRegistry` 按 Session 保存这些对象，供 GUI 的 `server.py` 和路由复用。
 
 ## Core 复用边界
 
@@ -65,4 +62,4 @@ RADE-server ── application_host
 ## 前端文档
 
 - [Bridge](bridge/README.md) · [协议类型](protocol/README.md) · [Node SDK](client/README.md)
-- [TUI](tui/README.md) · [GUI](gui/README.md) · [移动端 / IM](mobile/README.md)
+- [TUI](tui/README.md) · [GUI](gui/README.md)

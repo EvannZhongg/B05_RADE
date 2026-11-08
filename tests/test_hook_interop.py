@@ -1,6 +1,5 @@
 """Plugin hooks assembled by the shared Runtime and exposed through Bridge."""
 
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 import shutil
@@ -8,14 +7,9 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from agent_core import (
-    AgentTurnAction, HostCommandExecutor, JsonlSessionStore,
-    LLMResponse, OneShotTrigger, PermissionPreset, Schedule, ScheduledRun,
-    SchedulerService, ToolCall,
-)
+from agent_core import HostCommandExecutor, LLMResponse, PermissionPreset, ToolCall
 from agent_runtime.plane_manager import ExecutionPlaneManager
 from agent_runtime.plugins import PluginManager
-from agent_runtime.scheduled_runner import ScheduledTurnRunner
 from tests.agent_fixtures import MockProvider
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 from tests.plugin_fixtures import validator
@@ -133,24 +127,6 @@ class HookInteropTest(BridgeTestCase):
         bridge.run_turn({"turn_id": "next", "text": "new work"})
         failures = [message for message in emitted(stdout) if message["type"] == "turn_failed"]
         self.assertEqual(failures[-1]["error"]["type"], "HookRejectedError")
-
-    def test_scheduled_turn_uses_same_hooks_and_records_input_source(self):
-        bridge, _ = self.open()
-        bridge.close()
-        self.main = MockProvider(["scheduled done"])
-        now = datetime.now(timezone.utc)
-        schedule = Schedule("schedule", OneShotTrigger(now), AgentTurnAction("scheduled work"),
-                            str(self.root), "origin", "scheduled-session")
-        store = JsonlSessionStore(self.root / "sessions")
-        store.bind_workspace(schedule.schedule_session_id, self.root)
-        store.set_permission_preset(schedule.schedule_session_id, PermissionPreset.WORKSPACE_ACCESS, self.root)
-        run = ScheduledRun("run", "schedule", "scheduled-session", "scheduled-turn", now)
-        scheduler = SchedulerService(self.root / "schedule.jsonl")
-        self.addCleanup(scheduler.close)
-        ScheduledTurnRunner(self.root, scheduler)(schedule, run)
-        session = store.load("scheduled-session")
-        self.assertEqual(session.turns["scheduled-turn"].status, "completed")
-        self.assertTrue(any(event.payload.get("input", {}).get("source") == "scheduled" for event in session.journal))
 
     def test_session_rebinding_reuses_definitions_without_turn_state(self):
         self.main = MockProvider(["first", "second"])

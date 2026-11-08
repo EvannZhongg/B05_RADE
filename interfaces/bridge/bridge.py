@@ -417,7 +417,6 @@ class Bridge:
                 settings,
                 revision if isinstance(revision, str) else None,
             )
-            self.host.environment.reload()
             self.emit(**settings_snapshot_message(snapshot, request_id))
         except (OSError, ValueError) as error:
             self.emit(**settings_update_failed_message(error, request_id))

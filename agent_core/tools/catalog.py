@@ -173,7 +173,6 @@ class ToolSet:
                 name=call.name,
                 output=output.output,
                 attachments=output.attachments,
-                present_to_user=output.present_to_user,
                 artifact_writer=output.artifact_writer,
                 artifact_cleanup=output.artifact_cleanup,
                 artifact_preview=output.artifact_preview,

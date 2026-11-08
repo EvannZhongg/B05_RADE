@@ -246,9 +246,7 @@ class SettingsStore:
             "routing": {
                 "main_agent": main_agent.get("provider"),
                 "fast_model": fast_model.get("provider") or None,
-                "vision_provider": main_agent.get("vision_provider") or None,
                 "subagent": subagent.get("provider") or None,
-                "subagent_vision_provider": subagent.get("vision_provider") or None,
                 "roles": roles,
             },
             "agent": {
@@ -419,7 +417,6 @@ class SettingsStore:
         elif action == "clear" and old_reference:
             _update_dotenv(self.env_path, old_reference, None)
         _atomic_json(self.provider_path, document)
-        self._environment.reload()
         return self._snapshot()
 
     def save_agent(
@@ -441,8 +438,7 @@ class SettingsStore:
             if not isinstance(payload, dict):
                 raise ValueError("routing settings must be an object")
             allowed = {
-                "main_agent", "fast_model", "vision_provider", "subagent",
-                "subagent_vision_provider", "roles",
+                "main_agent", "fast_model", "subagent", "roles",
             }
             unknown = set(payload) - allowed
             if unknown:
@@ -459,9 +455,7 @@ class SettingsStore:
                 if isinstance(fast_model, dict)
                 else {"provider": payload.get("fast_model") or ""}
             )
-            main["vision_provider"] = payload.get("vision_provider") or ""
             subagent["provider"] = payload.get("subagent") or ""
-            subagent["vision_provider"] = payload.get("subagent_vision_provider") or ""
             roles = payload.get("roles", {})
             if not isinstance(roles, dict):
                 raise ValueError("routing roles must be an object")
@@ -613,36 +607,6 @@ class SettingsStore:
                 if not isinstance(route, dict):
                     raise ValueError(f"config field 'subagent_roles.{role}' must be an object")
                 self._validate_routes(route, providers, f"subagent_roles.{role}")
-            image_generation = document.get("image_generation")
-            if image_generation is not None:
-                if not isinstance(image_generation, dict):
-                    raise ValueError(
-                        "config field 'image_generation' must be an object"
-                    )
-                provider = image_generation.get("provider")
-                model = image_generation.get("model")
-                if not isinstance(provider, str) or provider not in providers:
-                    raise ValueError(
-                        "config field 'image_generation.provider' must name "
-                        "a configured provider"
-                    )
-                if not isinstance(model, str) or not model.strip():
-                    raise ValueError(
-                        "config field 'image_generation.model' must be a "
-                        "non-empty string"
-                    )
-                for field in (
-                    "default_aspect_ratio",
-                    "default_image_size",
-                ):
-                    value = image_generation.get(field)
-                    if value is not None and (
-                        not isinstance(value, str) or not value.strip()
-                    ):
-                        raise ValueError(
-                            f"config field 'image_generation.{field}' must "
-                            "be a non-empty string"
-                        )
         finally:
             path.unlink(missing_ok=True)
 
@@ -668,9 +632,6 @@ class SettingsStore:
         providers: dict[str, object],
         path: str,
     ) -> None:
-        for field in ("provider", "vision_provider"):
-            value = route.get(field)
-            if value in (None, ""):
-                continue
-            if not isinstance(value, str) or value not in providers:
-                raise ValueError(f"config field '{path}.{field}' must name a configured provider")
+        value = route.get("provider")
+        if value not in (None, "") and (not isinstance(value, str) or value not in providers):
+            raise ValueError(f"config field '{path}.provider' must name a configured provider")

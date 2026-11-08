@@ -134,10 +134,6 @@ class ActiveSession:
         )
 
     @property
-    def turn_id(self) -> str | None:
-        return self._pending_turn or self.state.get("turn_id")
-
-    @property
     def failure_pending(self) -> bool:
         return self._failure_pending
 

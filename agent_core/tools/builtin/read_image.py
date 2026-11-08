@@ -13,12 +13,7 @@ MAX_IMAGES_PER_CALL = 4
 
 
 class ReadImageTool(Tool):
-    """Load image files so the model can look at them directly.
-
-    This is the counterpart to ``analyze_image``: it exists only for a
-    model that accepts image input, and hands over the pixels rather
-    than a second model's description of them.
-    """
+    """Load image files into a model that supports image input."""
 
     name = "read_image"
 

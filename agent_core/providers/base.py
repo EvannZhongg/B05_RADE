@@ -22,9 +22,8 @@ from agent_core.media import (
 )
 from agent_core.path_utils import path_for_comparison
 from agent_core.session import Message
-from agent_core.tools import AnalyzeImageTool, ToolDefinition
+from agent_core.tools import ToolDefinition
 
-from ._utils import get_field
 from .image_limits import image_edge_limit
 from .reasoning import normalize_semantic_effort, validate_reasoning_parameters
 
@@ -286,10 +285,6 @@ def _request_messages(
                     provider is None
                     or "image" in provider.capabilities.input_modalities
                 ),
-                # Only point the model at the tool when it actually has it.
-                can_analyze_images=any(
-                    tool.name == AnalyzeImageTool.name for tool in request.tools
-                ),
                 media_root=_media_root(request, provider),
                 encode_media=encode_media,
                 max_image_edge=max_image_edge,
@@ -376,7 +371,6 @@ def _message_to_dict(
     message: Message,
     *,
     include_images: bool = True,
-    can_analyze_images: bool = False,
     media_root: Path | None = None,
     encode_media: bool = True,
     max_image_edge: int | None = None,
@@ -386,7 +380,6 @@ def _message_to_dict(
         "content": _content_to_provider_format(
             message,
             include_images=include_images,
-            can_analyze_images=can_analyze_images,
             media_root=media_root,
             encode_media=encode_media,
             max_image_edge=max_image_edge,
@@ -415,7 +408,6 @@ def _content_to_provider_format(
     message: Message,
     *,
     include_images: bool = True,
-    can_analyze_images: bool = False,
     media_root: Path | None = None,
     encode_media: bool = True,
     max_image_edge: int | None = None,
@@ -428,20 +420,13 @@ def _content_to_provider_format(
     files = [part for part in parts if isinstance(part, FilePart)]
     file_notice = _attached_files_notice(files)
     if not include_images:
-        # This model cannot see an image, so the attachment is named rather
-        # than sent. Naming the tool it does not have would only invite a
-        # call that fails, so the hint depends on the registered tool set.
+        # Preserve attachment paths for models that only accept text.
         text = "".join(part.text for part in parts if isinstance(part, TextPart))
         paths = [part.path for part in parts if isinstance(part, ImagePart)]
-        heading = (
-            f"Attached images (use {AnalyzeImageTool.name} if needed):"
-            if can_analyze_images
-            else "Attached images (this model cannot read them):"
-        )
         listed = "\n".join(f"- {path}" for path in paths)
         sections = [text] if text else []
         if paths:
-            sections.append(f"{heading}\n{listed}")
+            sections.append(f"Attached images (this model cannot read them):\n{listed}")
         if file_notice:
             sections.append(file_notice)
         return "\n\n".join(sections)
@@ -555,19 +540,3 @@ def _tool_definition_to_dict(tool: ToolDefinition) -> dict[str, object]:
             "parameters": tool.parameters,
         },
     }
-
-
-def _text_from_content(value: object) -> str:
-    """Extract text from string or OpenAI-style content blocks.
-
-    LiteLLM normally exposes streamed deltas as strings, but adapters for
-    some providers expose a list of typed blocks.  Only the text field is
-    considered so metadata or image blocks cannot accidentally become part
-    of the assistant message.
-    """
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (list, tuple)):
-        return "".join(_text_from_content(item) for item in value)
-    text = get_field(value, "text")
-    return text if isinstance(text, str) else ""

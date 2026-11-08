@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Boxes, Brain, CalendarClock, ChevronDown, ChevronRight, GitFork, KeyRound, LoaderCircle, MessageSquare, PanelLeftClose, Plug, Plus, Settings as SettingsIcon, Sparkles, Trash2 } from "lucide-react";
+import { Bot, Boxes, Brain, ChevronDown, ChevronRight, GitFork, KeyRound, LoaderCircle, MessageSquare, PanelLeftClose, Plug, Plus, Settings as SettingsIcon, Sparkles, Trash2 } from "lucide-react";
 import { Chat } from "./Chat";
 import { Settings, type SettingsSection } from "./Settings";
 import { Workspace } from "./Workspace";
@@ -271,7 +271,6 @@ export function App() {
     { id: "skills", label: "Skills", description: "查看可用技能", icon: Sparkles },
     { id: "plugins", label: "Plugins", description: "查看已安装扩展", icon: Boxes },
     { id: "mcp", label: "MCP", description: "查看外部工具服务", icon: Plug },
-    { id: "schedules", label: "Schedules", description: "查看和调整定时任务", icon: CalendarClock },
   ];
   const settingsPopover = settingsMenuOpen && <div className="settings-popover" role="menu">
     <div className="settings-popover-label">Settings</div>
@@ -335,7 +334,7 @@ export function App() {
         </>}
       </aside>
 
-      {settingsSection && <Settings section={settingsSection} onClose={() => { setSettingsSection(null); void refreshSessions(); }} onChanged={refreshModels} onOpenSession={(sessionId) => void selectSession(sessionId)} />}
+      {settingsSection && <Settings section={settingsSection} onClose={() => { setSettingsSection(null); void refreshSessions(); }} onChanged={refreshModels} />}
       <main className="chat-panel" style={{ display: settingsSection ? "none" : undefined }}>
         <header className="chat-header"><div className="breadcrumb">Chat <ChevronRight size={14} /><span>{restoringSession ? "…" : selectedTitle}</span></div><span className="status-label"><span className={`status-dot ${busy ? "working" : ""}`} />{busy ? "Working" : "Ready"}</span></header>
         {error && <div className="error-banner" role="alert">{error}</div>}

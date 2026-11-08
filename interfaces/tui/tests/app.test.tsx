@@ -37,7 +37,7 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 3,
+              type: 'session_ready', protocol_version: 4,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               workspace: message.workspace,
               provider: 'test',
@@ -301,7 +301,7 @@ describe('App', () => {
     expect(lastFrame()).toContain('wait for sync');
 
     emit({
-      type: 'session_ready', protocol_version: 3,
+      type: 'session_ready', protocol_version: 4,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
@@ -382,7 +382,7 @@ describe('App', () => {
           { id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
           { id: 'second', model: 'test/second', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
         ],
-        routing: { main_agent: 'test', vision_provider: null, subagent: null, subagent_vision_provider: null, roles: {} },
+        routing: { main_agent: 'test', subagent: null, roles: {} },
         agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
@@ -405,7 +405,7 @@ describe('App', () => {
       settings: {
         revision: 'r1', config_directory: '/config', default_provider: 'test',
         providers: [{ id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } }],
-        routing: { main_agent: 'test', vision_provider: null, subagent: null, subagent_vision_provider: null, roles: {} },
+        routing: { main_agent: 'test', subagent: null, roles: {} },
         agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
@@ -547,7 +547,7 @@ describe('App', () => {
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 3, session_id: 'fresh', workspace: '/next',
+      type: 'session_ready', protocol_version: 4, session_id: 'fresh', workspace: '/next',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
       permission_preset: 'ask_for_approval',
     });
@@ -1029,13 +1029,6 @@ describe('App', () => {
     expect(modelLine).toBe(inputLine + 2);
   });
 
-  it('labels computer approvals distinctly', async () => {
-    const { lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-
-    requestApproval("computer_action({'action': 'click'})", 'computer');
-    await waitFor(() => expect(lastFrame()).toContain('Computer interaction requires approval'));
-  });
 
   it('labels file approvals and sends the user decision', async () => {
     const { lastFrame, stdin } = renderApp();
@@ -1067,7 +1060,7 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 3,
+      type: 'session_ready', protocol_version: 4,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',

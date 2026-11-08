@@ -1,5 +1,6 @@
 """Assembly, invalidation and resource ownership for one execution plane."""
 
+from contextlib import ExitStack
 from functools import partial
 from pathlib import Path
 from typing import Callable
@@ -24,10 +25,7 @@ from agent_core import (
     builtin_catalog,
     load_agent_config,
     merge_mcp_servers,
-    vision_aware_tool_names,
-    skill_aware_tool_names,
     platform_workspace_sandbox_backend,
-    SchedulerService,
     Session,
 )
 from agent_core.prompting import render_system_prompt
@@ -37,15 +35,13 @@ from agent_core.hooks import HookRunner
 from agent_core.execution.process import CancellationSignal
 
 from .config import (
+    ModelConfig,
     configured_skill_sources,
     configured_role_names,
     load_config_with_name,
     load_fast_config,
-    load_image_generation_config,
     load_model_options,
     load_prompt_templates,
-    load_tool_settings,
-    load_vision_config,
     memory_store,
 )
 from .execution_plane import ExecutionPlane
@@ -54,19 +50,17 @@ from .plugins import PluginAgent, PluginManager
 from .role_tools import resolve_role_tools
 from .settings import EnvironmentReloader, configuration_fingerprint
 from .callbacks import RuntimeCallbacks
-from .desktop import DesktopCapability
 from .session_controller import SessionRuntimeController
 from .session_title import SessionTitleTask
 
 
 class ExecutionPlaneManager:
     def __init__(self, config_directory: Path, environment: EnvironmentReloader,
-                 scheduler: SchedulerService, callbacks: RuntimeCallbacks) -> None:
+                 callbacks: RuntimeCallbacks) -> None:
         self._config_directory = config_directory
         self._config_path = config_directory / "provider_config.json"
         self._agent_config_path = config_directory / "agent_config.json"
         self._environment = environment
-        self.scheduler = scheduler
         self.callbacks = callbacks
         self.current: ExecutionPlane | None = None
 
@@ -78,14 +72,12 @@ class ExecutionPlaneManager:
             session.session is None
             or session.store is None
             or session.workspace is None
-            or session.sessions_directory is None
             or session.provider_name is None
         ):
             raise RuntimeError("received 'user_turn' before 'open_session'")
 
         self._environment.reload()
         agent_config = load_agent_config(self._agent_config_path)
-        tool_settings = load_tool_settings(self._config_directory / "tool_config.json")
         config_fingerprint = configuration_fingerprint(
             self._config_directory
         )
@@ -141,11 +133,8 @@ class ExecutionPlaneManager:
             mcp_config, workspace.path,
             on_status=self.callbacks.on_mcp_status,
         )
-        workspace_executor: SandboxedCommandExecutor | None = None
-        host_executor: HostCommandExecutor | None = None
-        execution_router: ExecutionRouter | None = None
-        desktop: DesktopCapability | None = None
-        try:
+        with ExitStack() as startup:
+            startup.callback(mcp.close)
             mcp.start()
             skills = SkillLoader().load(
                 (
@@ -164,49 +153,6 @@ class ExecutionPlaneManager:
             fast_provider = (
                 self._provider_for(fast_config, workspace, agent_config)
                 if fast_config is not None else main_provider
-            )
-            computer_tools = tuple(
-                name
-                for name in ("computer_screenshot", "computer_action")
-                if agent_config.tools.is_enabled(name)
-            )
-            computer_tool_warnings = (
-                (
-                    "Configured computer tool(s) "
-                    f"{', '.join(computer_tools)} are unavailable because "
-                    "the main model does not support image input (visual input).",
-                )
-                if computer_tools
-                and "image" not in main_provider.capabilities.input_modalities
-                else ()
-            )
-            if (
-                computer_tools
-                and "image" in main_provider.capabilities.input_modalities
-            ):
-                desktop = DesktopCapability(
-                    workspace,
-                    input_enabled="computer_action" in computer_tools,
-                )
-            image_generator = None
-            if agent_config.tools.is_enabled("generate_image"):
-                from agent_core.providers import LiteLLMImageGenerator
-
-                image_config = load_image_generation_config(config_path)
-                if image_config is None:
-                    raise ValueError(
-                        "generate_image is enabled but provider_config.json "
-                        "has no image_generation configuration"
-                    )
-                image_generator = LiteLLMImageGenerator(
-                    model=image_config.model,
-                    base_url=image_config.url,
-                    api_key=image_config.key,
-                    default_aspect_ratio=image_config.default_aspect_ratio,
-                    default_image_size=image_config.default_image_size,
-                )
-            vision_provider = self._provider_for(
-                load_vision_config(config_path), workspace, agent_config
             )
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
@@ -245,7 +191,9 @@ class ExecutionPlaneManager:
                 platform_workspace_sandbox_backend(),
                 excluded_environment_names=self._environment.loaded_names,
             )
+            startup.callback(workspace_executor.close)
             host_executor = HostCommandExecutor(workspace.path)
+            startup.callback(host_executor.close)
             execution_router = ExecutionRouter(
                 workspace_executor,
                 host_executor,
@@ -256,23 +204,18 @@ class ExecutionPlaneManager:
                 workspace=workspace,
                 provider_name=session.provider_name,
                 agent_config=agent_config,
-                tool_settings=tool_settings,
                 configuration_fingerprint=config_fingerprint,
                 instructions=instructions,
                 provider=main_provider,
                 fast_provider=fast_provider,
-                vision_provider=vision_provider,
-                image_generator=image_generator,
                 catalog=catalog,
                 skills=skills,
                 prompts=prompts,
                 plugin_agents=tuple(resolved_agents),
-                computer_tools=computer_tools,
                 execution_router=execution_router,
                 mcp=mcp,
                 hooks=HookRunner(hook_definitions),
                 role_tools=role_tools,
-                computer=desktop,
                 runtime_warnings=(
                     *plugins.warnings,
                     *mcp_warnings,
@@ -280,27 +223,10 @@ class ExecutionPlaneManager:
                     *hook_warnings,
                     *tool_warnings,
                     *skills.warnings,
-                    *computer_tool_warnings,
                 ),
             )
-        except BaseException:
-            try:
-                if desktop is not None:
-                    desktop.close()
-            finally:
-                try:
-                    mcp.close()
-                finally:
-                    if execution_router is not None:
-                        execution_router.close()
-                    else:
-                        try:
-                            if workspace_executor is not None:
-                                workspace_executor.close()
-                        finally:
-                            if host_executor is not None:
-                                host_executor.close()
-            raise
+            # The completed plane now owns the acquired resources.
+            startup.pop_all()
         self._bind_session(plane, session)
         self.current = plane
         return plane
@@ -313,15 +239,11 @@ class ExecutionPlaneManager:
                 raise RuntimeError("session permissions are not initialized")
             main_provider = plane.provider
             fast_provider = plane.fast_provider
-            vision_provider = plane.vision_provider
-            image_generator = plane.image_generator
             catalog = plane.catalog
             skills = plane.skills
             prompts = plane.prompts
             instructions = plane.instructions
             plugin_agents = plane.plugin_agents
-            desktop = plane.computer
-            computer_tools = plane.computer_tools
             mcp = plane.mcp
             execution_router = plane.execution_router
             config_path = self._config_path
@@ -386,54 +308,28 @@ class ExecutionPlaneManager:
                 session=session.session,
                 sessions_directory=session.sessions_directory,
                 execution_router=execution_router,
-                max_generation_tokens=agent_config.max_generation_tokens,
                 vision_input=(
                     "image" in main_provider.capabilities.input_modalities
                 ),
-                vision_provider=vision_provider,
-                image_generator=image_generator,
                 mcp=mcp,
                 subagents=subagents,
                 jobs=jobs,
                 skills=skills,
                 plan=session.plan,
-                ask_user=(
-                    self.callbacks.ask_user
-                ),
-                scheduler=self.scheduler,
-                session_permissions=session.session_permissions,
+                ask_user=self.callbacks.ask_user,
                 memory=memory,
                 hooks=plane.hooks,
                 on_hook_event=lambda event: self.callbacks.on_event(event, session.session.current_turn_id),
-                tool_settings=plane.tool_settings,
-                screenshot=(
-                    desktop.capture
-                    if desktop is not None
-                    and "computer_screenshot" in computer_tools
-                    else None
-                ),
-                computer_windows=desktop is not None and desktop.supports_windows,
-                computer=(
-                    desktop.control
-                    if desktop is not None and "computer_action" in computer_tools
-                    else None
-                ),
             )
             tools = catalog.select(
                 (
-                    *skill_aware_tool_names(
-                        vision_aware_tool_names(
-                            agent_config.tools.enabled,
-                            main_provider,
-                            vision_provider,
-                        ),
-                        skills,
-                    ),
+                    *agent_config.tools.enabled,
+                    "read_image",
+                    "read_skill",
                     "ask_user",
-                    "present_file",
                     "update_plan",
                     *mcp.tool_names,
-                    *(("remember",) if memory is not None else ()),
+                    "remember",
                 ),
                 context,
                 policy=session.permissions,
@@ -476,14 +372,15 @@ class ExecutionPlaneManager:
 
     def _provider_for(
         self,
-        config,
+        config: ModelConfig,
         workspace: Workspace,
         agent_config,
-    ) -> LLMProvider | None:
-        if config is None:
-            return None
-        arguments = dict(
+    ) -> LLMProvider:
+        from agent_core.providers import OpenAIProvider
+
+        return OpenAIProvider(
             model=config.model,
+            api=config.api,
             base_url=config.url,
             api_key=config.key,
             max_context_tokens=config.max_context_tokens,
@@ -495,10 +392,6 @@ class ExecutionPlaneManager:
             reasoning_effort=config.reasoning_effort,
             reasoning_parameters=config.reasoning_parameters,
         )
-        if config.api is not None:
-            arguments["api"] = config.api
-        return config.provider_class(**arguments)
-
 
     def _subagent_runtime(
         self,
@@ -527,11 +420,6 @@ class ExecutionPlaneManager:
                     workspace,
                     agent_config,
                 ),
-                vision_provider=self._provider_for(
-                    load_vision_config(config_path, role=name),
-                    workspace,
-                    agent_config,
-                ),
             )
             for name, role in agent_config.subagent_roles.items()
             if role.enabled
@@ -557,11 +445,6 @@ class ExecutionPlaneManager:
                     tools=role_tools[agent.name],
                     provider=self._provider_for(
                         provider_config, workspace, agent_config
-                    ),
-                    vision_provider=self._provider_for(
-                        load_vision_config(config_path, role=agent.name),
-                        workspace,
-                        agent_config,
                     ),
                 )
             )

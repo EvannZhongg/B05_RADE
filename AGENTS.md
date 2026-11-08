@@ -12,10 +12,8 @@
 
 ```text
 TUI (Ink + React) ────────────────── Bridge ── agent_runtime ── Agent Core
-RADE-server（常驻宿主）
-├─ HTTP / WebSocket（可选）── GUI (React)
-├─ IM（飞书等）
-└─ Session Host ── Bridge ── agent_runtime ── Agent Core
+GUI (React) ── HTTP / WebSocket ── RADE-server
+                                   └─ Session Host ── Bridge ── agent_runtime ── Agent Core
 ```
 
 `agent_runtime` 是共享的应用 Runtime；Bridge 以 `python -m interfaces.bridge` 作为独立进程运行，由前端宿主启动，是前端与 Runtime 之间的唯一通道，两端用 newline-delimited JSON 交换协议消息。
@@ -23,9 +21,8 @@ RADE-server（常驻宿主）
 * 依赖方向单向：`interfaces/* → agent_runtime → agent_core`；`agent_core` 不得 import `interfaces` 或 `agent_runtime`，`agent_runtime` 不得 import `interfaces`。
 * 驱动 Agent、执行 Tool、发起审批只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变 Workspace 或 Session 的 Tool。
 * 前端对 Core 的复用仅限只读能力（如 Session 读取、Workspace 路径解析、只读 Tool 的文件列举）；执行语义不得在前端复制。
-* TUI、GUI 和移动端仅作为交互层，共享同一套 Agent Runtime。GUI 与移动端宿主可复用 `interfaces/session_host.py` 管理 Bridge 进程和控制附着，不得在其中实现执行语义。
-* GUI 与 IM 统一由 `RADE-server`（`interfaces/application_host.py`）管理，作为并列适配器共享 Session Host 与 Bridge；宿主生命周期独立于 FastAPI，`--no-http` 不加载 HTTP 依赖或监听端口。
-* 常驻宿主在初始化配置和启动 Bridge / IM 前取得配置目录级进程锁，不得通过 HTTP 端口或身份接口判断单实例；同一配置目录不得启动重复的 IM 接收连接或 Session Runtime。
+* TUI 与 GUI 共享 Agent Runtime。GUI 宿主通过 `interfaces/session_host.py` 管理 Bridge 进程、活动 Session 和页面附着。
+* `RADE-server`（`interfaces/application_host.py`）在初始化配置前取得配置目录级进程锁，负责启动 Bridge 和 HTTP，并在退出时关闭两者。单实例判断使用该锁。
 * 授权、取消、Session 与 Tool 执行语义只实现一次，不得由两个前端各维护一套。
 * 保持清晰的依赖方向，避免模块间循环依赖。
 
@@ -51,7 +48,7 @@ RADE-server（常驻宿主）
 * Skill 加载（`SkillSource` 与 Registry；Core 不决定 Skill 目录来源）
 * 计划状态与跨 Turn 的计划恢复
 * 后台 Jobs 与 Turn 控制（steer、cancel 的语义与终止条件）
-* 媒体与附件处理（图片探测、降级分析）
+* 媒体与附件处理（图片探测、文本模型的附件路径提示）
 * Workspace Instruction 的数据类型与 fingerprint（读取时机与来源顺序由 `agent_runtime` 决定）
 * 子 Agent Runtime 与角色注册表
 * Provider 抽象、MCP 客户端机制
@@ -74,7 +71,7 @@ RADE-server（常驻宿主）
 * 子 Agent 角色注册表
 * Workspace 绑定、Session 存储位置、取消与持久化时机
 * 一次装配由一个 `ExecutionPlaneManager` 原子持有；Provider、Workspace、配置或 Instructions 变化时整体重建
-* Turn 生命周期（含取消与 steer）与定时任务的执行入口
+* 交互 Turn 生命周期（含取消与 steer）
 
 约束：
 

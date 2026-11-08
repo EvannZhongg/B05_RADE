@@ -10,13 +10,9 @@ from .base import (
 )
 from .budget import MAX_TOOL_RESULT_CHARS
 from .builtin import (
-    AnalyzeImageTool,
-    ComputerScreenshotTool,
-    ComputerActionTool,
     ApplyPatchTool,
     AskUserTool,
     EditFileTool,
-    GenerateImageTool,
     ListDirectoryTool,
     ReadFileTool,
     ReadImageTool,
@@ -27,10 +23,7 @@ from .builtin import (
     JobControlTool,
     UpdatePlanTool,
     RememberTool,
-    WebFetchTool,
-    WebSearchTool,
     WriteFileTool,
-    ScheduledTaskTool,
     builtin_catalog,
 )
 from .catalog import ToolCatalog, ToolSet
@@ -39,23 +32,17 @@ from .context import ToolExecutionContext
 from .paths import resolve_image, resolve_readable_path
 from .policy import (
     CompositeToolPolicy,
-    ComputerApprovalPolicy,
     FileWriteApprovalPolicy,
     McpApprovalPolicy,
     ShellApprovalPolicy,
 )
 
 __all__ = [
-    "AnalyzeImageTool",
     "ApplyPatchTool",
     "AskUserTool",
     "CompositeToolPolicy",
-    "ComputerApprovalPolicy",
-    "ComputerScreenshotTool",
-    "ComputerActionTool",
     "EditFileTool",
     "FileWriteApprovalPolicy",
-    "GenerateImageTool",
     "JSONValue",
     "ListDirectoryTool",
     "MAX_TOOL_RESULT_CHARS",
@@ -83,10 +70,7 @@ __all__ = [
     "ToolSet",
     "UpdatePlanTool",
     "RememberTool",
-    "WebFetchTool",
-    "WebSearchTool",
     "WriteFileTool",
-    "ScheduledTaskTool",
     "builtin_catalog",
     "load_tool_config",
     "resolve_image",

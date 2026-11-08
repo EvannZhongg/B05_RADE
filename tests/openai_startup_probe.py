@@ -16,7 +16,7 @@ if "--block-litellm" in sys.argv:
     sys.meta_path.insert(0, BlockLiteLLM())
 from tests.bridge_fixtures import open_session_message
 from agent_runtime import RuntimeHost
-from agent_core import LLMRequest, Message, SchedulerService, ToolDefinition
+from agent_core import LLMRequest, Message, ToolDefinition
 import httpx
 from openai import OpenAI
 
@@ -50,7 +50,7 @@ def client(**kwargs):
 with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     open_session_message(root, provider_config={
-        "main_agent": {"provider": "native", "vision_provider": "native"},
+        "main_agent": {"provider": "native"},
         "fast_model": {"provider": "native"}, "subagent": {"provider": "native"},
         "providers": {"native": ({"model": "deepseek/deepseek-flash", "key": "test-key"}
                                  if "--deepseek" in sys.argv else
@@ -58,9 +58,8 @@ with tempfile.TemporaryDirectory() as directory:
     }, agent_config={"max_same_tool_calls": 5, "workspace_instruction_files": [],
                      "scratch_workspace_root": str(root / "scratch"),
                      "output_reserve_tokens": 100, "memory": {"enabled": False},
-                     "main_agent": {"tools": {"computer_screenshot": True, "computer_action": True,
-                                              "generate_image": False, "subagent": False}}})
-    host = RuntimeHost(root, scheduler=SchedulerService(root / "schedule.jsonl"))
+                     "main_agent": {"tools": {"read_file": True}}})
+    host = RuntimeHost(root)
     host.open_session(root)
     turn_start = time.perf_counter()
     try:
@@ -74,7 +73,6 @@ with tempfile.TemporaryDirectory() as directory:
         print(json.dumps({"process_to_request_seconds": round(sent[0]-started, 3),
                           "turn_to_request_seconds": round(sent[0]-turn_start, 3),
                           "litellm_loaded": "litellm" in sys.modules,
-                          "pyautogui_loaded": "pyautogui" in sys.modules,
                           "sample_estimates": samples}))
     finally:
         host.close()

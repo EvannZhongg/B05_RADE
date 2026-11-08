@@ -376,13 +376,11 @@ export function ApprovalPrompt({
   kind?: ApprovalKind;
   choice: ApprovalChoice;
 }): React.ReactElement {
-  const title = kind === 'computer'
-    ? 'Computer interaction requires approval'
-    : kind === 'mcp'
-      ? 'MCP tool call requires approval'
-      : kind === 'file'
-        ? 'File change requires approval'
-        : 'Shell command requires approval';
+  const title = kind === 'mcp'
+    ? 'MCP tool call requires approval'
+    : kind === 'file'
+      ? 'File change requires approval'
+      : 'Shell command requires approval';
   return (
     <Box
       marginTop={1}

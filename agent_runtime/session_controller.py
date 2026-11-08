@@ -12,7 +12,6 @@ from .callbacks import RuntimeCallbacks
 class SessionRuntimeController:
     def __init__(self, config_directory: Path, environment: EnvironmentReloader,
                  callbacks: RuntimeCallbacks, approval_policy: CompositeToolPolicy) -> None:
-        self._config_directory = config_directory
         self._config_path = config_directory / "provider_config.json"
         self._environment = environment
         self.callbacks = callbacks
@@ -37,8 +36,7 @@ class SessionRuntimeController:
         """Prepare the target writer, then replace the binding after yielding."""
         config_path = self._config_path
         self._environment.reload()
-        sessions_directory = self._config_directory / "sessions"
-        store = JsonlSessionStore(sessions_directory)
+        store = JsonlSessionStore(self.sessions_directory)
         if self.session is None:
             self.store = store
         workspace = Workspace(workspace)
@@ -87,7 +85,6 @@ class SessionRuntimeController:
             self.session = session
             self.store = store
             self.workspace = workspace
-            self.sessions_directory = sessions_directory
         self.plan = PlanManager(
             self.session,
             self.callbacks.on_plan,
@@ -98,25 +95,6 @@ class SessionRuntimeController:
             self.session,
             self.approval_policy,
         )
-
-    @contextmanager
-    def session_permissions(self, session_id: str) -> Iterator[PermissionController]:
-        if self.session is None or self.store is None or self.permissions is None:
-            raise RuntimeError("session is not initialized")
-        if session_id == self.session.session_id:
-            yield self.permissions
-            return
-        with self.store.open_journal(session_id) as sink:
-            session = self.store.load(session_id, recover=False)
-            session.attach_journal_sink(sink)
-            try:
-                yield PermissionController(
-                    session,
-                    self.approval_policy,
-                )
-            finally:
-                session.attach_journal_sink(None)
-
 
     def change_provider(self, provider: str) -> None:
         assert self.session is not None and self.store is not None and self.workspace is not None

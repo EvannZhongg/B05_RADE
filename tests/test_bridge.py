@@ -1,4 +1,3 @@
-import io
 import json
 import subprocess
 import sys
@@ -9,7 +8,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from tests.provider_fixtures import capabilities_stub, TEXT_MODEL, VISION_MODEL
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
@@ -25,7 +24,6 @@ from agent_core import (
     CompressionCompletedEvent,
     ContextWindow,
     ContextWindowEvent,
-    ExecutionScope,
     JsonlSessionStore,
     JobStatusEvent,
     Message,
@@ -52,25 +50,14 @@ from agent_core import (
     FULL_ACCESS_AUTHORITY,
     Workspace,
 )
-from agent_core.scheduler import (
-    AgentTurnAction,
-    OneShotTrigger,
-    Schedule,
-    ScheduledRun,
-    SchedulerService,
-)
 from agent_core.usage import usage_to_dict
 from agent_core.session_paths import session_directory
 from agent_core.projection import project_context_units
 from agent_core.providers import ModelProvider
-from agent_core.subagent import vision_aware_tool_names
 from agent_core.tools.config import ROLE_TOOL_NAMES, TOOL_NAMES
 from interfaces.bridge.bridge import Cancelled
-from tests.bridge_fixtures import Bridge
 from agent_runtime.attachments import parse_attachments as _parse_attachments
 from agent_runtime.host import RuntimeHost
-from agent_runtime.plane_manager import ExecutionPlaneManager
-from agent_runtime.scheduled_runner import ScheduledTurnRunner
 from agent_runtime.execution_plane import ExecutionPlane
 from interfaces.bridge.protocol import (
     attachment_replaced_message,
@@ -436,7 +423,7 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 3,
+                "protocol_version": 4,
                 "session_id": "s1",
                 "workspace": "/tmp/work",
                 "provider": "test",
@@ -529,13 +516,12 @@ class IsolatedBridgeTest(BridgeTestCase):
         self.assertEqual(state["runtime_warnings"], ["Unavailable"])
         self.assertEqual(state["permission_preset"], inactive_runtime_state()["permission_preset"])
 
-    def test_bridges_own_distinct_configuration_and_scheduler_storage(self) -> None:
+    def test_bridges_own_distinct_configuration(self) -> None:
         first, _ = self.make_bridge([])
         second, _ = self.make_bridge([])
         self.assertNotEqual(first.host.config_directory, second.host.config_directory)
         for bridge in (first, second):
             self.assertTrue(bridge.host.config_directory.is_dir())
-            self.assertEqual(bridge.host.scheduler.path.parent, bridge.host.config_directory)
 
 
 class PermissionProtocolTest(BridgeTestCase):
@@ -1671,35 +1657,23 @@ class InterruptedTurnTest(BridgeTestCase):
 
         self.assertEqual(memory.calls, ["begin", "discard"])
 
-    def test_turn_cleanup_warnings_are_published_with_the_terminal_phase(self) -> None:
+    def test_memory_warning_is_published_with_turn_completion(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
-        cases = (
-            (SuccessfulAgent(self.session), "turn_completed"),
-            (ScriptedAgent(self.session, error=KeyboardInterrupt()), "turn_cancelled"),
-            (FailingAgent(self.session), "turn_failed"),
-        )
-        for index, (agent, event_type) in enumerate(cases):
-            with self.subTest(event=event_type):
-                plane.agent = agent
-                plane.memory = MemorySpy()
-                computer = SimpleNamespace(release_input=Mock(side_effect=OSError("release failed")))
-                start = len(emitted(self.stdout))
-                with (
-                    patch.object(plane, "computer", computer),
-                    patch.object(plane.memory, "reconcile_pending", side_effect=OSError("write failed")),
-                ):
-                    self.bridge.run_turn({"turn_id": f"cleanup-{index}", "text": "work"})
+        plane.agent = SuccessfulAgent(self.session)
+        plane.memory = MemorySpy()
+        start = len(emitted(self.stdout))
 
-                messages = emitted(self.stdout)[start:]
-                phases = [message for message in messages if message["type"] == "runtime_state"]
-                self.assertEqual([message["phase"] for message in phases], ["running", "idle"])
-                warnings = ["Desktop input cleanup failed: release failed"]
-                if event_type == "turn_completed":
-                    warnings.insert(0, "Long-term memory update failed: write failed")
-                self.assertEqual(phases[-1]["runtime_warnings"], warnings)
-                self.assertIsNone(phases[-1]["turn_id"])
-                self.assertEqual(messages[-1]["type"], event_type)
-                self.assertEqual(messages[-1]["runtime"]["runtime_warnings"], warnings)
+        with patch.object(plane.memory, "reconcile_pending", side_effect=OSError("write failed")):
+            self.bridge.run_turn({"turn_id": "memory-warning", "text": "work"})
+
+        messages = emitted(self.stdout)[start:]
+        phases = [message for message in messages if message["type"] == "runtime_state"]
+        self.assertEqual([message["phase"] for message in phases], ["running", "idle"])
+        warnings = ["Long-term memory update failed: write failed"]
+        self.assertEqual(phases[-1]["runtime_warnings"], warnings)
+        self.assertIsNone(phases[-1]["turn_id"])
+        self.assertEqual(messages[-1]["type"], "turn_completed")
+        self.assertEqual(messages[-1]["runtime"]["runtime_warnings"], warnings)
 
     def test_stores_a_failed_turn(self) -> None:
         self.start_turn(
@@ -1874,246 +1848,6 @@ class InterruptedTurnTest(BridgeTestCase):
             [message.content for message in self.stored_items()],
             ["second try"],
         )
-
-
-class ScheduledTaskPermissionTest(BridgeTestCase):
-    def setUp(self) -> None:
-        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.bridge, _ = self.make_bridge([], self.root)
-        self.bridge.open_session(open_session_message(
-            self.root, session_id="origin",
-            agent_config={
-                "generate_session_title": False,
-                "max_same_tool_calls": 5,
-                "output_reserve_tokens": 100,
-                "workspace_instruction_files": [],
-                "main_agent": {"tools": {"scheduled_task": True}},
-            },
-        ))
-        self.bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
-        self.tools = self.bridge.host.planes.ensure(self.bridge.host.sessions).agent._tools
-        created = self.tools.execute(ToolCall("create", "scheduled_task", {
-            "action": "create",
-            "schedule": {
-                "prompt": "scheduled work",
-                "trigger": {"type": "interval", "seconds": 60},
-                "permission_preset": "workspace_access",
-            },
-        }))
-        self.assertIsNone(created.error)
-        self.assertEqual(created.output["permission_preset"], "workspace_access")
-        self.schedule_id = created.output["schedule_id"]
-        self.session_id = created.output["schedule_session_id"]
-        self.store = JsonlSessionStore(self.root / "sessions")
-
-    def update(self, changes):
-        return self.tools.execute(ToolCall("update", "scheduled_task", {
-            "action": "update", "schedule_id": self.schedule_id, "changes": changes,
-        }))
-
-    def test_permission_update_persists_journal_without_rescheduling_and_is_used_next_run(self) -> None:
-        schedule = self.bridge.host.scheduler.schedules[0]
-        next_run_at = schedule.next_run_at
-        before = self.bridge.host.scheduler.path.read_text(encoding="utf-8")
-        for preset in (PermissionPreset.FULL_ACCESS, PermissionPreset.WORKSPACE_ACCESS, PermissionPreset.ASK_FOR_APPROVAL):
-            with self.subTest(preset=preset):
-                result = self.update({"permission_preset": preset.value})
-                self.assertIsNone(result.error)
-                self.assertEqual(result.output["permission_preset"], preset.value)
-                self.assertEqual(result.output["next_run_at"], next_run_at.isoformat())
-                stored = self.store.load(self.session_id)
-                self.assertEqual(stored.permission_preset, preset)
-                self.assertEqual(stored.journal[-1].event_type, "permission_preset_changed")
-                self.assertEqual(stored.journal[-1].payload["preset"], preset.value)
-                listed = self.tools.execute(ToolCall("list", "scheduled_task", {"action": "list"}))
-                self.assertEqual(listed.output[0]["permission_preset"], preset.value)
-
-                observed = []
-                def run_turn(worker, *args, **kwargs):
-                    observed.append(worker.sessions.permissions.authority)
-                    return SimpleNamespace(status="completed")
-                run = ScheduledRun(preset.value, self.schedule_id, self.session_id, preset.value, datetime.now(timezone.utc))
-                with patch.object(RuntimeHost, "run_turn", run_turn):
-                    ScheduledTurnRunner(self.root, self.bridge.host.scheduler)(schedule, run)
-                self.assertEqual(observed, [preset.authority])
-        self.assertEqual(self.bridge.host.scheduler.path.read_text(encoding="utf-8"), before)
-
-    def test_non_full_access_cannot_elevate_a_schedule_or_apply_other_changes(self) -> None:
-        for preset in (PermissionPreset.WORKSPACE_ACCESS, PermissionPreset.ASK_FOR_APPROVAL):
-            with self.subTest(preset=preset):
-                self.bridge.host.set_permission_preset(preset)
-                result = self.update({"permission_preset": "full_access", "prompt": "changed"})
-                self.assertEqual(result.error.type, "PermissionError")
-                self.assertEqual(self.store.load(self.session_id).permission_preset, PermissionPreset.WORKSPACE_ACCESS)
-                self.assertEqual(self.bridge.host.scheduler.schedules[0].action.prompt, "scheduled work")
-
-    def test_invalid_update_does_not_change_permission(self) -> None:
-        for changes in (
-            {"permission_preset": "invalid"},
-            {"permission_preset": None},
-            {"permission_preset": 1},
-            {"permission_preset": "full_access", "enabled": "yes"},
-            {"permission_preset": "full_access", "unknown": True},
-            {"permission_preset": "full_access", "trigger": {"type": "cron", "expression": "invalid"}},
-        ):
-            with self.subTest(changes=changes):
-                result = self.update(changes)
-                self.assertEqual(result.error.type, "ValueError")
-                self.assertEqual(self.store.load(self.session_id).permission_preset, PermissionPreset.WORKSPACE_ACCESS)
-
-    def test_update_current_session_uses_the_active_permission_controller(self) -> None:
-        self.bridge.host.open_session(self.root, session_id=self.session_id)
-        self.bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
-        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
-        self.tools = plane.agent._tools
-        result = self.update({"permission_preset": "workspace_access", "prompt": "updated"})
-        self.assertIsNone(result.error)
-        self.assertEqual(self.bridge.host.sessions.permissions.preset, PermissionPreset.WORKSPACE_ACCESS)
-        self.assertEqual(plane.execution_router.authority, PermissionPreset.WORKSPACE_ACCESS.authority)
-        self.assertEqual(self.store.load(self.session_id).permission_preset, PermissionPreset.WORKSPACE_ACCESS)
-        self.assertEqual(self.bridge.host.scheduler.schedules[0].action.prompt, "updated")
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows journal ownership")
-    def test_occupied_target_rejects_permission_and_schedule_changes(self) -> None:
-        other = RuntimeHost(self.root, scheduler=self.bridge.host.scheduler)
-        try:
-            other.open_session(self.root, session_id=self.session_id)
-            result = self.update({"permission_preset": "full_access", "prompt": "changed"})
-            self.assertEqual(result.error.type, "SessionInUseError")
-            self.assertEqual(other.sessions.permissions.preset, PermissionPreset.WORKSPACE_ACCESS)
-            self.assertEqual(self.store.load(self.session_id).permission_preset, PermissionPreset.WORKSPACE_ACCESS)
-            self.assertEqual(self.bridge.host.scheduler.schedules[0].action.prompt, "scheduled work")
-        finally:
-            other.close()
-
-
-class ScheduledTurnTest(unittest.TestCase):
-    def test_scheduled_worker_preserves_manual_permission_changes_between_runs(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            open_session_message(root)
-            scheduler = SchedulerService(root / "schedule.jsonl")
-            schedule = Schedule(
-                "schedule", OneShotTrigger(datetime.now(timezone.utc)),
-                AgentTurnAction("scheduled prompt"), str(root), "origin", "scheduled-session",
-            )
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace(schedule.schedule_session_id, root)
-            store.set_permission_preset(schedule.schedule_session_id, PermissionPreset.WORKSPACE_ACCESS, root)
-            captured = []
-
-            def run_turn(worker, *args, **kwargs):
-                # Verify the actual Tool router as well as the persisted preset.
-                plane = worker.planes.ensure(worker.sessions)
-                captured.append(plane.execution_router.authority)
-                return SimpleNamespace(status="completed")
-
-            with patch.object(RuntimeHost, "run_turn", run_turn):
-                for index, preset in enumerate((
-                    PermissionPreset.WORKSPACE_ACCESS,
-                    PermissionPreset.FULL_ACCESS,
-                    PermissionPreset.WORKSPACE_ACCESS,
-                    PermissionPreset.ASK_FOR_APPROVAL,
-                )):
-                    interactive = RuntimeHost(root, scheduler=scheduler)
-                    try:
-                        interactive.open_session(root, session_id=schedule.schedule_session_id)
-                        interactive.set_permission_preset(preset)
-                    finally:
-                        interactive.close()
-                    before = len(store.load(schedule.schedule_session_id).journal)
-                    run = ScheduledRun(
-                        f"run-{index}", schedule.schedule_id, schedule.schedule_session_id,
-                        f"turn-{index}", datetime.now(timezone.utc),
-                    )
-                    ScheduledTurnRunner(root, scheduler)(schedule, run)
-                    stored = store.load(schedule.schedule_session_id)
-                    self.assertEqual(stored.permission_preset, preset)
-                    self.assertFalse(any(
-                        event.event_type == "permission_preset_changed"
-                        for event in stored.journal[before:]
-                    ))
-                    self.assertEqual(captured[-1], preset.authority)
-
-    def test_scheduled_turn_uses_normal_runtime_and_persists_session(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            open_session_message(root)
-            scheduler = SchedulerService(root / "schedule.jsonl")
-
-            class ScheduledAgent:
-                def __init__(self, session: Session) -> None:
-                    self.session = session
-
-                def run(self, user_input: str, **kwargs: object) -> object:
-                    turn_id = kwargs.get("turn_id")
-                    self.session.begin_turn(
-                        turn_id if isinstance(turn_id, str) else None
-                    )
-                    self.session.add_item("user", user_input)
-                    self.session.add_item("assistant", "scheduled answer")
-                    self.session.finish_turn("completed")
-                    return AgentRunResult("scheduled answer")
-
-            def execution_plane(manager, state, **kwargs) -> object:
-                assert state.session is not None
-                return type(
-                    "Plane",
-                    (),
-                    {
-                        "agent": ScheduledAgent(state.session),
-                        "jobs": type("Jobs", (), {"snapshot": lambda self: []})(),
-                        "memory": None,
-                        "computer": None,
-                        "runtime_warnings": (),
-                    },
-                )()
-
-            with patch(
-                "tests.bridge_fixtures.default_config_directory",
-                return_value=root,
-            ), patch.object(ExecutionPlaneManager, "ensure", execution_plane):
-                bridge = Bridge(
-                    io.StringIO(),
-                    io.StringIO(),
-                    scheduler=scheduler,
-                )
-                cases = tuple(PermissionPreset)
-                store = JsonlSessionStore(root / "sessions")
-                for preset in cases:
-                    schedule = Schedule(
-                        f"schedule-{preset.value}",
-                        OneShotTrigger(datetime.now(timezone.utc)),
-                        AgentTurnAction(f"scheduled prompt {preset.value}"),
-                        str(root),
-                        "origin",
-                        f"scheduled-session-{preset.value}",
-                    )
-                    store.bind_workspace(schedule.schedule_session_id, root)
-                    store.set_permission_preset(schedule.schedule_session_id, preset, root)
-                    run = ScheduledRun(
-                        f"run-{preset.value}",
-                        schedule.schedule_id,
-                        schedule.schedule_session_id,
-                        f"turn-{preset.value}",
-                        datetime.now(timezone.utc),
-                    )
-
-                    ScheduledTurnRunner(root, scheduler)(schedule, run)
-                bridge.close()
-
-            store = JsonlSessionStore(root / "sessions")
-            for preset in cases:
-                stored = store.load(f"scheduled-session-{preset.value}")
-                self.assertEqual(
-                    [item.content for item in stored.items],
-                    [f"scheduled prompt {preset.value}", "scheduled answer"],
-                )
-                self.assertEqual(
-                    stored.turns[f"turn-{preset.value}"].status,
-                    "completed",
-                )
-                self.assertEqual(stored.permission_preset, preset)
 
 
 class BridgeSessionOpenTest(BridgeTestCase):
@@ -2669,7 +2403,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 provider_config={
                     "main_agent": {
                         "provider": "first",
-                        "vision_provider": "second",
                     },
                     "subagent": {"provider": ""},
                     "providers": {
@@ -2697,16 +2430,12 @@ class BridgeSessionOpenTest(BridgeTestCase):
         ):
             plane = bridge.host.planes.ensure(bridge.host.sessions)
         main_provider = plane.agent._provider
-        vision_provider = plane.agent._tools._context.vision_provider
         subagents = plane.agent._tools._context.subagents
-        assert vision_provider is not None
         assert subagents is not None
         role_provider = subagents.roles.get("researcher").provider
 
         self.assertEqual(main_provider._request_timeout_seconds, 45)
         self.assertEqual(main_provider._max_retries, 4)
-        self.assertEqual(vision_provider._request_timeout_seconds, 45)
-        self.assertEqual(vision_provider._max_retries, 4)
         self.assertEqual(role_provider._request_timeout_seconds, 45)
         self.assertEqual(role_provider._max_retries, 4)
 
@@ -2734,73 +2463,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
             ValueError,
             "MISSING_RADE_TEST_KEY",
         ):
-            bridge.host.planes.ensure(bridge.host.sessions)
-
-    def test_injects_the_configured_image_generator(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(
-            open_session_message(
-                root,
-                agent_config={
-                    "max_same_tool_calls": 5,
-                    "output_reserve_tokens": 100,
-                    "scratch_workspace_root": str(root / "scratch"),
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "main_agent": {"tools": {"generate_image": True}},
-                },
-                provider_config={
-                    "main_agent": {"provider": "first"},
-                    "image_generation": {
-                        "provider": "images",
-                        "model": "openrouter/example/image",
-                        "default_aspect_ratio": "16:9",
-                        "default_image_size": "2K",
-                    },
-                    "providers": {
-                        "first": {
-                            "model": "openai/first",
-                            "max_context_tokens": 1000,
-                        },
-                        "images": {
-                            "model": "openrouter/unused",
-                            "url": "https://example.test/v1",
-                            "key": "secret",
-                        },
-                    },
-                },
-            )
-        )
-
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        generator = plane.agent._tools._context.image_generator
-
-        self.assertIsNotNone(generator)
-        self.assertEqual(generator.model, "openrouter/example/image")
-        self.assertIn(
-            "generate_image",
-            [definition.name for definition in plane.agent._tools.definitions],
-        )
-
-    def test_enabled_image_tool_requires_image_generation_config(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(
-            open_session_message(
-                root,
-                agent_config={
-                    "max_same_tool_calls": 5,
-                    "output_reserve_tokens": 100,
-                    "scratch_workspace_root": str(root / "scratch"),
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "main_agent": {"tools": {"generate_image": True}},
-                },
-            )
-        )
-
-        with self.assertRaisesRegex(ValueError, "no image_generation"):
             bridge.host.planes.ensure(bridge.host.sessions)
 
     def test_restores_the_session_permission_preset(self) -> None:
@@ -3365,43 +3027,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
             "openai/updated",
         )
 
-    def test_tool_settings_rebuild_plane_and_survive_session_rebinding(self) -> None:
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bridge, _ = self.make_bridge([], root)
-        opening = open_session_message(root)
-        bridge.open_session(opening)
-        first_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        config_path = root / "tool_config.json"
-        config_path.write_text(json.dumps({
-            "web_search": {
-                "provider": "exa", "providers": {"exa": {"key": "${SEARCH_KEY}"}},
-            },
-            "web_fetch": {
-                "provider": "deepseek", "providers": {"deepseek": {"key": "${SEARCH_KEY}"}},
-            },
-        }), encoding="utf-8")
-        (root / ".env").write_text("SEARCH_KEY=first-key\n", encoding="utf-8")
-
-        second_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIsNot(second_plane, first_plane)
-        settings = second_plane.agent._execution_context.tool_settings
-        self.assertIs(settings, second_plane.tool_settings)
-        self.assertEqual(settings.web_search.provider, "exa")
-        self.assertEqual(settings.web_search.api_key, "first-key")
-        self.assertEqual(settings.web_fetch.provider, "deepseek")
-        self.assertEqual(settings.web_fetch.api_key, "first-key")
-
-        bridge.open_session(opening)
-        rebound = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIs(rebound, second_plane)
-        self.assertIs(rebound.agent._execution_context.tool_settings, settings)
-
-        (root / ".env").write_text("SEARCH_KEY=second-key\n", encoding="utf-8")
-        third_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIsNot(third_plane, second_plane)
-        self.assertEqual(third_plane.tool_settings.web_search.api_key, "second-key")
-        self.assertEqual(third_plane.tool_settings.web_fetch.api_key, "second-key")
-
     def test_rebuilds_the_execution_plane_when_dotenv_changes(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
@@ -3726,7 +3351,7 @@ class SubagentRoleStartTest(BridgeTestCase):
 
         self.assertEqual(
             [definition.name for definition in plane.agent._tools.definitions],
-            ["ask_user", "present_file", "update_plan", "remember"],
+            ["ask_user", "update_plan", "remember"],
         )
 
     def test_runtime_tools_are_registered_only_for_the_main_agent(self) -> None:
@@ -3861,138 +3486,24 @@ class PluginAgentStartTest(BridgeTestCase):
         self.assertEqual(overridden.provider._model, "openai/second")
 
 
-class AnalyzeImageDerivationTest(BridgeTestCase):
-    """The image tools are derived from capability, never configured.
-
-    Exactly one of them is registered: a model that reads images gets
-    ``read_image``, and a model that cannot gets ``analyze_image`` --
-    but only when the Runtime resolved somewhere to send them instead.
-    """
-
-    def tool_names(
-        self,
-        main_model: str,
-        vision_provider: str | None,
-        role_blocks: dict | None = None,
-        role_tools: dict | None = None,
-    ) -> tuple[list[str], list[str]]:
-        """Return (main agent tool names, 'researcher' role tool names)."""
-        main_agent: dict[str, object] = {"provider": "main"}
-        if vision_provider is not None:
-            main_agent["vision_provider"] = vision_provider
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        bridge, _ = self.make_bridge([], Path(directory))
-        with patch.object(
-            ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
-        ):
-            bridge.open_session(
-                open_session_message(
-                    Path(directory),
-                    provider_config={
-                        "main_agent": main_agent,
-                        "subagent": {"provider": ""},
-                        "subagent_roles": role_blocks or {},
-                        "providers": {
-                            "main": {
-                                "model": main_model,
-                                "api": "chat_completions",
-                                "max_context_tokens": 1000,
-                            },
-                            "seeing": {
-                                "model": VISION_MODEL,
-                                "api": "chat_completions",
-                                "max_context_tokens": 1000,
-                            },
-                            "blind": {
-                                "model": TEXT_MODEL,
-                                "api": "chat_completions",
-                                "max_context_tokens": 1000,
-                            },
-                        },
-                    },
-                    agent_config={
-                        "max_same_tool_calls": 5,
-                        "output_reserve_tokens": 100,
-                        "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                        "main_agent": {"tools": {"subagent": True}},
-                        "subagent_roles": {
-                            "researcher": {
-                                "description": "Reads.",
-                                "tools": role_tools or {},
-                            }
-                        },
-                    },
+class ReadImageAvailabilityTest(BridgeTestCase):
+    def test_main_agent_only_gets_read_image_with_a_vision_model(self) -> None:
+        for model in (TEXT_MODEL, VISION_MODEL):
+            with self.subTest(model=model):
+                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                message = open_session_message(root, provider_config={
+                    "main_agent": {"provider": "test"},
+                    "providers": {"test": {"model": model, "key": "test", "api": "chat_completions", "max_context_tokens": 1000}},
+                })
+                with patch.object(ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)):
+                    host = RuntimeHost(root)
+                    self.addCleanup(host.close)
+                    host.open_session(Path(message["workspace"]))
+                    plane = host.planes.ensure(host.sessions)
+                self.assertEqual(
+                    "read_image" in {tool.name for tool in plane.agent._tools.definitions},
+                    model == VISION_MODEL,
                 )
-            )
-            plane = bridge.host.planes.ensure(bridge.host.sessions)
-            main_names = sorted(
-                d.name for d in plane.agent._tools.definitions
-            )
-            role = plane.agent._tools._context.subagents.roles.get(
-                "researcher"
-            )
-            role_names = sorted(
-                vision_aware_tool_names(
-                    role.tools, role.provider, role.vision_provider
-                )
-            )
-        return main_names, role_names
-
-    def test_derives_the_single_image_tool_from_capabilities(self) -> None:
-        cases = (
-            ("vision model", VISION_MODEL, "seeing", "read_image"),
-            ("text model with route", TEXT_MODEL, "seeing", "analyze_image"),
-            ("text model without route", TEXT_MODEL, None, None),
-        )
-        for label, model, vision_provider, expected in cases:
-            with self.subTest(label=label):
-                main, role = self.tool_names(model, vision_provider)
-                for names in (main, role):
-                    image_tools = {"read_image", "analyze_image"} & set(names)
-                    if expected is None:
-                        self.assertEqual(image_tools, set())
-                    else:
-                        self.assertEqual(image_tools, {expected})
-
-    def test_the_two_image_tools_are_never_both_registered(self) -> None:
-        """They are alternatives: one route into context, not two."""
-        for model in (VISION_MODEL, TEXT_MODEL):
-            for vision_provider in ("seeing", None):
-                with self.subTest(model=model, vision=vision_provider):
-                    main, role = self.tool_names(model, vision_provider)
-
-                    for names in (main, role):
-                        self.assertLess(
-                            len(
-                                {"read_image", "analyze_image"}
-                                & set(names)
-                            ),
-                            2,
-                        )
-
-    def test_a_text_model_without_a_vision_provider_does_not(self) -> None:
-        """Nothing to route images to, so the tool would always fail."""
-        main, role = self.tool_names(TEXT_MODEL, None)
-
-        self.assertNotIn("analyze_image", main)
-        self.assertNotIn("analyze_image", role)
-
-    def test_a_role_derives_from_its_own_model(self) -> None:
-        """A text-only role under a vision main agent still gets the tool."""
-        main, role = self.tool_names(
-            VISION_MODEL,
-            "seeing",
-            role_blocks={"researcher": {"provider": "blind"}},
-        )
-
-        self.assertNotIn("analyze_image", main)
-        self.assertIn("analyze_image", role)
-
-    def test_a_role_cannot_ask_for_the_tool_in_its_config(self) -> None:
-        with self.assertRaisesRegex(ValueError, "analyze_image"):
-            self.tool_names(
-                TEXT_MODEL, "seeing", role_tools={"analyze_image": True}
-            )
 
 
 class CrossFileRoleValidationTest(BridgeTestCase):

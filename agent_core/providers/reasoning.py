@@ -81,16 +81,6 @@ def reasoning_arguments(
     if route == "openrouter":
         reasoning = arguments.setdefault("extra_body", {}).setdefault("reasoning", {})
         reasoning.setdefault("effort", mapped)
-    elif route == "anthropic":
-        arguments.setdefault(
-            "thinking",
-            {"type": "disabled"}
-            if semantic_effort == "none"
-            else {
-                "type": "enabled",
-                "budget_tokens": _anthropic_budget(semantic_effort),
-            },
-        )
     elif route == "bedrock":
         arguments.setdefault(
             "extra_body",
@@ -105,8 +95,6 @@ def reasoning_arguments(
             "extra_body",
             {"reasoning": {"summary": "concise", "effort": mapped}},
         )
-    elif route in {"gemini", "vertex_ai"}:
-        arguments.setdefault("thinking_level", mapped)
     elif route == "moonshot":
         model_name = model.lower().rsplit("/", 1)[-1]
         if "k3" in model_name:
@@ -117,18 +105,6 @@ def reasoning_arguments(
         arguments.setdefault("reasoning_effort", mapped)
 
     return arguments
-
-
-def _anthropic_budget(effort: str) -> int:
-    return {
-        "none": 1024,
-        "minimal": 1024,
-        "low": 2048,
-        "medium": 4096,
-        "high": 8192,
-        "xhigh": 16384,
-        "max": 16384,
-    }[effort]
 
 
 __all__ = [

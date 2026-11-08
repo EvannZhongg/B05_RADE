@@ -102,7 +102,6 @@ class ToolMediaEvent:
     """Tool attachments for model observation or explicit user delivery."""
 
     attachments: tuple[AttachmentPart, ...]
-    present_to_user: bool = False
 
 
 @dataclass(frozen=True)
@@ -414,9 +413,9 @@ class Agent:
                             )
                         )
 
-                def emit_media(media: tuple[AttachmentPart, ...], present_to_user: bool) -> None:
+                def emit_media(media: tuple[AttachmentPart, ...]) -> None:
                     if on_event is not None:
-                        on_event(ToolMediaEvent(attachments=media, present_to_user=present_to_user))
+                        on_event(ToolMediaEvent(attachments=media))
 
                 self._tool_batch_executor.execute(
                     response.tool_calls,

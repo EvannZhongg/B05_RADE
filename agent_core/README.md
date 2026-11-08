@@ -56,7 +56,6 @@ interfaces → agent_runtime → agent_core
 | `projection.py` | 从 Session Journal 投影模型上下文单元 |
 | `context_manager.py` | token 预算、上下文压缩和窗口快照 |
 | `media.py` | 图片格式探测、尺寸、编码与 token 估算 |
-| `public_url.py` | Web 资源访问前的公网 URL 校验 |
 
 ## Session、计划与持久化
 
@@ -85,21 +84,12 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 
 - Workspace 文件读取、搜索、列举、写入、编辑和 patch
 - Shell 命令执行
-- Web Search 与 Web Fetch
-- 图片读取、分析与生成
-- 桌面截图与输入
+- 图片读取
 - Skill 读取和子 Agent 派发
 - 后台 Shell 与子 Agent Job 的查询和取消
 - 用户提问、计划更新与长期记忆写入
-- 定时任务创建、修改、查询和删除
 
-`ask_user`、`update_plan`、`remember`、`job_control` 等 Tool 依赖注入的 Runtime 能力，不把应用决策复制到 Tool 内。图片生成与桌面自动化只面向主 Agent；`job_control` 只能查看和取消父 Session 的 Job，子 Agent 角色不可见；角色可见性由装配阶段选择。
-
-`web_search` 从 `ToolExecutionContext.tool_settings` 获取 Runtime 注入的 provider 与密钥，Core 不读取配置文件或环境变量。Runtime 在 `.RADE/tool_config.json` 中选择 `duckduckgo`（`ddgs` 库，无需密钥）、`exa` 或 `deepseek`，详见 [Runtime 配置](../agent_runtime/README.md#配置与默认资源)。
-
-`web_fetch` 同样使用该上下文中的设置，可选择 `direct` 或 `deepseek`。`direct` 提取网页文本并逐次检查重定向；DeepSeek [Fetch API](https://api-docs.deepseek.com/zh-cn/api/fetch/) 返回标题与 Markdown 正文，保留 Markdown 格式并按工具预算截断，请求 URL 最长 8192 个字符。该 API 不返回目标网页的 HTTP 状态码或重定向后的地址，因此结果中的 `url` 是请求地址，不生成状态码与最终地址。两条路径都校验公开 URL 并限制响应字节数。DeepSeek 密钥缺失或返回 401 时降级到直接抓取，结果附带结构化的 `fallback` 原因与实际 `provider`；403 是安全策略拒绝，和其他错误一样直接返回，不重试，也不切换 provider。
-
-后端同时决定 Tool schema 暴露的参数，例如 Exa 的 `include_domains`。DeepSeek 使用 [Search API](https://api-docs.deepseek.com/zh-cn/api/search/)（`POST https://api.deepseek.com/v1/tools/search`），将 `num_results` 映射为 `count`，沿用工具的 1～10 条结果上限；查询限制为 1～128 个 Unicode 字符且不能全为空白，支持 `site:`、`-site:`、引号、`lang:`、`after:`、`before:` 等语法。结果保持统一的 `title`、`url`、`published_date`、`highlights` 格式，其中 `summary` 用作摘要，不请求网页正文。Exa 和 DeepSeek 使用 HTTP 状态码识别鉴权错误；密钥缺失或返回 401 时仅该次调用降级到 DuckDuckGo，并返回结构化的降级原因；其他错误通过现有 Tool 错误路径返回。
+`ask_user`、`update_plan`、`remember`、`job_control` 等 Tool 依赖注入的 Runtime 能力，不把应用决策复制到 Tool 内。`job_control` 只对父 Session 可见，用于查看和取消自己的 Job。
 
 `search_files` 与 `list_directory` 默认 60 秒超时并响应取消。`search_files` 跳过符号链接、junction 以及常见依赖、缓存和构建目录；`list_directory` 可传 `timeout_seconds`，递归只进入真实目录，符号链接与 junction 只列出、不展开目标。
 
@@ -109,11 +99,11 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 | --- | --- |
 | `base.py` | Tool 抽象和结构化输入输出 |
 | `catalog.py` | Catalog 与按名称选取的 ToolSet |
-| `config.py` | Tool 开关配置与 Runtime 注入的参数结构 |
+| `config.py` | 内置 Tool 开关与角色可选范围 |
 | `context.py` | 每次调用所需的 Workspace、Session、执行器等依赖 |
 | `paths.py` | 读取路径解析与 Workspace 包含校验 |
 | `globs.py` | 文件路径 glob 匹配 |
-| `policy.py` | Shell、文件写入、桌面自动化与 MCP 的授权策略组合 |
+| `policy.py` | Shell、文件写入与 MCP 的授权策略组合 |
 | `files.py` | Workspace 写入的共享落盘与路径校验 |
 | `budget.py` | Tool 结果大小预算 |
 | `builtin/` | 内置 Tool 实现 |
@@ -143,7 +133,7 @@ Shell 通过 `ExecutionRouter` 根据 `ExecutionScope` 和当前 `ExecutionAutho
 
 ## Provider 与模型协议
 
-`LLMProvider` 定义模型调用接口、能力信息、流式响应和 token usage。`OpenAIProvider` 使用原生 SDK 实现 Responses 与 Chat Completions 协议，官方服务和中转使用同一实现；其他服务商路由由 `LiteLLMProvider` 承担。
+`LLMProvider` 定义模型调用接口、能力信息、流式响应和 token usage。`OpenAIProvider` 使用原生 SDK 实现 Responses 与 Chat Completions 协议，官方服务和兼容端点使用同一实现。
 
 `usage.py` 统一定义 `TokenUsage` 和序列化：`input_tokens` 包含缓存部分，`cache_read_tokens` 与 `cache_write_tokens` 记录其读取、写入明细，未报告时为 `None`，明确报告无缓存活动时为 `0`。普通模型、压缩尝试和记忆调用分别以 `model_completed`、`compression_completed`、`memory_completed` 事件写入所属 Session 的同一份 Journal；辅助调用记录实际模型、scope、尝试次数、状态、耗时、用量和错误，不进入对话上下文。
 
@@ -155,9 +145,9 @@ Session 在应用普通模型和压缩事件时累计 `CacheUsage`，只计入�
 
 原生文本计数器只缓存编码对象，每次对请求文本与完整 JSON 工具定义重新分词。ContextManager 使用最近一次成功普通模型调用的输入 usage，加上当前请求与锚点请求的本地估算差量；压缩判断和上下文展示共享这个值。锚点随 `model_completed` 写入 Journal，可恢复；压缩事件直接清除锚点，不将压缩状态重复写入指纹；端点、模型、协议、推理参数、系统提示、工具定义、计数策略或压缩状态变化时失效。缓存 token 已包含在输入 usage 中，不再相加；压缩、记忆和标题等辅助调用不替换普通请求锚点。首次请求及失效后的请求仍为本地估算，增量误差仍可能累积。DeepSeek 原生 Chat 在无工具时忽略历史 reasoning；Responses 只回传原生 reasoning 项，展示摘要不计入输入，加密 reasoning 按原生回传状态和 usage 计入。
 
-DeepSeek Flash 与 V4 Pro 共用原生 OpenAI SDK 的 Chat Completions 传输，本地模型资料与文本计数不依赖 LiteLLM；其他服务商的具名前缀（如 `anthropic/`）继续使用 LiteLLM 元数据与计数，即使显式选择原生 OpenAI 兼容协议也保持这一路径。图片生成仍使用 LiteLLM。只有装配的主模型、辅助模型、视觉模型和子 Agent 模型都走原生 OpenAI 或 DeepSeek 模型路径，且未启用图片生成时，首个模型请求才完全不需要导入 LiteLLM。
+DeepSeek Flash 与 V4 Pro 默认使用 Chat Completions，模型资料和文本计数在本地处理。其他带服务商前缀的模型可使用 LiteLLM 的元数据和 token 估算。所有模型请求由 OpenAI SDK 发送。
 
-图片在共享请求序列化阶段按 `providers/image_limits.py` 的内部策略处理，覆盖用户附件、Tool 图片及历史重发。已知服务的单边像素上限按整段对话的图片数量分档，数值随服务变化，以该模块为准；策略识别官方端点，未指定端点时使用模型路由，未知端点和未覆盖的服务保持原有发送行为。OpenAI、Gemini 等服务端的推理缩放尺寸不作为客户端上传限制。超限图片仅在内存中等比缩小，发送时附带原图尺寸和坐标换算；原始附件与 Journal 不变。编码缓存包含目标尺寸上限，token 估算使用发送尺寸且不解码图片。
+图片在共享请求序列化阶段按 `providers/image_limits.py` 的内部策略处理，覆盖用户附件、Tool 图片及历史重发。已知服务的单边像素上限按整段对话的图片数量分档，数值随服务变化，以该模块为准；策略识别官方端点，未指定端点时使用模型路由，未知端点和未覆盖的服务保持原有发送行为。客户端上传限制与服务端推理缩放尺寸分别处理。超限图片仅在内存中等比缩小，发送时附带原图尺寸和坐标换算；原始附件与 Journal 不变。编码缓存包含目标尺寸上限，token 估算使用发送尺寸且不解码图片。
 
 所有视觉 Provider 在 token 估算和发送阶段都使用相同的格式探测和 5 MiB 字节上限检查。缺失图片以文本提示替代，不计图片 token；存在但为空、格式不可识别或超出字节上限的图片直接报错，不按 0 token 忽略，也不发送给上游。路径越界等调用错误同样直接报错。未知服务仅不应用尺寸缩放规则，仍受统一图片校验约束。
 
@@ -173,12 +163,9 @@ Responses 工具参数从 `response.completed` 的完整 output 读取，推理�
 | `providers/deepseek_models.py` | DeepSeek 当前模型的本地上限与视觉能力 |
 | `providers/openai_tokens.py` | 使用随包词表的本地请求 token 估算 |
 | `providers/openai_provider.py` | 原生 Responses 与 Chat Completions 协议 |
-| `providers/litellm_provider.py` | LiteLLM 文本和视觉适配 |
 | `providers/image_limits.py` | 已知服务的图片上传尺寸限制 |
 | `providers/reasoning.py` | `reasoning_effort` 与自定义推理参数的校验和路由映射 |
 | `providers/tool_call_stream.py` | 流式 Tool Call 组装与校验 |
-| `image_generation.py` | 图片生成抽象 |
-| `providers/image_generation.py` | LiteLLM 图片生成实现 |
 | `auxiliary.py` | 辅助模型调用的耗时、结果与用量统计 |
 
 ## Skill、MCP 与子 Agent
@@ -191,15 +178,14 @@ Core 只定义扩展机制，不决定扩展从哪个目录加载：
 
 相关模块为 `skills.py`、`mcp/` 和 `subagent.py`。
 
-## Memory、Job 与 Scheduler
+## Memory 与 Job
 
 长期记忆分为全局和 Workspace 两层。`MemoryManager` 在 Turn 开始时提供记忆上下文，收集候选更新，并在成功结束后通过 `MemoryReconciler` 合并；失败或取消时丢弃待提交更新。
 
 `JobManager` 管理可取消的后台任务和状态事件，供子 Agent 等长任务使用。Job 快照（原始详情、耗时、progress、错误与结果摘要）随 Journal 持久化，Turn 恢复后仍可由 `job_control` 查询；已恢复的中断 Job 不能再取消。
 
-`SchedulerService` 定义 one-shot、interval、cron trigger，以及任务、运行记录、错过执行的处理和 JSONL 持久化。它通过注入的 runner 发起 Agent Turn，但不负责组装应用 Runtime。领导权锁争用时继续轮询；其他文件系统错误会记录异常与调度数据路径，结束调度循环并释放领导权锁。
 
-相关模块为 `memory.py`、`jobs.py` 和 `scheduler.py`。
+相关模块为 `memory.py`和 `jobs.py`。
 
 ## Workspace Instructions
 

@@ -164,14 +164,12 @@ class Block:
 sys.meta_path.insert(0, Block())
 from agent_core import LLMRequest
 from agent_core.providers import OpenAIProvider
-from agent_runtime.config import ModelConfig
 for model in ('deepseek/deepseek-flash', 'deepseek-flash', 'deepseek/deepseek-v4-pro'):
-    p = ModelConfig(model, None, 'test').provider_class(model)
+    p = OpenAIProvider(model)
     assert p.max_context_tokens == 1000000
     assert p.max_output_tokens == 393216
     assert p.count_input_tokens(LLMRequest('hello', ())) > 0
     assert p.token_counting_identity
-from agent_core.providers import OpenAIProvider
 p = OpenAIProvider('gpt-5')
 assert p.count_input_tokens(LLMRequest('hello', ())) > 0
 assert p.token_counting_identity

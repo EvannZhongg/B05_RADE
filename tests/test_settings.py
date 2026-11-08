@@ -14,9 +14,9 @@ from agent_runtime.settings import (
 
 
 PROVIDERS = {
-    "main_agent": {"provider": "first", "vision_provider": ""},
+    "main_agent": {"provider": "first"},
     "fast_model": {"provider": ""},
-    "subagent": {"provider": "", "vision_provider": ""},
+    "subagent": {"provider": ""},
     "subagent_roles": {},
     "providers": {"first": {"model": "openai/first", "key": "${FIRST_KEY}"}},
 }
@@ -155,9 +155,6 @@ class SettingsStoreTest(unittest.TestCase):
         document["subagent_roles"] = {
             "researcher": {"provider": "first", "extra": True},
         }
-        document["image_generation"] = {
-            "provider": "first", "model": "image-model", "extra": {},
-        }
         self.store.provider_path.write_text(json.dumps(document), encoding="utf-8")
 
         snapshot = self.store.save_provider("first", {"model": "openai/updated"})
@@ -245,11 +242,6 @@ class SettingsStoreTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "configuration changed"):
             self.store.save_agent({"max_same_tool_calls": 6}, revision)
 
-    def test_im_configuration_does_not_invalidate_execution_configuration(self) -> None:
-        revision = configuration_fingerprint(self.root)
-        (self.root / "im_channels.json").write_text('{"channels": []}', encoding="utf-8")
-        self.assertEqual(configuration_fingerprint(self.root), revision)
-
     def test_rejects_secret_line_breaks(self) -> None:
         with self.assertRaisesRegex(ValueError, "line breaks"):
             self.store.save_provider("first", {
@@ -307,9 +299,7 @@ class SettingsStoreTest(unittest.TestCase):
         snapshot = self.store.snapshot()
         updated = self.store.save_routing({
             "main_agent": "first",
-            "vision_provider": None,
             "subagent": "first",
-            "subagent_vision_provider": None,
             "roles": {},
         }, snapshot["revision"])
         self.assertEqual(updated["routing"]["subagent"], "first")
@@ -327,37 +317,6 @@ class SettingsStoreTest(unittest.TestCase):
         routing["fast_model"] = "missing"
         with self.assertRaisesRegex(ValueError, "fast_model.provider"):
             self.store.save_routing(routing)
-
-    def test_provider_save_preserves_image_generation_config(self) -> None:
-        document = json.loads(
-            (self.root / "provider_config.json").read_text(encoding="utf-8")
-        )
-        document["image_generation"] = {
-            "provider": "first",
-            "model": "openai/image-model",
-        }
-        (self.root / "provider_config.json").write_text(
-            json.dumps(document), encoding="utf-8"
-        )
-
-        self.store.save_provider(
-            "first",
-            {
-                "model": "openai/first",
-                "url": None,
-                "max_context_tokens": None,
-                "api_key": {"action": "keep"},
-            },
-        )
-
-        saved = json.loads(
-            (self.root / "provider_config.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(
-            saved["image_generation"],
-            {"provider": "first", "model": "openai/image-model"},
-        )
-
 
 class EnvironmentReloaderTest(unittest.TestCase):
     def test_environment_references_require_an_exact_variable_name(self) -> None:

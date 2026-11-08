@@ -16,50 +16,15 @@ from .prompting import render_subagent_prompt
 from .session import Session
 from .session_paths import session_directory
 from .session_store import JsonlSessionStore
-from .skills import SkillRegistry
 from .tools.catalog import ToolCatalog
 from .tools.context import ToolExecutionContext
 from .tools.base import JSONValue, ToolPolicy
-from .tools.builtin import AnalyzeImageTool, ReadImageTool, ReadSkillTool
 from .execution.process import CancellationSignal
 from .turn_control import TurnControl
 from .workspace_instructions import WorkspaceInstructions
 
 if TYPE_CHECKING:
     from .agent import AgentEvent
-
-
-def vision_aware_tool_names(
-    configured: Iterable[str],
-    provider: LLMProvider,
-    vision_provider: LLMProvider | None,
-) -> tuple[str, ...]:
-    """Add the image tool this agent can actually use, if any.
-
-    The two image tools are alternatives, never both. A vision-capable
-    model gets ``read_image`` and looks at the pixels itself. A text-only
-    model has images stripped from its context, so its only route is
-    ``analyze_image``, which spends a second provider call turning them
-    into text -- and that requires the Runtime to have resolved a vision
-    provider to hand them to.
-    """
-    names = tuple(configured)
-    if "image" in provider.capabilities.input_modalities:
-        return (*names, ReadImageTool.name)
-    if vision_provider is None:
-        return names
-    return (*names, AnalyzeImageTool.name)
-
-
-def skill_aware_tool_names(
-    configured: Iterable[str],
-    skills: SkillRegistry | None,
-) -> tuple[str, ...]:
-    """Add progressive skill loading when the Runtime found skills."""
-    names = tuple(configured)
-    if not skills:
-        return names
-    return (*names, ReadSkillTool.name)
 
 
 @dataclass(frozen=True)
@@ -75,7 +40,6 @@ class SubagentRole:
     tools: tuple[str, ...]
     provider: LLMProvider
     instructions: str = ""
-    vision_provider: LLMProvider | None = None
 
 
 class SubagentRoleRegistry:
@@ -169,7 +133,6 @@ class SubagentRuntime:
             vision_input=(
                 "image" in role.provider.capabilities.input_modalities
             ),
-            vision_provider=role.vision_provider,
             subagents=None,
             jobs=None,
             plan=None,
@@ -182,13 +145,10 @@ class SubagentRuntime:
         )
         tools = self._catalog.select(
             (
-                *skill_aware_tool_names(
-                    vision_aware_tool_names(
-                        role.tools, role.provider, role.vision_provider
-                    ),
-                    parent.skills,
-                ),
-                *(("remember",) if memory is not None else ()),
+                *role.tools,
+                "read_image",
+                "read_skill",
+                "remember",
             ),
             context,
             policy=self._tool_policy,

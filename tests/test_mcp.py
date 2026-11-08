@@ -608,30 +608,17 @@ class McpClientManagerTest(unittest.TestCase):
             }
         )
 
-        waited: list[float] = []
         manager = McpClientManager(config, Path.cwd())
-        original_wait = manager._ready.wait
-
-        def record_wait(timeout: float | None = None) -> bool:
-            waited.append(timeout if timeout is not None else -1)
-            return original_wait(timeout)
-
-        async def start_server(stack, server):
-            return SimpleNamespace(instructions=None), ()
-
         with (
-            patch.object(manager._ready, "wait", record_wait),
-            patch.object(manager, "_start_server", start_server),
+            patch.object(manager, "_thread", object()),
+            patch.object(manager, "_ready") as ready,
+            patch("agent_core.mcp.manager.time", SimpleNamespace(monotonic=lambda: 0.0)),
         ):
-            try:
-                manager.start()
-                manager.wait_ready()
-            finally:
-                manager.close()
+            ready.is_set.side_effect = [False, True]
+            manager.wait_ready()
 
-        self.assertEqual(len(waited), 1)
-        self.assertGreater(waited[0], max(budgets))
-        self.assertGreaterEqual(waited[0] - max(budgets), 5)
+        ready.wait.assert_called_once_with(max(budgets) + 5)
+
 
     def test_starts_servers_concurrently(self) -> None:
         config = load_mcp_config({"enabled": True, "servers": {

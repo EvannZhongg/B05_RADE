@@ -1,6 +1,6 @@
 # Agent Runtime
 
-`agent_runtime` 是 RADE 唯一的应用 Runtime 装配层。它读取应用配置和 Workspace 状态，把 [`agent_core`](../agent_core/README.md) 的机制组装成 Bridge 与定时任务可调用的运行实例，但不实现 Agent 决策逻辑。
+`agent_runtime` 是 RADE 唯一的应用 Runtime 装配层。它读取应用配置和 Workspace 状态，把 [`agent_core`](../agent_core/README.md) 的机制组装成 Bridge 可调用的运行实例，但不实现 Agent 决策逻辑。
 
 ## Runtime 入口
 
@@ -13,11 +13,8 @@ RuntimeHost
 └── TurnRunner                turn、steer、cancel 与结束结果
 ```
 
-交互式 Bridge 和无人值守的 Scheduled Runner 都通过这套装配进入 Core。前端不自行创建 Agent、执行 Tool 或维护另一套授权状态。
+常驻 Bridge 为每个通道创建独立 `RuntimeHost`，在进程内共享 `RuntimeServices` 提供的环境重载与设置读取。各 Host 分别关闭自己的执行面和 Journal。
 
-`RuntimeServices` 持有一个进程内共享的 EnvironmentReloader、SettingsStore 和
-SchedulerService。常驻 Bridge 为每个通道创建独立 RuntimeHost 并传入同一个 services；
-Host 关闭只释放自身执行面与 Journal，由进程宿主在全部 Host 关闭后释放共享服务。
 默认 Provider 的代码、tokenizer 与 TLS 信任上下文在进程启动时预热，不发送模型请求。
 
 ## Execution Plane
@@ -28,7 +25,7 @@ Host 关闭只释放自身执行面与 Journal，由进程宿主在全部 Host �
 - 已解析的 Agent 配置及配置 fingerprint
 - Workspace Instructions 及其 fingerprint
 - 已装配的 Agent（含其 Tool）与执行路由
-- Memory、MCP Client Manager、桌面能力、后台 Job 和上下文窗口
+- Memory、MCP Client Manager、后台 Job 和上下文窗口
 
 `ExecutionPlaneManager.ensure()` 在首个 `user_turn` 到来时延迟装配。复用条件是 Workspace、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
 
@@ -36,19 +33,18 @@ Host 关闭只释放自身执行面与 Journal，由进程宿主在全部 Host �
 
 装配阶段负责：
 
-- 创建主 Provider、`fast_model` 对应的辅助模型 Provider、视觉 Provider 和图片生成 Provider
-- 按选中的协议与模型路由导入对应适配器；原生 OpenAI 和 DeepSeek 模型的装配和视觉校验不导入 LiteLLM
+- 创建主 Provider、`fast_model` 对应的辅助模型 Provider
+- 使用 OpenAI SDK 按配置装配 Chat Completions 或 Responses
 - 建立宿主与平台沙箱执行器，并按 Session 的权限 preset 决定执行路由授权
-- 装配桌面截图与输入能力；Windows 输入使用原生 SendInput，其他平台的 PyAutoGUI、PyScreeze、OpenCV、NumPy 等原生依赖在首次使用桌面 Tool 时才加载
 - 从内置 Catalog 按主 Agent 和子 Agent 角色选择 Tool
-- 注入 Session、Plan、Memory、Scheduler、权限、图片和用户交互能力
+- 注入 Session、Plan、Memory、权限、图片和用户交互能力
 - 加载 standalone Skill、Plugin Skill、Plugin Agent 与 MCP Server
 - 构造子 Agent 角色注册表和后台 Job Manager
 - 启动 MCP Server 并汇总非致命 Runtime warning
 
 ## MCP 生命周期
 
-每个 Execution Plane 创建自己的 Core `McpClientManager`，直接连接 stdio 或 streamable HTTP Server。Bridge 与定时任务各自通过 Runtime 装配 MCP；不同 Runtime 的连接与 stdio 子进程相互独立。
+每个 Execution Plane 创建自己的 Core `McpClientManager`，直接连接 stdio 或 streamable HTTP Server。各执行面的连接与 stdio 子进程相互独立。
 
 Manager 在后台线程中并发连接 Server，装配其他依赖后通过 `wait_ready()` 获取经过 allowlist 过滤的 `McpTool`。启动超时或失败仅将对应 Server 标记为 unavailable；工具名冲突仅拒绝冲突 Server 的整组工具，不留下部分注册结果。
 
@@ -109,10 +105,8 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 | 路径 | 用途 |
 | --- | --- |
-| `provider_config.json` | Provider 定义，主 Agent、视觉、图片生成和角色路由 |
+| `provider_config.json` | Provider 定义与主 Agent、辅助调用、子 Agent 角色路由 |
 | `agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Instructions 与 scratch Workspace |
-| `tool_config.json` | Web Search、Web Fetch 的 provider 与密钥配置 |
-| `im_channels.json` | 移动端 / IM 通道配置，默认提供禁用的飞书模板；由对应前端读取 |
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
 | `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`GlobalMemory.md`、`WorkspaceMemory.md` |
 | `skills/` | standalone Skill |
@@ -122,32 +116,6 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 仓库内的 [`defaults/`](defaults) 是首次初始化时的安装源。已有配置、Prompt、Skill 或 Plugin 目录不会被默认资源覆盖。
 
-`tool_config.json` 提供 `web_search` 和 `web_fetch` 两个配置段。搜索默认使用无需密钥的 `duckduckgo`，也可选择 `exa` 或 `deepseek`；抓取默认使用 `direct`，也可选择 `deepseek`：
-
-```json
-{
-  "web_search": {
-    "provider": "duckduckgo",
-    "providers": {
-      "exa": {"key": "${EXA_API_KEY}"},
-      "deepseek": {"key": "${DEEPSEEK_API_KEY}"}
-    }
-  },
-  "web_fetch": {
-    "provider": "direct",
-    "providers": {
-      "deepseek": {"key": "${DEEPSEEK_API_KEY}"}
-    }
-  }
-}
-```
-
-`key` 可以是明文或 `${ENV_NAME}` 引用，引用从进程环境（含 `.RADE/.env`）解析。Runtime 只解析选中 provider 的密钥，作为 `tool_settings` 注入 Tool 执行上下文；Core 不读取配置文件或环境变量。两个工具分别配置 provider 和 key，可引用同一个 `DEEPSEEK_API_KEY`。
-
-`tool_config.json` 只选择 provider 与密钥，工具是否可用仍由 `agent_config.json` 的 `main_agent.tools` 和对应角色开关决定，两个配置段都必须存在。配置或 `.env` 变化会在下次 Turn 重建执行面，主 Agent 与子 Agent 共用同一份解析后的设置。
-
-provider 的鉴权失败降级、403 处理以及查询与 URL 语义都属于 Tool 行为，由 Core 实现并记录在 [Core 的 Tool 系统](../agent_core/README.md#tool-系统)；本层只负责把选中的 provider 与密钥注入执行上下文。
-
 `agent_config.json` 的 `skills.global_paths` 相对配置目录解析、`skills.workspace_paths` 相对当前 Workspace 解析。`scratch_workspace_root` 的相对路径也以配置目录为基准，默认为 `workspaces/scratch`。同名 Skill 保留最先注册的来源，Plugin Skill 排在配置来源之后。
 
 Provider 路由按以下链解析：
@@ -156,12 +124,14 @@ Provider 路由按以下链解析：
 具体 subagent role → subagent 默认值 → main_agent
 ```
 
-空字符串表示继续继承。`fast_model` 是独立的一路，只服务长期记忆合并，不参与上面的子 Agent 链；未配置时沿用当前选中的主模型，主 Agent 与子 Agent 的记忆合并共享这个 Provider。上下文压缩始终使用当前 Agent 自己的 LLM，复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。图片生成使用独立 `image_generation` 配置；模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
+空字符串表示继续继承。`fast_model` 是独立的一路，服务长期记忆合并和会话标题生成，不参与上面的子 Agent 链；未配置时沿用当前选中的主模型，主 Agent 与子 Agent 的记忆合并共享这个 Provider。上下文压缩始终使用当前 Agent 自己的 LLM，复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
 每个 `provider_config.json` 的 `providers.<name>` 条目可以配置 `api: "responses"` 或 `api: "chat_completions"`，按协议选择原生 OpenAI SDK；与中转域名无关，也不在失败后切换协议。显式选择协议时，除 `deepseek/` 路由前缀会移除外，`model` 是原样发送的服务端模型 ID，例如 `gpt-6-astra` 或 `openai/gpt-5`（后者适用于要求该 ID 的网关）。
 
-省略 `api` 时，无路由前缀（已知 DeepSeek 模型名除外）或使用 `openai/` 前缀的模型默认使用 Responses，并移除 `openai/` 前缀；`deepseek/` 路由和已知的 DeepSeek 无前缀模型名默认使用原生 Chat Completions，并移除 `deepseek/` 前缀；其他带前缀的服务商路由使用 LiteLLM。协议选择不依赖联网模型目录，DeepSeek Flash 与 V4 Pro 使用本地发布资料而不查询 LiteLLM 元数据，未知 DeepSeek 模型要求显式上下文上限且不映射旧别名。主 Agent、视觉和子 Agent 共用同一装配入口。
+省略 `api` 时，DeepSeek 模型默认使用 Chat Completions，其余模型默认使用 Responses。自动选择时会移除 `openai/` 前缀。DeepSeek 模型在两种协议下均移除 `deepseek/` 前缀。其他带服务商前缀的模型可以使用 LiteLLM 的元数据和 token 估算。
 
-可选的 `reasoning_effort` 值为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；具体模型只支持其中的子集。原生 Responses 发送 `reasoning.effort`，原生 Chat Completions 发送 `reasoning_effort`，其他路由保留其参数映射。省略该字段时使用上游默认值。`reasoning_parameters` 可以覆盖推理参数，`extra_body` 用于网关扩展字段，例如 `{"extra_body": {"enable_thinking": true}}`；原生 Chat 的额外推理字段也通过 SDK 的扩展 body 发送。
+Qwen 和 Ollama 预设使用 Chat Completions。使用本地 Ollama 时，请将 `max_context_tokens` 与服务实际分配给模型的上下文大小对齐。端点格式见 [Qwen](https://www.alibabacloud.com/help/en/model-studio/model-calling-in-sub-workspace) 和 [Ollama](https://docs.ollama.com/api/openai-compatibility) 文档。
+
+可选的 `reasoning_effort` 值为 `none`、`minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；具体模型只支持其中的子集。原生 Responses 发送 `reasoning.effort`，原生 Chat Completions 发送 `reasoning_effort`。省略该字段时使用上游默认值。`reasoning_parameters` 可以覆盖推理参数，`extra_body` 用于网关扩展字段，例如 `{"extra_body": {"enable_thinking": true}}`；原生 Chat 的额外推理字段也通过 SDK 的扩展 body 发送。
 
 ## 设置服务
 
@@ -217,23 +187,20 @@ GUI HTTP API 和 Bridge 设置消息都复用该服务。
 standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plugin 专用执行路径。
 装配、静态校验、错误隔离与文件变更的完整边界见 [Plugin 组件互通](../docs/plugin-interop.md)。
 
-## 附件与定时任务
+## 附件
 
-`attachments.py` 为 GUI 和 IM 共用上传落盘、文件命名与真实图片格式探测，并验证提交的附件位于当前 Workspace，转换为 Core 的 `ImagePart` 或 `FilePart`。主 Agent 的 `present_file` Tool 将交付文件快照保存为附件，沿用 Tool 执行、Journal 与 `tool_media` 事件链路。Tool 附件默认只用于模型观察，`present_file` 显式设置 `present_to_user=true`；Core 将观察附件写入 `tool_media` 消息，将交付附件写入 `tool_delivery` 消息，后者从模型上下文投影中排除，不受模型图片输入的字节限制。Core 按交付标记分开发出媒体事件，IM 仅发送显式交付的附件。`.RADE/attachments/` 是存储目录，不表达交付意图。
-
-`ScheduledTurnRunner` 为 Scheduler 创建独立 `RuntimeHost`，在任务绑定的 Workspace 中执行 Turn；Provider 沿用 Session 已保存或默认的选择。每次运行的授权由调度 Session 的权限 preset 决定，Runner 不写入也不覆盖该 preset，因此交互式修改会在下一次运行生效；无人值守运行不提供交互式授权或用户提问能力，需要审批的 Tool 不会因为运行无人值守而获得放行。
+`attachments.py` 负责 GUI 上传落盘、文件命名和图片格式探测，并验证提交的附件位于当前 Workspace。Runtime 将附件转换为 Core 的 `ImagePart` 或 `FilePart`。`read_image` 产生的图片作为模型观察结果写入 Journal，并通过 `tool_media` 事件发给前端。
 
 ## 模块索引
 
 | 模块 | 职责 |
 | --- | --- |
 | `host.py` | RuntimeHost 公共入口和控制器协调 |
-| `services.py` | 进程内共享的配置服务、环境重载、Settings 与 Scheduler |
+| `services.py` | 进程内共享的配置服务、环境重载与 Settings |
 | `execution_plane.py` | 一次原子装配的资源容器 |
 | `plane_manager.py` | Execution Plane 创建、复用、失效与关闭 |
 | `session_controller.py` | Session、Workspace、Provider、权限与计划绑定 |
 | `turn_runner.py` | Turn、steer、cancel 和结果 |
-| `scheduled_runner.py` | 无人值守定时 Turn 入口 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
 | `session_title.py` | 执行面持有的 Session 命名任务 |
 | `config.py` | 配置目录初始化、Provider 与 Prompt 读取 |
@@ -241,7 +208,6 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `plugins.py` | Plugin manifest、Skill、MCP、Agent 与 Hook component 发现 |
 | `instructions.py` | Workspace Instructions 来源读取与 fingerprint |
 | `attachments.py` | 入站附件解析 |
-| `desktop/` | 桌面截图、输入与 Windows 窗口定位的平台能力 |
 | `callbacks.py` | Runtime 对宿主的回调接口 |
 
 ## Plugin Hooks

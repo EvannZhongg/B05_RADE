@@ -108,10 +108,7 @@ class ToolResult:
     output: JSONValue = None
     error: ToolError | None = None
     #: Observation attachments enter model context after the tool results.
-    #: With present_to_user=True they are persisted as delivery records only.
     attachments: tuple[AttachmentPart, ...] = ()
-    #: Route attachments exclusively to user delivery instead of model input.
-    present_to_user: bool = field(default=False, kw_only=True)
     executed: bool = field(default=False, compare=False, repr=False)
     hook_feedback: tuple[str, ...] = field(default=(), compare=False, repr=False)
     # Internal hooks used by tools that spool large results.  They are not
@@ -162,13 +159,10 @@ class ToolOutput:
     model needs to see pixels or when a complete result is retained on
     disk: ``output`` is serialized into the tool result as usual, while
     ``attachments`` and artifact hooks are consumed by the Runtime.
-    ``present_to_user`` explicitly requests external delivery of attachments;
-    ordinary observation media leaves it false.
     """
 
     output: JSONValue = None
     attachments: tuple[AttachmentPart, ...] = ()
-    present_to_user: bool = field(default=False, kw_only=True)
     artifact_writer: Callable[[Path], None] | None = field(
         default=None, compare=False, repr=False
     )

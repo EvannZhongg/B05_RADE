@@ -141,8 +141,9 @@ class BridgeProcess:
         self.messages = []
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
-        self.send(type="open_session", workspace=str(workspace), session_id=None)
         try:
+            self.until("bridge_ready")
+            self.send(type="open_session", workspace=str(workspace), session_id=None)
             self.until("session_ready")
         except BaseException:
             self.close()
@@ -151,11 +152,16 @@ class BridgeProcess:
     def read(self):
         try:
             for line in self.process.stdout:
-                self.queue.put(json.loads(line))
+                message = json.loads(line)
+                if message["type"] == "channel_event":
+                    message = message["event"]
+                self.queue.put(message)
         finally:
             self.queue.put(None)
 
     def send(self, **message):
+        if message["type"] != "shutdown":
+            message = {"type": "channel_command", "channel_id": "test", "command": message}
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
 
@@ -200,7 +206,7 @@ class HookCommandTest(unittest.TestCase):
 
     def invoke(self, payload):
         return subprocess.run(
-            [sys.executable, "-B", str(ROOT / "hooks" / "run.py")],
+            [sys.executable, "-X", "utf8", "-B", str(ROOT / "hooks" / "run.py")],
             input=json.dumps(payload), text=True, encoding="utf-8",
             capture_output=True, cwd=self.workspace, timeout=10,
         )
@@ -313,7 +319,6 @@ class BridgeIntegrationTest(unittest.TestCase):
             "skills": {"global_paths": [], "workspace_paths": []},
             "memory": {"enabled": False}, "main_agent": {"tools": {"subagent": True, "write_file": True}}, "mcp": {"enabled": True},
         })
-        self.json_file(self.config / "tool_config.json", {"web_search": {"provider": "duckduckgo"}, "web_fetch": {"provider": "direct"}})
         prompts = self.config / "prompts"
         prompts.mkdir()
         for name, content in {

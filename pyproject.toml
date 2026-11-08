@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "An open-source, lightweight personal agent runtime with a complete toolset and plugin system, shared by its GUI and TUI."
 requires-python = ">=3.11"
 dependencies = [
-    "ddgs>=9.5.5,<10.0.0",
     "httpx>=0.27",
     # The MCP streamable HTTP transport configures its headers through an
     # httpx2 client, so both HTTP clients are direct requirements.
@@ -18,13 +17,8 @@ dependencies = [
     "tiktoken>=0.14.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0",
-    "tzdata>=2022.1",
     "mcp>=2.0,<3",
-    "mss>=10.2",
     "pillow>=11.0",
-    "pyautogui>=0.9.54",
-    "pyobjc-framework-cocoa; sys_platform == 'darwin'",
-    "pyperclip>=1.11.0",
 ]
 
 [project.optional-dependencies]
@@ -60,7 +54,6 @@ namespaces = false
     "defaults/plugins/*/.mcp.json",
 ]
 "interfaces.gui" = ["static/*", "static/assets/*"]
-"interfaces.mobile" = ["dist/*.cjs"]
 
 # The recursive skill pattern above would otherwise carry whatever sits in the
 # working tree, so byte-code caches and Finder metadata reach the wheel when a

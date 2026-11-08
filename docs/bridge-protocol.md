@@ -15,7 +15,9 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 ## Stability and scope
 
-Every `session_ready` advertises `protocol_version: 3`. Clients must check this
+Protocol 4 defines Shell, file and MCP approvals, observation-only `tool_media` events, and provider routing for the main agent, fast model and subagent roles.
+
+Every `session_ready` advertises `protocol_version: 4`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -28,7 +30,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":3}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":4}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -57,7 +59,7 @@ Send `{"type":"close_channel","channel_id":"chat-1"}` to cancel and close only
 that runtime. Wait for `{"type":"channel_closed","channel_id":"chat-1"}` before
 reusing the channel ID or opening the same Journal elsewhere. Closing a channel
 keeps the process and the other channels alive. Shared process resources include
-configuration services, one scheduler, imported modules, tokenizer vocabularies
+configuration services, imported modules, tokenizer vocabularies
 and TLS trust contexts; mutable execution state is not shared.
 
 Send `{"type":"shutdown"}` or close stdin to cancel all channels and close the
@@ -244,7 +246,7 @@ unapplied when the turn ends. Stale cancellation/interaction IDs have no effect.
 Do not resubmit after an ambiguous disconnect as though IDs made it idempotent.
 
 Approval requests include `request_id`, `turn_id`, human-readable `command`, and
-optional `kind` (`shell`, `file`, `computer`, `mcp`), `server` and `tool_name` (some optional
+optional `kind` (`shell`, `file`, `mcp`), `server` and `tool_name` (some optional
 values may be `null`). Display the request and submit the user's boolean decision.
 The same request is in `runtime.approval`; avoid rendering it twice. Questions
 include `question`, `options: [{id, label, description?, recommended?}]` and
@@ -288,7 +290,7 @@ restarting Bridge. Nested Runtime snapshots need not have a sequence of their ow
 | `context_window` | Current token limits and compression metrics. |
 | `tool_batch_started` | Tool declarations for a model call, with IDs/names/arguments. |
 | `tool_call`, `tool_result` | Call execution/status keyed by Tool call ID; indices are 1-based. Result has `ok` and nullable structured `error`. |
-| `tool_media` | Image or file attachment descriptors (`type`, `path`, `filename`, `mime_type`, `size_bytes`), with `present_to_user` distinguishing explicit delivery from model observations. Only `true` requests external attachment delivery. |
+| `tool_media` | Image or file attachment descriptors (`type`, `path`, `filename`, `mime_type`, `size_bytes`) emitted for tool observations. |
 | `plan_updated` | Full plan snapshot and revision. |
 | `job_status` | Background job ID, kind, status, opaque details. |
 | `hook_completed` | Hook invocation ID, Plugin-qualified hook ID, checkpoint, Session ID, outcome, decision, reason, timing and optional Tool call ID. See [Plugin Hooks](plugin-hooks.md). |
@@ -347,9 +349,9 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 3
+receive bridge_ready; check protocol_version == 4
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 3; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 4; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
 receive/render events; answer interactions by request_id

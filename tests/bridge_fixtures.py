@@ -1,4 +1,4 @@
-"""Bridge protocol inputs with per-test configuration and scheduler storage."""
+"""Bridge protocol inputs with per-test configuration."""
 
 import io
 import json
@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TextIO
 from unittest.mock import patch
 
-from agent_core import SchedulerService
 from agent_core.tools.config import TOOL_NAMES
 from threading import Lock, Thread
 from interfaces.bridge.bridge import Bridge as SessionBridge
@@ -20,16 +19,13 @@ from agent_runtime.services import RuntimeServices
 class Bridge(SessionBridge):
     """Feed session-adapter unit tests without a process transport."""
 
-    def __init__(self, stdin, stdout, *, scheduler=None):
+    def __init__(self, stdin, stdout):
         self._stdin = stdin
         self._reader = None
         self._reader_lock = Lock()
         config_directory = default_config_directory()
-        self._test_services = RuntimeServices(
-            config_directory,
-            scheduler=scheduler or SchedulerService(config_directory / "schedule.jsonl"),
-        )
-        super().__init__(services=self._test_services, send=lambda event: stdout.write(encode(event) + "\n"))
+        services = RuntimeServices(config_directory)
+        super().__init__(services=services, send=lambda event: stdout.write(encode(event) + "\n"))
 
     def read_message(self):
         self._start_reader()
@@ -39,12 +35,6 @@ class Bridge(SessionBridge):
         waiter = super()._register_interaction(request_id, turn_id)
         self._start_reader()
         return waiter
-
-    def close(self):
-        try:
-            super().close()
-        finally:
-            self._test_services.close()
 
     def _start_reader(self) -> None:
         with self._reader_lock:
@@ -156,12 +146,6 @@ def open_session_message(
             }
         ),
         encoding="utf-8",
-    )
-    (directory / "tool_config.json").write_text(
-        json.dumps({
-            "web_search": {"provider": "duckduckgo"},
-            "web_fetch": {"provider": "direct"},
-        }), encoding="utf-8",
     )
     resolved_agent_config = {
         "generate_session_title": False,

@@ -23,7 +23,7 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 3 as const,
+  protocol_version: 4 as const,
   session_id: 'abc12345-0000',
   workspace: '/tmp/work',
   provider: 'deepseek',
@@ -405,20 +405,6 @@ describe('reducer', () => {
     expect(state.status).toBe('running');
   });
 
-  it('preserves the approval kind for computer interactions', () => {
-    const state = reducer(ready(), {
-      type: 'message',
-      message: {
-        type: 'approval_request',
-        turn_id: 't1',
-        request_id: 't1:1',
-        command: "computer_screenshot({'label': 'desktop'})",
-        kind: 'computer',
-      },
-    });
-
-    expect(state.approval?.kind).toBe('computer');
-  });
 
   it('tracks a user question and selects the recommended option', () => {
     let state = ready();

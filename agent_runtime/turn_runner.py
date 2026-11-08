@@ -1,4 +1,4 @@
-"""Turn lifecycle shared by interactive and unattended runtime hosts."""
+"""Turn lifecycle for interactive runtime hosts."""
 
 from collections import deque
 from dataclasses import dataclass, replace
@@ -64,7 +64,6 @@ class TurnRunner:
         text: str,
         ensure_plane: Callable[[], ExecutionPlane],
         attachments: Callable[[], tuple[AttachmentPart, ...]],
-        input_source: str = "user",
     ) -> TurnResult:
         control = TurnControl()
         with self._lock:
@@ -78,7 +77,6 @@ class TurnRunner:
             if turn_id in self._pending_cancels or self._shutdown:
                 control.cancel()
             self._pending_cancels.discard(turn_id)
-        plane = None
         memory = None
         started = False
         warnings: list[str] = []
@@ -97,7 +95,6 @@ class TurnRunner:
                 turn_control=control,
                 attachments=attachments(),
                 on_event=lambda event: self.callbacks.on_event(event, turn_id),
-                input_source=input_source,
             )
             if memory is not None:
                 try:
@@ -114,13 +111,7 @@ class TurnRunner:
                 memory.discard_pending()
             turn_result = TurnResult("failed", error=runtime_error_info(error), startup_failed=not started)
         finally:
-            try:
-                if plane is not None and plane.computer is not None:
-                    plane.computer.release_input()
-            except Exception as error:
-                warnings.append(f"Desktop input cleanup failed: {error}")
-            finally:
-                with self._lock:
-                    self.control = None
-                    self.turn_id = None
+            with self._lock:
+                self.control = None
+                self.turn_id = None
         return replace(turn_result, runtime_warnings=tuple(warnings))

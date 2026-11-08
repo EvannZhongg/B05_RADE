@@ -30,7 +30,7 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 class ProtocolError(ValueError):
@@ -390,7 +390,6 @@ def event_to_message(
         return {
             "type": "tool_media",
             "turn_id": turn_id,
-            "present_to_user": event.present_to_user,
             "attachments": [
                 {
                     "type": part.type,

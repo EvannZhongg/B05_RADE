@@ -18,12 +18,10 @@ from agent_core import (
     JsonlSessionStore,
     MemoryDocument,
     MemoryStore,
-    PermissionPreset,
     Session,
     SessionInUseError,
     Workspace,
 )
-from agent_core.scheduler import IntervalTrigger, OneShotTrigger, SchedulerService
 from agent_core.llm import AuxiliaryModelCall
 from interfaces.bridge.managed_workspaces import create_scratch_workspace
 from agent_runtime.settings import SettingsStore
@@ -667,8 +665,8 @@ class GuiTest(unittest.TestCase):
         self.config = self.root / "config"
         self.config.mkdir()
         (self.config / "provider_config.json").write_text(json.dumps({
-            "main_agent": {"provider": "first", "vision_provider": ""},
-            "subagent": {"provider": "", "vision_provider": ""},
+            "main_agent": {"provider": "first"},
+            "subagent": {"provider": ""},
             "subagent_roles": {},
             "providers": {
                 "first": {"model": "openai/first"},
@@ -2167,162 +2165,6 @@ class GuiTest(unittest.TestCase):
                 )
 
         self.assertEqual(response.status_code, 409)
-
-    def test_schedule_listing_includes_latest_run_and_session_availability(self) -> None:
-        scheduler = SchedulerService(
-            self.config / "schedule.jsonl",
-            runner=lambda schedule, run: None,
-        )
-        schedule = scheduler.create_schedule(
-            trigger=OneShotTrigger(datetime.now(timezone.utc)),
-            prompt="scheduled prompt",
-            workspace=str(self.root),
-            origin_session_id="origin",
-            schedule_session_id="scheduled-session",
-        )
-        run = scheduler.poll_once(datetime.now(timezone.utc))[0]
-        session = Session("scheduled-session")
-        session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-        session.begin_turn(run.turn_id)
-        session.add_item("user", schedule.action.prompt)
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=self.root,
-        )
-
-        with self.client() as client, patch.object(JsonlSessionStore, "load", side_effect=AssertionError("schedule listing must not load Session")):
-            item = client.get("/api/schedules").json()[0]
-
-        self.assertEqual(item["schedule_id"], schedule.schedule_id)
-        self.assertEqual(item["permission_preset"], "full_access")
-        self.assertEqual(
-            item["trigger"],
-            {"type": "once", "at": schedule.trigger.at.isoformat()},
-        )
-        self.assertIsNone(item["end_at"])
-        self.assertTrue(item["session_available"])
-        self.assertEqual(item["latest_run"]["run_id"], run.run_id)
-        self.assertEqual(item["latest_run"]["status"], "completed")
-
-    def test_schedule_update_accepts_trigger_and_end_at(self) -> None:
-        scheduler = SchedulerService(self.config / "schedule.jsonl")
-        schedule = scheduler.create_schedule(
-            trigger=IntervalTrigger(1200),
-            prompt="scheduled prompt",
-            workspace=str(self.root),
-            origin_session_id="origin",
-            schedule_session_id="scheduled-session",
-        )
-
-        self.store.bind_workspace(schedule.schedule_session_id, self.root)
-        self.store.set_permission_preset(schedule.schedule_session_id, PermissionPreset.FULL_ACCESS, self.root)
-        with self.client() as client, patch.object(JsonlSessionStore, "load", side_effect=AssertionError("schedule update must not load Session")):
-            response = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={
-                    "trigger": {
-                        "type": "cron",
-                        "expression": "0 10 * * *",
-                        "timezone": "Asia/Shanghai",
-                    },
-                    "end_at": "2099-12-31T23:59:00+08:00",
-                },
-            )
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertEqual(body["schedule_id"], schedule.schedule_id)
-        self.assertEqual(body["schedule_session_id"], "scheduled-session")
-        self.assertEqual(body["permission_preset"], "full_access")
-        self.assertEqual(
-            body["trigger"],
-            {
-                "type": "cron",
-                "expression": "0 10 * * *",
-                "timezone": "Asia/Shanghai",
-            },
-        )
-        self.assertEqual(body["end_at"], "2099-12-31T23:59:00+08:00")
-
-    def test_schedule_update_rejects_invalid_trigger_input(self) -> None:
-        scheduler = SchedulerService(self.config / "schedule.jsonl")
-        schedule = scheduler.create_schedule(
-            trigger=IntervalTrigger(1200),
-            prompt="scheduled prompt",
-            workspace=str(self.root),
-            origin_session_id="origin",
-            schedule_session_id="scheduled-session",
-        )
-
-        with self.client() as client:
-            response = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={
-                    "trigger": {
-                        "type": "interval",
-                        "seconds": 60,
-                        "start_at": 123,
-                    }
-                },
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("start_at must be", response.json()["detail"])
-        self.assertEqual(scheduler.schedules[0].trigger, IntervalTrigger(1200))
-
-    def test_schedule_update_rejects_invalid_end_at_input(self) -> None:
-        scheduler = SchedulerService(self.config / "schedule.jsonl")
-        schedule = scheduler.create_schedule(
-            trigger=IntervalTrigger(1200),
-            prompt="scheduled prompt",
-            workspace=str(self.root),
-            origin_session_id="origin",
-            schedule_session_id="scheduled-session",
-        )
-
-        with self.client() as client:
-            response = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={"end_at": 123},
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("end_at must be", response.json()["detail"])
-        self.assertIsNone(scheduler.schedules[0].end_at)
-
-    def test_schedule_update_rejects_invalid_and_unknown_fields(self) -> None:
-        scheduler = SchedulerService(self.config / "schedule.jsonl")
-        schedule = scheduler.create_schedule(
-            trigger=IntervalTrigger(1200),
-            prompt="scheduled prompt",
-            workspace=str(self.root),
-            origin_session_id="origin",
-            schedule_session_id="scheduled-session",
-        )
-
-        with self.client() as client:
-            blank_prompt = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={"prompt": " "},
-            )
-            coerced_enabled = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={"enabled": 1},
-            )
-            unknown = client.put(
-                f"/api/schedules/{schedule.schedule_id}",
-                json={"unknown": True},
-            )
-
-        self.assertEqual(blank_prompt.status_code, 400)
-        self.assertIn("prompt must be", blank_prompt.json()["detail"])
-        self.assertEqual(coerced_enabled.status_code, 400)
-        self.assertIn("enabled must be", coerced_enabled.json()["detail"])
-        self.assertEqual(unknown.status_code, 400)
-        self.assertIn("unsupported schedule update field", unknown.json()["detail"])
 
     def test_rejects_a_session_id_that_escapes_the_sessions_directory(
         self,

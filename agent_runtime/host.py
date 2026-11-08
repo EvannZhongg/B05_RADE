@@ -1,4 +1,4 @@
-"""Application runtime used directly by Bridge and scheduled workers."""
+"""Application runtime used by the Bridge."""
 
 from dataclasses import replace
 from pathlib import Path
@@ -7,8 +7,7 @@ from typing import Callable
 from agent_core import (
     AgentEvent, AttachmentPart, CompositeToolPolicy, ContextWindowEvent,
     McpApprovalPolicy,
-    PermissionPreset, SchedulerService, ShellApprovalPolicy,
-    ComputerApprovalPolicy, Workspace,
+    PermissionPreset, ShellApprovalPolicy, Workspace,
     FileWriteApprovalPolicy,
     UnitCompletedEvent,
 )
@@ -27,29 +26,22 @@ class RuntimeHost:
         config_directory: Path,
         *,
         callbacks: RuntimeCallbacks | None = None,
-        scheduler: SchedulerService | None = None,
         services: RuntimeServices | None = None,
     ) -> None:
         self.config_directory = config_directory.resolve()
         self.callbacks = callbacks or RuntimeCallbacks()
         runtime_callbacks = replace(self.callbacks, on_event=self.publish_event)
-        self._owns_services = services is None
-        self.services = services or RuntimeServices(
-            self.config_directory, scheduler=scheduler,
-        )
-        self.environment = self.services.environment
-        self.settings = self.services.settings
-        self.scheduler = self.services.scheduler
+        services = services or RuntimeServices(self.config_directory)
+        self.settings = services.settings
         self.planes = ExecutionPlaneManager(
-            self.config_directory, self.environment, self.scheduler,
+            self.config_directory, services.environment,
             runtime_callbacks,
         )
         self.sessions = SessionRuntimeController(
-            self.config_directory, self.environment, runtime_callbacks,
+            self.config_directory, services.environment, runtime_callbacks,
             CompositeToolPolicy(
                 ShellApprovalPolicy(self.callbacks.request_permission),
                 FileWriteApprovalPolicy(self.callbacks.request_permission),
-                ComputerApprovalPolicy(self.callbacks.request_permission),
                 McpApprovalPolicy(
                     self._request_mcp_permission,
                     lambda name: (
@@ -133,12 +125,11 @@ class RuntimeHost:
     def run_turn(
         self, turn_id: str, text: str, *,
         attachments: Callable[[], tuple[AttachmentPart, ...]] = lambda: (),
-        input_source: str = "user",
     ) -> TurnResult:
         return self.turns.run_turn(
             turn_id, text,
             lambda: self.planes.ensure(self.sessions, cancellation=self.turns.control),
-            attachments, input_source,
+            attachments,
         )
 
     def close(self) -> None:
@@ -146,8 +137,4 @@ class RuntimeHost:
         try:
             self.planes.close()
         finally:
-            try:
-                self.sessions.close()
-            finally:
-                if self._owns_services:
-                    self.services.close()
+            self.sessions.close()

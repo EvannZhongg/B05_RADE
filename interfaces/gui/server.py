@@ -20,7 +20,6 @@ from agent_core import JsonlSessionStore, Workspace
 from agent_runtime.settings import SettingsStore
 from interfaces.session_host import ActiveSessionRegistry
 from .routes.media import create_media_router
-from .routes.schedules import create_schedules_router
 from .routes.sessions import create_sessions_router
 from .routes.settings import create_settings_router
 from .routes.workspace import WorkspaceResolver, create_workspace_router
@@ -49,7 +48,6 @@ def create_app(
         allowed_hosts=[HOST, "localhost"],
     )
     app.include_router(create_settings_router(settings))
-    app.include_router(create_schedules_router(settings, store))
     app.include_router(create_workspace_router(workspace_resolver, settings))
     app.include_router(create_media_router(workspace_resolver, active_sessions))
     app.include_router(

@@ -14,7 +14,7 @@ from PIL import Image
 from agent_core.content import ImagePart, TextPart
 from agent_core.llm import LLMRequest
 from agent_core.media import clear_encoded_cache, estimate_image_tokens
-from agent_core.providers import LiteLLMProvider
+from agent_core.providers import OpenAIProvider
 from agent_core.providers.base import _request_messages
 from agent_core.session import Message
 
@@ -34,13 +34,13 @@ class ImageRequestTestCase(unittest.TestCase):
         clear_encoded_cache()
         self.addCleanup(clear_encoded_cache)
         self.patcher = patch.object(
-            LiteLLMProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
+            OpenAIProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
         )
         self.patcher.start()
         self.addCleanup(self.patcher.stop)
 
-    def provider(self, model: str = VISION_MODEL) -> LiteLLMProvider:
-        return LiteLLMProvider(
+    def provider(self, model: str = VISION_MODEL) -> OpenAIProvider:
+        return OpenAIProvider(
             model=model,
             max_context_tokens=100_000,
             media_root=self.root,

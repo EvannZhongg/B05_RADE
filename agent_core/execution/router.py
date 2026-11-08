@@ -65,7 +65,7 @@ class ExecutionRouter:
             )
         if call.name in WORKSPACE_WRITE_TOOLS:
             scope = ExecutionScope.WORKSPACE
-        elif call.name in {"computer_action", "computer_screenshot"} or self._host_tool(call.name):
+        elif self._host_tool(call.name):
             scope = ExecutionScope.HOST
         else:
             scope = None

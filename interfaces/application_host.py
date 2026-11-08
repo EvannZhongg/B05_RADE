@@ -1,8 +1,7 @@
-"""Resident host for shared Bridge sessions and independent HTTP / IM adapters."""
+"""GUI server host for shared Bridge sessions."""
 
 import argparse
 import asyncio
-import logging
 import os
 import signal
 from collections.abc import Iterator
@@ -13,11 +12,7 @@ from agent_core import JsonlSessionStore, Workspace
 from agent_core.file_lock import acquire_file_lock
 from agent_runtime.config import default_config_directory, initialize_config_directory
 from agent_runtime.settings import SettingsStore
-from interfaces.mobile.service import MobileService
 from interfaces.session_host import ActiveSessionRegistry
-
-
-log = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -42,16 +37,6 @@ class ApplicationHost:
         self.settings = settings
         self.active_sessions = ActiveSessionRegistry(store, workspace, settings.directory)
 
-    async def _serve_mobile(self) -> None:
-        mobile = MobileService(
-            self.settings.directory, self.active_sessions, self.store, self.workspace,
-        )
-        try:
-            await mobile.start()
-            await asyncio.Future()
-        finally:
-            await mobile.close()
-
     async def _serve_http(self) -> None:
         try:
             from interfaces.gui.server import serve_http
@@ -67,34 +52,16 @@ class ApplicationHost:
             self.workspace, self.store, self.settings, self.active_sessions,
         )
 
-    async def serve(self, *, http: bool = True) -> None:
-        adapters: set[asyncio.Task[None]] = set()
+    async def serve(self) -> None:
         try:
             await self.active_sessions.start()
-            adapters.add(asyncio.create_task(self._serve_mobile(), name="IM"))
-            if http:
-                adapters.add(asyncio.create_task(self._serve_http(), name="HTTP"))
-            pending = adapters.copy()
-            while pending:
-                done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
-                    try:
-                        task.result()
-                    except (OSError, ValueError, RuntimeError, ImportError) as error:
-                        log.error("RADE %s adapter failed: %s", task.get_name(), error)
-                        if not pending:
-                            raise
+            await self._serve_http()
         finally:
-            for task in adapters:
-                task.cancel()
-            try:
-                await asyncio.gather(*adapters, return_exceptions=True)
-            finally:
-                await self.active_sessions.close_all()
+            await self.active_sessions.close_all()
 
 
 def run_application_host(
-    workspace: Path, config_directory: Path, *, http: bool = True,
+    workspace: Path, config_directory: Path,
 ) -> None:
     directory = config_directory.expanduser().resolve()
     with application_lock(directory):
@@ -106,12 +73,12 @@ def run_application_host(
             SettingsStore(directory),
         )
         print(f"Workspace: {selected_workspace.path}")
-        asyncio.run(host.serve(http=http))
+        asyncio.run(host.serve())
 
 
 def _interrupt(_signum: int, _frame: object) -> None:
     # Use asyncio.run's SIGINT handler so it cancels the host task first,
-    # allowing adapters to finish shutdown before the event loop closes.
+    # allowing the host to finish shutdown before the event loop closes.
     signal.raise_signal(signal.SIGINT)
 
 
@@ -119,14 +86,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="RADE-server")
     parser.add_argument("--config-directory", type=Path, default=default_config_directory())
     parser.add_argument("--workspace", type=Path, default=Path.cwd())
-    parser.add_argument("--no-http", action="store_true", help="Run without the HTTP / WebSocket adapter")
     args = parser.parse_args(argv)
     signals = [signal.SIGTERM]
     if os.name == "nt":
         signals.append(signal.SIGBREAK)
     handlers = {sig: signal.signal(sig, _interrupt) for sig in signals}
     try:
-        run_application_host(args.workspace, args.config_directory, http=not args.no_http)
+        run_application_host(args.workspace, args.config_directory)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, ImportError) as error:

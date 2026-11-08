@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -15,7 +14,7 @@ from agent_core.media import (
     MAX_IMAGE_BYTES, UnsupportedImageError, clear_encoded_cache,
     encode_data_url, estimate_image_tokens,
 )
-from agent_core.providers import LiteLLMProvider, OpenAIProvider
+from agent_core.providers import OpenAIProvider
 from agent_core.providers.base import _media_tokens, _request_messages
 from agent_core.providers.image_limits import image_edge_limit
 from agent_core.providers.openai_provider import _responses_input
@@ -37,9 +36,10 @@ class ProviderImageLimitsTest(unittest.TestCase):
         return ImagePart(path=name, mime_type=Image.MIME[format], filename=name,
                          size_bytes=path.stat().st_size)
 
-    def provider(self, model="deepseek/deepseek-flash", url=None, native=False):
-        cls = OpenAIProvider if native else LiteLLMProvider
-        provider = cls(model=model, base_url=url, media_root=self.root, max_context_tokens=1000000)
+    def provider(self, model="deepseek/deepseek-flash", url=None, api=None):
+        provider = OpenAIProvider(
+            model=model, base_url=url, media_root=self.root, max_context_tokens=1000000, api=api,
+        )
         provider._capabilities = ProviderCapabilities(frozenset({"text", "image"}))
         return provider
 
@@ -65,15 +65,10 @@ class ProviderImageLimitsTest(unittest.TestCase):
             ("deepseek/deepseek-flash", None, 14, 8192),
             ("deepseek/deepseek-flash", None, 15, 4096),
             ("deepseek-flash", "https://api.deepseek.com/v1", 15, 4096),
-            ("anthropic/claude-sonnet-4-5", None, 20, 8000),
-            ("anthropic/claude-sonnet-4-5", None, 21, 2000),
-            ("claude-opus-4-1", "https://api.anthropic.com", 1, 8000),
-            ("anthropic/claude-haiku-4-5", None, 1, 8000),
             ("deepseek/deepseek-flash", "https://relay.example/v1", 15, None),
             ("deepseek/deepseek-flash", "https://api.deepseek.com.example/v1", 1, None),
             ("deepseek/future-model", None, 1, None),
             ("openai/gpt-5", "https://api.openai.com/v1", 1, None),
-            ("gemini/gemini-2.5-flash", None, 1, None),
             ("dashscope/qwen-plus", None, 1, None),
             ("ollama/llama3.1", None, 1, None),
             ("openai/gpt-5", "https://openrouter.ai/api/v1", 1, None),
@@ -81,15 +76,10 @@ class ProviderImageLimitsTest(unittest.TestCase):
             with self.subTest(model=model, url=url, count=count):
                 self.assertEqual(image_edge_limit(model, url, count), edge)
 
-    def test_session_screenshot_is_resized_on_actual_litellm_request(self):
+    def test_workspace_image_is_resized_without_changing_the_original(self):
         part = self.image((2538, 8394))
         original = (self.root / part.path).read_bytes()
-        response = SimpleNamespace(usage=None, choices=[{
-            "delta": {"content": "OK"}, "finish_reason": "stop",
-        }])
-        with patch("agent_core.providers.litellm_provider.completion", return_value=iter([response])) as call:
-            self.provider().stream(self.request(part), lambda _: None)
-        messages = call.call_args.kwargs["messages"]
+        messages = _request_messages(self.request(part), self.provider())
         self.assertEqual(self.decoded_size(self.image_urls(messages)[0]), (2476, 8192))
         notice = messages[1]["content"][1]["text"]
         self.assertIn("original 2538x8394", notice)
@@ -100,7 +90,6 @@ class ProviderImageLimitsTest(unittest.TestCase):
         part = self.image((40, 8200))
         for model, count, first_size, next_size in (
             ("deepseek/deepseek-flash", 14, (39, 8192), (19, 4096)),
-            ("anthropic/claude-sonnet-4-5", 20, (39, 8000), (9, 2000)),
         ):
             with self.subTest(model=model):
                 provider = self.provider(model)
@@ -121,7 +110,7 @@ class ProviderImageLimitsTest(unittest.TestCase):
 
     def test_native_responses_uses_same_limit_and_sends_png_mime(self):
         part = self.image((50, 8300), name="screen.webp", mode="RGBA", format="WEBP")
-        provider = self.provider(url="https://api.deepseek.com", native=True)
+        provider = self.provider(url="https://api.deepseek.com", api="responses")
         for count, expected in ((14, (49, 8192)), (15, (24, 4096))):
             with self.subTest(count=count):
                 inputs = _responses_input(self.request(part, count), provider)
@@ -141,14 +130,14 @@ class ProviderImageLimitsTest(unittest.TestCase):
 
     def test_counting_reuses_decoded_image_metadata(self):
         part = self.image((1000, 8200))
-        request = self.request(part, 21)
-        provider = self.provider("anthropic/claude-sonnet-4-5")
+        request = self.request(part, 15)
+        provider = self.provider()
         _media_tokens(request, provider)
         with patch("PIL.Image.open", side_effect=AssertionError("counting must not decode images")):
             messages = _request_messages(request, provider, encode_media=False)
             tokens = _media_tokens(request, provider)
         self.assertIn("original 1000x8200", messages[1]["content"][1]["text"])
-        self.assertEqual(tokens, 21 * estimate_image_tokens(243, 2000))
+        self.assertEqual(tokens, 15 * estimate_image_tokens(499, 4096))
 
     def test_cached_resize_preserves_alpha_and_invalidates_after_edit(self):
         part = self.image((100, 9000), mode="RGBA")
@@ -183,7 +172,6 @@ class ProviderImageLimitsTest(unittest.TestCase):
             request = self.request(part)
             for model, url in (
                 ("deepseek/deepseek-flash", None),
-                ("anthropic/claude-sonnet-4-5", None),
                 ("openai/gpt-5", None),
                 ("deepseek/deepseek-flash", "https://relay.example/v1"),
             ):
@@ -194,18 +182,14 @@ class ProviderImageLimitsTest(unittest.TestCase):
                     for encode in (False, True):
                         with self.assertRaisesRegex(UnsupportedImageError, error):
                             _request_messages(request, provider, encode_media=encode)
-                    with patch("agent_core.providers.litellm_provider.token_counter", return_value=0):
-                        with self.assertRaisesRegex(UnsupportedImageError, error):
-                            provider.count_input_tokens(request)
-                    with patch("agent_core.providers.litellm_provider.completion") as call:
-                        with self.assertRaisesRegex(UnsupportedImageError, error):
-                            provider.stream(request, lambda _: None)
-                        call.assert_not_called()
+                    with self.assertRaisesRegex(UnsupportedImageError, error):
+                        provider.count_input_tokens(request)
+
 
     def test_native_responses_rejects_invalid_image_at_unknown_endpoint(self):
         part = self.image((10, 10))
         (self.root / part.path).write_bytes(b"")
-        provider = self.provider(url="https://relay.example/v1", native=True)
+        provider = self.provider(url="https://relay.example/v1", api="responses")
         with self.assertRaisesRegex(UnsupportedImageError, "empty"):
             _responses_input(self.request(part), provider)
 

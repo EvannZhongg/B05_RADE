@@ -1,4 +1,4 @@
-"""Application services shared by interactive and scheduled Agent execution."""
+"""Application services for interactive Agent execution."""
 
 import os
 

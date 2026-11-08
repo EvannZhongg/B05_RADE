@@ -2,7 +2,7 @@
 
 Hooks are an additional Plugin component. Runtime discovers and assembles their
 declarations; Core owns checkpoints, decisions, command execution and Journal facts.
-Bridge only translates structured execution events. GUI, TUI, scheduled turns and
+Bridge only translates structured execution events. GUI, TUI and
 sub-agents use the same mechanisms.
 
 ## Manifest
@@ -85,7 +85,7 @@ Event-specific data:
 
 | Event | Fields and checkpoint |
 | --- | --- |
-| `InputSubmitted` | `input.text` and `input.source`: `user`, `steering`, `scheduled` or `delegation`; before accepting the input into model context |
+| `InputSubmitted` | `input.text` and `input.source`: `user`, `steering` or `delegation`; before accepting the input into model context |
 | `PreToolUse` | `tool_call`; after Tool lookup and JSON-object decoding, before routing, approval and execution; each Tool still validates its own argument schema |
 | `PostToolUse` | `tool_call`, `tool_result.ok` and `tool_result.content`; after the actual Tool invocation and normalized result commit, including Tool execution errors |
 | `Stop` | `response`, `correction_attempt`, `executions.tools`, `executions.jobs`; after pending Jobs/results and steering, before atomically closing Turn control |
@@ -164,4 +164,4 @@ fixture does.
 RADE or starting commands. Contract tests compare its acceptance with Runtime.
 `tests/test_hooks.py` covers Core decisions, sequence integrity, cancellation,
 approval, diagnostics and Windows stdin. `tests/test_hook_interop.py` covers Plugin
-assembly, Skill/Agent composition, refresh, Session reuse and scheduled execution.
+assembly, Skill/Agent composition, refresh and Session reuse.

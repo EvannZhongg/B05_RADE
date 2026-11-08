@@ -1,10 +1,11 @@
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from agent_core import AgentConfig, ToolConfig, Workspace
-from agent_core.providers import LiteLLMProvider, OpenAIProvider
-from agent_runtime.config import ModelConfig
+from agent_core.providers import OpenAIProvider
+from agent_runtime.config import ModelConfig, initialize_config_directory, load_config, load_model_options
 from agent_runtime.plane_manager import ExecutionPlaneManager
 
 
@@ -43,7 +44,7 @@ class ProviderSelectionTest(unittest.TestCase):
     def test_explicit_protocol_supports_arbitrary_model_ids_without_inference(self):
         with patch("litellm.get_llm_provider") as infer:
             for api in ("responses", "chat_completions"):
-                for model in ("custom-alias", "anthropic/claude", "openai/gpt-6-astra"):
+                for model in ("custom-alias", "gateway/custom", "openai/gpt-6-astra"):
                     provider = self.select(model, "https://relay.example/v1", api)
                     self.assertIsInstance(provider, OpenAIProvider)
                     self.assertEqual(provider._api, api)
@@ -57,10 +58,40 @@ class ProviderSelectionTest(unittest.TestCase):
         self.assertEqual(provider._api, "responses")
         self.assertEqual(provider._wire_model, "custom-alias")
 
-    def test_other_provider_routes_still_use_existing_adapter(self):
-        for model in ("anthropic/claude-sonnet-4-5", "gemini/gemini-2.5-flash"):
-            with self.subTest(model=model):
-                self.assertIsInstance(self.select(model, None), LiteLLMProvider)
+    def test_namespaced_model_without_api_uses_native_responses(self):
+        provider = self.select("gateway/custom", "https://relay.example/v1")
+        self.assertIsInstance(provider, OpenAIProvider)
+        self.assertEqual(provider._api, "responses")
+        self.assertEqual(provider._wire_model, "gateway/custom")
+
+    @patch.dict("os.environ", {
+        "OPENAI_KEY": "test-key",
+        "DEEPSEEK_API_KEY": "test-key",
+        "DASHSCOPE_API_KEY": "test-key",
+        "OPENROUTER_KEY": "test-key",
+    })
+    def test_default_providers_use_supported_protocols_and_wire_model_ids(self):
+        expected = {
+            "openai": ("responses", "gpt-5"),
+            "deepseek": ("chat_completions", "deepseek-flash"),
+            "qwen": ("chat_completions", "qwen-plus"),
+            "openrouter": ("chat_completions", "openai/gpt-5"),
+            "ollama": ("chat_completions", "llama3.1"),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            initialize_config_directory(root)
+            path = root / "provider_config.json"
+            self.assertEqual(set(load_model_options(path)[1]), set(expected))
+            for name, (api, wire_model) in expected.items():
+                with self.subTest(provider=name):
+                    config = load_config(path, name)
+                    provider = OpenAIProvider(
+                        config.model, base_url=config.url, max_context_tokens=config.max_context_tokens,
+                        api=config.api,
+                    )
+                    self.assertEqual(provider._api, api)
+                    self.assertEqual(provider._wire_model, wire_model)
 
     def test_deepseek_uses_native_chat_and_wire_model(self):
         for api in (None, "chat_completions"):

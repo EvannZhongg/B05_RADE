@@ -81,7 +81,7 @@ Read the requested files, then report findings ordered by severity.
   tool, without implicitly granting MCP tools; `[]` selects no declared tools. Image and Skill
   tools remain derived from Runtime capabilities. Allowed built-in values: `read_file`,
   `apply_patch`, `edit_file`, `write_file`, `search_files`, `list_directory`,
-  `shell`, `web_search`, `web_fetch`, `scheduled_task`.
+  `shell`.
   Explicit MCP references use the full model-facing name, for example
   `mcp__example-plugin_analyzer__analyze_code`. Each character outside `[A-Za-z0-9_-]`
   in `<plugin>:<server>` and the remote tool name is replaced with `_`.

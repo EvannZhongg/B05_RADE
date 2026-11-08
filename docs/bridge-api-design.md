@@ -63,7 +63,7 @@ shutdown acknowledgment, and transport exit can happen without a terminal event.
 5. Publish ESM JavaScript and declarations for both TS packages so an external
    Node client does not need a TS loader or repository paths.
 6. Process-wide resources stay in `agent_runtime.RuntimeServices` (configuration,
-   environment reload, scheduler, warmed provider code, tokenizer vocabularies,
+   environment reload, warmed provider code, tokenizer vocabularies,
    TLS trust context); a channel owns only its Runtime, journal writer, event
    sequence and interaction waiters.
 

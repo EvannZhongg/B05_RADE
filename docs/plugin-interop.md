@@ -72,7 +72,7 @@ Plane 持有独立的 MCP Manager；关闭或重新装配时关闭其连接与 s
 `tests/test_plugin_interop.py` 复用 unittest、MockProvider、Fake MCP Server 与 Bridge，
 覆盖 Skill → Reviewer → MCP、子 Agent 工具选择与审批、禁用/过滤/启动失败、冲突隔离和重新装配。
 `tests/test_hooks.py` 与 `tests/test_hook_interop.py` 覆盖 Hook 决策、审批、取消、Journal、
-子 Agent、定时执行和重新装配。
+子 Agent 和重新装配。
 第三方示例包位于 `tests/RADE-plugin-testkit/`，统一验证 Skill、Agent、MCP 与 Hook，
 不导入 RADE 内部模块，也不作为默认插件安装。
 从仓库根目录运行其独立测试：

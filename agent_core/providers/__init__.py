@@ -10,8 +10,6 @@ from .reasoning import (
 OPENAI_APIS = frozenset({"responses", "chat_completions"})
 
 _PROVIDER_MODULES = {
-    "LiteLLMImageGenerator": ".image_generation",
-    "LiteLLMProvider": ".litellm_provider",
     "ModelProvider": ".base",
     "OpenAIProvider": ".openai_provider",
 }
@@ -25,8 +23,6 @@ def __getattr__(name: str):
     return value
 
 __all__ = [
-    "LiteLLMImageGenerator",
-    "LiteLLMProvider",
     "ModelProvider",
     "OpenAIProvider",
     "OPENAI_APIS",

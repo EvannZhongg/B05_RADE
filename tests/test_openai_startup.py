@@ -56,7 +56,6 @@ class OpenAIStartupTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         report = json.loads(result.stdout)
         self.assertFalse(report["litellm_loaded"])
-        self.assertFalse(report["pyautogui_loaded"])
         self.assertTrue(all(value > 0 for value in report["sample_estimates"]))
 
     def test_deepseek_runtime_reaches_request_with_litellm_import_forbidden(self):
@@ -124,11 +123,11 @@ class OpenAIStartupTest(unittest.TestCase):
 
     def test_namespaced_compatible_models_keep_their_existing_metadata_and_counter(self):
         with (
-            patch("agent_core.providers.litellm_provider.get_model_info", return_value={
+            patch("litellm.get_model_info", return_value={
                 "max_input_tokens": 100000, "supports_vision": True,
             }),
-            patch("agent_core.providers.litellm_provider.token_counter", return_value=17),
+            patch("litellm.token_counter", return_value=17),
         ):
-            provider = OpenAIProvider("anthropic/claude", api="chat_completions")
+            provider = OpenAIProvider("gateway/custom", api="chat_completions")
             self.assertIn("image", provider.capabilities.input_modalities)
             self.assertEqual(provider.count_input_tokens(LLMRequest("Test", ())), 17)

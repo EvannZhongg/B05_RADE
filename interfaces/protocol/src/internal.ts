@@ -41,10 +41,8 @@ export type SettingsSnapshot = {
   routing: {
     main_agent: string;
     fast_model: string | null;
-    vision_provider: string | null;
     subagent: string | null;
-    subagent_vision_provider: string | null;
-    roles: Record<string, { provider?: string; vision_provider?: string }>;
+    roles: Record<string, { provider?: string }>;
   };
   agent: AgentSettings;
   skills: { id: string; name: string; description: string; source: string; path: string; content: string }[];

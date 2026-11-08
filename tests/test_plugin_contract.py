@@ -54,7 +54,7 @@ class PluginContractTest(unittest.TestCase):
             (["read_file", "mcp__review-kit_analyzer__analyze_code"], True),
             (["mcp__other_server__run"], True),
             (["subagent"], False), (["job_control"], False),
-            (["read_skill"], False), (["generate_image"], False),
+            (["read_skill"], False), (["unknown_tool"], False),
             (["mcp__server__"], False), (["mcp__bad.name__run"], False),
             (["read_file", " read_file "], False), ([1], False),
             ("read_file", False),

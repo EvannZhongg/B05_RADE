@@ -8,7 +8,6 @@
   "workspaces": [
     "interfaces/protocol",
     "interfaces/client",
-    "interfaces/mobile",
     "interfaces/tui",
     "interfaces/gui"
   ],

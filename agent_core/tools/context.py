@@ -5,45 +5,18 @@ from typing import TYPE_CHECKING, Callable
 from ..session_paths import default_sessions_directory
 from ..workspace import Workspace
 from .base import JSONValue
-from .config import ToolSettings
 
 if TYPE_CHECKING:
-    from contextlib import AbstractContextManager
     from ..hooks import HookRunner, HookInvocation, HookCompletedEvent
     from ..execution.router import ExecutionRouter, ResolvedExecution
     from ..execution.process import CancellationSignal
-    from ..llm import LLMProvider
     from ..mcp.manager import McpClientManager
     from ..plan import PlanManager
-    from ..permissions import PermissionController
     from ..session import Session
     from ..skills import SkillRegistry
     from ..subagent import SubagentRuntime
     from ..jobs import JobManager
     from ..memory import MemoryManager
-    from ..image_generation import ImageGenerator
-
-
-@dataclass(frozen=True)
-class DesktopWindow:
-    hwnd: int
-    pid: int
-    title: str
-    process: str | None
-
-
-@dataclass(frozen=True)
-class DesktopResult:
-    screenshot: Path | None = None
-    window: DesktopWindow | None = None
-    origin: tuple[int, int] | None = None
-    window_at_point: DesktopWindow | None = None
-    window_at_destination: DesktopWindow | None = None
-    foreground_before: DesktopWindow | None = None
-    foreground_after: DesktopWindow | None = None
-    observation_changed: bool | None = None
-    screen_changed: bool | None = None
-    observation_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,14 +39,7 @@ class ToolExecutionContext:
     )
     execution_router: "ExecutionRouter | None" = None
     execution: "ResolvedExecution | None" = None
-    max_generation_tokens: int | None = None
-    # Whether the Agent's own model accepts image input.  It decides
-    # which of the two image tools this Agent gets: the model either sees
-    # images itself via ``read_image``, or delegates to the vision
-    # provider via ``analyze_image``.
     vision_input: bool = False
-    vision_provider: "LLMProvider | None" = None
-    image_generator: "ImageGenerator | None" = None
     mcp: "McpClientManager | None" = None
     subagents: "SubagentRuntime | None" = None
     jobs: "JobManager | None" = None
@@ -83,8 +49,6 @@ class ToolExecutionContext:
     ask_user: (
         Callable[[str, list[dict[str, JSONValue]], bool], JSONValue] | None
     ) = None
-    scheduler: object | None = None
-    session_permissions: Callable[[str], "AbstractContextManager[PermissionController]"] | None = None
     memory: "MemoryManager | None" = None
     hooks: "HookRunner | None" = None
     hook_invocation: "HookInvocation | None" = None
@@ -92,12 +56,6 @@ class ToolExecutionContext:
     agent_role: str = "main"
     parent_session_id: str | None = None
     artifact_directory: Path | None = None
-    tool_settings: ToolSettings = field(default_factory=ToolSettings)
-    # Runtime-provided screenshot capture. Core owns the tool contract while
-    # the Runtime chooses the platform-specific capture implementation.
-    screenshot: Callable[[dict[str, JSONValue]], DesktopResult] | None = None
-    computer: Callable[[dict[str, JSONValue]], DesktopResult] | None = None
-    computer_windows: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(

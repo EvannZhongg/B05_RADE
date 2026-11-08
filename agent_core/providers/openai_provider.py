@@ -1,5 +1,6 @@
 """Native OpenAI wire protocols, shared by official and relay endpoints."""
 
+from importlib.metadata import version
 from typing import Callable
 
 import httpx
@@ -28,9 +29,9 @@ class OpenAIProvider(ModelProvider):
             return deepseek_model_info(model)
         name = model_name(model)
         if name is None:
-            from .litellm_provider import LiteLLMProvider
+            from litellm import get_model_info
 
-            return LiteLLMProvider.model_info_for(model, base_url)
+            return get_model_info(model=model, api_base=base_url)
         return model_info(name)
 
     @classmethod
@@ -65,9 +66,9 @@ class OpenAIProvider(ModelProvider):
         if self._token_counter is not None:
             self._counter_identity = self._token_counter.identity
         else:
-            from .litellm_provider import TOKEN_COUNTING_IDENTITY
+            import tiktoken
 
-            self._counter_identity = TOKEN_COUNTING_IDENTITY
+            self._counter_identity = ("litellm", version("litellm"), tiktoken.__version__)
 
     @property
     def token_counting_identity(self) -> object:
@@ -247,7 +248,7 @@ class OpenAIProvider(ModelProvider):
             messages = [{key: value for key, value in message.items() if key != "reasoning_content"}
                         for message in messages]
         if self._token_counter is None:
-            from .litellm_provider import token_counter
+            from litellm import token_counter
 
             tokens = token_counter(model=self._model, messages=messages, tools=tools or None)
         else:

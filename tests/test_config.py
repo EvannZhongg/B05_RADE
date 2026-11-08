@@ -5,24 +5,19 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.provider_fixtures import capabilities_stub, TEXT_MODEL, VISION_MODEL
 
 from agent_core import DirectorySkillSource, SkillLoader, load_agent_config
-from agent_core.providers import ModelProvider
 from agent_runtime.config import (
-    DEFAULT_CONFIG_FILENAMES,
+    EXECUTION_CONFIG_FILENAMES,
     ModelConfig,
-    load_tool_settings,
     configured_role_names,
     default_config_directory,
     initialize_config_directory,
     load_config,
     load_fast_config,
-    load_image_generation_config,
     load_model_options,
     load_prompt_templates,
     load_scratch_workspace_root,
-    load_vision_config,
     memory_store,
 )
 from agent_runtime.plugins import PluginManager
@@ -185,43 +180,6 @@ class ConfigTest(unittest.TestCase):
             ):
                 load_scratch_workspace_root(path)
 
-    def test_loads_image_generation_from_a_configured_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "main_agent": {"provider": "main"},
-                        "image_generation": {
-                            "provider": "images",
-                            "model": "openrouter/example/image",
-                            "default_aspect_ratio": "16:9",
-                            "default_image_size": "2K",
-                            "extra": {"enabled": False},
-                        },
-                        "providers": {
-                            "main": {"model": "openai/main"},
-                            "images": {
-                                "model": "openrouter/unused-chat-model",
-                                "url": "https://example.test/v1",
-                                "key": "secret",
-                            },
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            config = load_image_generation_config(path)
-
-        self.assertIsNotNone(config)
-        self.assertEqual(config.provider, "images")
-        self.assertEqual(config.model, "openrouter/example/image")
-        self.assertEqual(config.url, "https://example.test/v1")
-        self.assertEqual(config.key, "secret")
-        self.assertEqual(config.default_aspect_ratio, "16:9")
-        self.assertEqual(config.default_image_size, "2K")
-
     def test_initializes_packaged_default_configs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_directory = Path(directory) / "RADE"
@@ -233,8 +191,6 @@ class ConfigTest(unittest.TestCase):
                 (
                     config_directory / "provider_config.json",
                     config_directory / "agent_config.json",
-                    config_directory / "tool_config.json",
-                    config_directory / "im_channels.json",
                     config_directory / "AGENTS.md",
                     config_directory / "MEMORY.md",
                     config_directory / "prompts" / "Soul.md",
@@ -260,9 +216,11 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(
                 provider_config["providers"]["qwen"],
                 {
-                    "model": "dashscope/qwen-plus",
+                    "model": "qwen-plus",
                     "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     "key": "${DASHSCOPE_API_KEY}",
+                    "api": "chat_completions",
+                    "max_context_tokens": 131072,
                 },
             )
             self.assertEqual(agent_config["max_same_tool_calls"], 5)
@@ -371,8 +329,6 @@ class ConfigTest(unittest.TestCase):
                 created,
                 (
                     config_directory / "agent_config.json",
-                    config_directory / "tool_config.json",
-                    config_directory / "im_channels.json",
                     config_directory / "MEMORY.md",
                     config_directory / "prompts" / "SubAgent.md",
                     config_directory / "prompts" / "Consolidator.md",
@@ -405,7 +361,7 @@ class ConfigTest(unittest.TestCase):
             root = Path(directory)
             defaults = root / "defaults"
             defaults.mkdir()
-            for filename in DEFAULT_CONFIG_FILENAMES:
+            for filename in EXECUTION_CONFIG_FILENAMES:
                 (defaults / filename).write_text("{}", encoding="utf-8")
             prompts = defaults / "prompts_template"
             prompts.mkdir()
@@ -448,7 +404,7 @@ class ConfigTest(unittest.TestCase):
             root = Path(directory)
             defaults = root / "defaults"
             defaults.mkdir()
-            for filename in DEFAULT_CONFIG_FILENAMES:
+            for filename in EXECUTION_CONFIG_FILENAMES:
                 (defaults / filename).write_text("{}", encoding="utf-8")
             prompts = defaults / "prompts_template"
             prompts.mkdir()
@@ -490,7 +446,7 @@ class ConfigTest(unittest.TestCase):
             root = Path(directory)
             defaults = root / "defaults"
             defaults.mkdir()
-            for filename in DEFAULT_CONFIG_FILENAMES:
+            for filename in EXECUTION_CONFIG_FILENAMES:
                 (defaults / filename).write_text("{}", encoding="utf-8")
             prompts = defaults / "prompts_template"
             prompts.mkdir()
@@ -779,7 +735,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class ProviderResolutionTest(unittest.TestCase):
-    """`provider` and `vision_provider` both walk role → subagent → main."""
+    """Provider resolution follows role → subagent → main."""
 
     def write(self, directory: str, **blocks: object) -> Path:
         path = Path(directory) / "config.json"
@@ -791,8 +747,6 @@ class ProviderResolutionTest(unittest.TestCase):
                         "main": {"model": "openai/main"},
                         "shared": {"model": "openai/shared"},
                         "special": {"model": "openai/special"},
-                        "seeing": {"model": VISION_MODEL},
-                        "blind": {"model": TEXT_MODEL},
                         **blocks.pop("providers", {}),
                     },
                     **blocks,
@@ -831,73 +785,6 @@ class ProviderResolutionTest(unittest.TestCase):
                 load_config(path, role="coder").model, "openai/shared"
             )
 
-    def test_a_role_overriding_only_vision_still_inherits_its_model(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                subagent={"provider": "shared"},
-                subagent_roles={"coder": {"vision_provider": "seeing"}},
-            )
-
-            with patch.object(
-                ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
-            ):
-                self.assertEqual(
-                    load_config(path, role="coder").model, "openai/shared"
-                )
-                vision = load_vision_config(path, role="coder")
-
-            self.assertIsNotNone(vision)
-            self.assertEqual(vision.model, VISION_MODEL)
-
-    def test_a_role_overriding_only_its_model_still_inherits_vision(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                main_agent={"provider": "main", "vision_provider": "seeing"},
-                subagent_roles={"coder": {"provider": "special"}},
-            )
-
-            with patch.object(
-                ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
-            ):
-                self.assertEqual(
-                    load_config(path, role="coder").model, "openai/special"
-                )
-                vision = load_vision_config(path, role="coder")
-
-            self.assertEqual(vision.model, VISION_MODEL)
-
-    def test_no_vision_provider_resolves_to_none(self) -> None:
-        """Only an explicit vision_provider may route images elsewhere."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(directory)
-
-            with patch.object(
-                ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
-            ):
-                self.assertIsNone(load_vision_config(path))
-                self.assertIsNone(load_vision_config(path, role="coder"))
-
-    def test_rejects_a_vision_provider_that_cannot_see(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                main_agent={"provider": "main", "vision_provider": "blind"},
-            )
-
-            with patch.object(
-                ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)
-            ):
-                with self.assertRaisesRegex(
-                    ValueError, "does not support image input"
-                ):
-                    load_vision_config(path)
-
     def test_rejects_a_blank_override(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = self.write(
@@ -912,7 +799,7 @@ class ProviderResolutionTest(unittest.TestCase):
 
     def test_rejects_a_non_object_role_block(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            path = self.write(directory, subagent_roles={"coder": "anthropic"})
+            path = self.write(directory, subagent_roles={"coder": "invalid"})
 
             with self.assertRaisesRegex(
                 ValueError, "subagent_roles.coder.*object"
@@ -925,7 +812,7 @@ class ProviderResolutionTest(unittest.TestCase):
                 directory,
                 subagent_roles={
                     "coder": {"provider": "special"},
-                    "writer": {"vision_provider": "seeing"},
+                    "writer": {"provider": "shared"},
                 },
             )
 
@@ -938,133 +825,6 @@ class ProviderResolutionTest(unittest.TestCase):
             self.assertEqual(
                 configured_role_names(self.write(directory)), frozenset()
             )
-
-
-class ToolSettingsTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        initialize_config_directory(self.root)
-        self.path = self.root / "tool_config.json"
-        self.document = json.loads(self.path.read_text(encoding="utf-8"))
-
-    def load(self):
-        self.path.write_text(json.dumps(self.document), encoding="utf-8")
-        return load_tool_settings(self.path).web_search
-
-    def test_installs_default_and_preserves_custom_configuration(self) -> None:
-        self.assertEqual(load_tool_settings(self.path).web_search.provider, "duckduckgo")
-        self.assertEqual(load_tool_settings(self.path).web_fetch.provider, "direct")
-        self.document["web_search"]["provider"] = "deepseek"
-        self.load()
-        before = self.path.read_bytes()
-        self.assertEqual(initialize_config_directory(self.root), ())
-        self.assertEqual(self.path.read_bytes(), before)
-
-    def test_resolves_only_the_selected_provider_key(self) -> None:
-        for provider in ("exa", "deepseek"):
-            with self.subTest(provider=provider), patch.dict(os.environ, {"SEARCH_KEY": "secret"}):
-                self.document["web_search"]["provider"] = provider
-                self.document["web_search"]["providers"][provider]["key"] = "${SEARCH_KEY}"
-                config = self.load()
-                self.assertEqual(config.provider, provider)
-                self.assertEqual(config.api_key, "secret")
-                self.assertNotIn("secret", repr(config))
-
-    def test_missing_or_empty_keys_allow_runtime_fallback(self) -> None:
-        with patch.dict(os.environ):
-            os.environ.pop("RADE_TEST_MISSING_KEY", None)
-            for key in (None, "", "  ", "${RADE_TEST_MISSING_KEY}"):
-                with self.subTest(key=key):
-                    self.document["web_search"]["provider"] = "exa"
-                    self.document["web_search"]["providers"]["exa"]["key"] = key
-                    self.assertIsNone(self.load().api_key)
-
-    def test_accepts_literal_key_and_does_not_use_implicit_environment_key(self) -> None:
-        self.document["web_search"]["provider"] = "exa"
-        self.document["web_search"]["providers"]["exa"]["key"] = " literal-secret "
-        self.assertEqual(self.load().api_key, "literal-secret")
-        self.document["web_search"]["providers"] = {}
-        with patch.dict(os.environ, {"EXA_API_KEY": "implicit-secret"}):
-            self.assertIsNone(self.load().api_key)
-
-    def test_rejects_invalid_tool_settings(self) -> None:
-        for document in (
-            [], {}, {"other_tool": {}}, {"web_search": None},
-            {"web_search": {"provider": "unknown"}},
-            {"web_search": {"provider": ["exa"]}},
-            {"web_search": {"provider": "exa", "providers": []}},
-            {"web_search": {"provider": "exa", "providers": {"unknown": {}}}},
-            {"web_search": {"provider": "exa", "providers": {"exa": []}}},
-            {"web_search": {"provider": "exa", "providers": {"exa": {"key": True}}}},
-            {"web_search": {"provider": "exa", "providers": {"exa": {"key": "${}"}}}},
-        ):
-            with self.subTest(document=document), self.assertRaises(ValueError):
-                self.document = (
-                    {"web_fetch": {"provider": "direct"}, **document}
-                    if isinstance(document, dict) else document
-                )
-                self.load()
-
-    def test_ignores_unknown_fields_in_tool_settings(self) -> None:
-        self.document["web_search"] = {
-            "provider": "exa", "providers": {"exa": {"key": "search-secret"}},
-        }
-        self.document["web_fetch"] = {
-            "provider": "deepseek", "providers": {"deepseek": {"key": "fetch-secret"}},
-        }
-        self.load()
-        expected = load_tool_settings(self.path)
-        self.document["extra"] = {"enabled": False}
-        for tool, provider in (("web_search", "exa"), ("web_fetch", "deepseek")):
-            self.document[tool]["extra"] = True
-            self.document[tool]["providers"][provider]["extra"] = {"key": "unused"}
-
-        self.load()
-
-        self.assertEqual(load_tool_settings(self.path), expected)
-
-    def test_requires_configuration_file(self) -> None:
-        self.path.unlink()
-        with self.assertRaises(FileNotFoundError):
-            load_tool_settings(self.path)
-
-    def test_fetch_key_configuration_is_independent_of_search(self) -> None:
-        self.document["web_search"]["provider"] = "exa"
-        self.document["web_search"]["providers"]["exa"]["key"] = "search-secret"
-        self.document["web_fetch"]["provider"] = "deepseek"
-        for key, expected in (
-            ("${FETCH_KEY}", "fetch-secret"), ("literal", "literal"),
-            ("${MISSING_FETCH_KEY}", None), ("", None), ("  ", None), (None, None),
-        ):
-            with self.subTest(key=key), patch.dict(os.environ, {"FETCH_KEY": "fetch-secret"}):
-                os.environ.pop("MISSING_FETCH_KEY", None)
-                self.document["web_fetch"]["providers"]["deepseek"]["key"] = key
-                self.load()
-                settings = load_tool_settings(self.path)
-                self.assertEqual(settings.web_fetch.provider, "deepseek")
-                self.assertEqual(settings.web_fetch.api_key, expected)
-                self.assertEqual(settings.web_search.api_key, "search-secret")
-                self.assertNotIn("fetch-secret", repr(settings))
-
-    def test_rejects_invalid_fetch_settings(self) -> None:
-        for value in (
-            None, [], {}, {"provider": "exa"}, {"provider": ["deepseek"]},
-            {"provider": "deepseek", "providers": []},
-            {"provider": "deepseek", "providers": {"exa": {}}},
-            {"provider": "deepseek", "providers": {"deepseek": {"key": True}}},
-            {"provider": "deepseek", "providers": {"deepseek": {"key": "${}"}}},
-        ):
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "web_fetch"):
-                self.document["web_fetch"] = value
-                self.load()
-
-    def test_requires_both_tool_sections(self) -> None:
-        for missing in ("web_search", "web_fetch"):
-            with self.subTest(missing=missing), self.assertRaisesRegex(ValueError, missing):
-                document = dict(self.document)
-                del document[missing]
-                self.path.write_text(json.dumps(document), encoding="utf-8")
-                load_tool_settings(self.path)
 
 
 if __name__ == "__main__":

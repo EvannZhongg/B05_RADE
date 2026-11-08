@@ -218,7 +218,7 @@ describe("isTurnActivity", () => {
     { type: "assistant_delta", turn_id: "t1", text: "hi", model_call_index: 1 },
     { type: "reasoning_delta", turn_id: "t1", text: "thinking", model_call_index: 1 },
     { type: "tool_batch_started", turn_id: "t1", model_call_index: 1, tool_calls: [] },
-    { type: "tool_media", turn_id: "t1", attachments: [], present_to_user: false },
+    { type: "tool_media", turn_id: "t1", attachments: [] },
     { type: "assistant_message", turn_id: "t1", content: "hi", timestamp_utc: "2026-09-16T00:00:00Z", model_call_index: 1 },
     { type: "job_status", turn_id: "t1", job_id: "job-1", kind: "shell", status: "running", details: { command: "ls" } },
   ] satisfies Incoming[])("recognizes $type", (message) => {
@@ -358,7 +358,7 @@ describe("applyMessage", () => {
 
   it("reports permission state from session readiness and later changes", () => {
     const ready = applyMessage([], {
-      type: "session_ready", protocol_version: 3,
+      type: "session_ready", protocol_version: 4,
       session_id: "s1",
       workspace: "/tmp/work",
       provider: "test",
@@ -539,13 +539,13 @@ describe("applyMessage", () => {
         type: "tool_batch_started",
         turn_id: "t1",
         model_call_index: 1,
-        tool_calls: [{ id: "image-call", name: "generate_image", arguments: { prompt: "draw" } }],
+        tool_calls: [{ id: "image-call", name: "read_image", arguments: { paths: ["image.png"] } }],
       },
       {
         type: "tool_result",
         turn_id: "t1",
         tool_call_id: "image-call",
-        name: "generate_image",
+        name: "read_image",
         ok: true,
         error: null,
         tool_index: 1,
@@ -554,11 +554,10 @@ describe("applyMessage", () => {
       {
         type: "tool_media",
         turn_id: "t1",
-        present_to_user: false,
         attachments: [{
           type: "image",
-          path: ".RADE/attachments/generated.png",
-          filename: "generated.png",
+          path: ".RADE/attachments/image.png",
+          filename: "image.png",
           mime_type: "image/png",
           size_bytes: 123,
         }],
@@ -572,30 +571,13 @@ describe("applyMessage", () => {
       expect.objectContaining({ type: "tool-call", toolCallId: "image-call" }),
       {
         type: "image",
-        image: ".RADE/attachments/generated.png",
-        filename: "generated.png",
+        image: ".RADE/attachments/image.png",
+        filename: "image.png",
         providerMetadata: {
           RADE: { session_id: "session-1" },
         },
       },
     ]);
-  });
-
-  it("renders a delivered file with the assistant and preserves its session download URL", () => {
-    const { items } = fold([
-      { type: "assistant_message", turn_id: "t1", model_call_index: 1, content: "报告已生成", timestamp_utc: "2026-10-31T00:00:00Z" },
-      { type: "tool_media", turn_id: "t1", present_to_user: true, attachments: [{
-        type: "file", path: ".RADE/attachments/report.pdf", filename: "report.pdf", mime_type: "application/pdf", size_bytes: 32,
-      }] },
-    ]);
-    expect(items.at(-1)?.origin).toBe("tool_delivery");
-    const messages = toMessages(items, "session-1");
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("assistant");
-    expect(messages[0].content).toContainEqual({
-      type: "file", data: "/api/attachments/report.pdf?session_id=session-1&download_name=report.pdf",
-      filename: "report.pdf", mimeType: "application/pdf", sourceType: "url",
-    });
   });
 
   it("applies a later tool result before earlier calls finish", () => {
@@ -786,7 +768,7 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 3 as const,
+        protocol_version: 4 as const,
         session_id: "s1",
         workspace: "/tmp",
         provider: "test",

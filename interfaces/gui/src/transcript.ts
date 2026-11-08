@@ -150,7 +150,7 @@ export function applyMessage(
           ...items,
           {
             role: "user",
-            origin: message.present_to_user ? "tool_delivery" : "tool_media",
+            origin: "tool_media",
             content: message.attachments,
           },
         ],

@@ -2,7 +2,7 @@
 
 `interfaces/gui` 是 RADE 的图形交互层，由 HTTP / WebSocket 适配器和 React + assistant-ui 前端组成。FastAPI 管理浏览器连接、文件与设置 API；常驻 Bridge 由独立于 FastAPI 生命周期的应用宿主管理，每个活动 Session 使用独立 Runtime 通道。浏览器不直接运行 Agent 或 Tool。
 
-`RADE-server` 通过 `interfaces/application_host.py` 管理同一宿主内并列运行的 HTTP 与 IM 适配器，两者共享活动 Session 和 Bridge。单实例由配置目录级进程锁保护，重复启动明确报错，不通过 HTTP 识别已有实例。
+`RADE-server` 通过 `interfaces/application_host.py` 管理 HTTP、活动 Session 和 Bridge。同一配置目录由进程锁保证单实例。
 
 HTTP 依赖是可选依赖。使用项目环境启动前先安装 server extra：
 
@@ -11,7 +11,7 @@ uv sync --extra server
 # 或：python -m pip install -e ".[server]"
 ```
 
-其中包含 Uvicorn 的 WebSocket 后端，Windows 上还包含用于通过 Explorer 打开 Workspace 文件夹的 `pywin32`；三个平台使用相同命令。若缺少 WebSocket 后端，HTTP 适配器会提示安装命令，IM 继续运行。
+其中包含 Uvicorn 的 WebSocket 后端，Windows 上还包含用于通过 Explorer 打开 Workspace 文件夹的 `pywin32`；三个平台使用相同命令。若缺少 WebSocket 后端，HTTP 适配器会提示安装命令。
 
 ## 启动
 
@@ -20,11 +20,11 @@ RADE-server
 RADE-server --workspace ~/projects/my-project
 ```
 
-默认监听 <http://127.0.0.1:8737>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后并行启动 HTTP 与 IM 适配器。`--no-http` 不启动此适配器，也不加载 HTTP 依赖。
+默认监听 <http://127.0.0.1:8737>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
 
 ## 服务端
 
-`interfaces/application_host.py` 管理共享 Session Host、HTTP 与 IM 的生命周期，并向 `server.py` 注入活动 Session 注册表；`server.py` 组装 GUI 应用和路由，管理 HTTP 监听与 Uvicorn 的启停。HTTP 适配器职责包括：
+`interfaces/application_host.py` 管理Session Host 和 HTTP 的生命周期，并向 `server.py` 注入活动 Session 注册表；`server.py` 组装 GUI 应用和路由，管理 HTTP 监听与 Uvicorn 的启停。HTTP 适配器职责包括：
 
 - 列出、读取和删除按 Workspace 分组的 Session
 - 通过共享 Session Host 为活动 Session 创建、复用和关闭通道
@@ -32,7 +32,7 @@ RADE-server --workspace ~/projects/my-project
 - 管理单 Session 的页面附着、事件续传和显式 takeover
 - 选择普通 Workspace，创建与回收 scratch Workspace
 - 提供已脱敏设置快照及配置更新 API
-- 展示长期记忆和定时任务，并允许启停任务
+- 展示长期记忆
 - 从某条历史用户消息的锚点创建分支 Session（fork），源 Session 保持不变
 - 上传附件、下载文件和签发短期图片访问 URL
 - 提供限制在当前 Session Workspace 内的文件树，并在系统文件管理器中打开该 Workspace
@@ -47,15 +47,14 @@ HTTP / WebSocket 路由按模块拆分：
 | `routes/workspace.py` | Workspace 选择、scratch 创建、文件树和打开文件夹 |
 | `routes/media.py` | 附件上传、签名图片和附件下载 |
 | `routes/settings.py` | 模型、设置、路由更新和长期记忆读取 |
-| `routes/schedules.py` | 定时任务列表与启停 |
 
 服务端非路由模块：
 
 | 模块 | 职责 |
 | --- | --- |
-| `../application_host.py` | 配置目录级进程锁、共享 Session Host、HTTP / IM 装配与生命周期 |
+| `../application_host.py` | 配置目录级进程锁、Session Host 与 HTTP 生命周期 |
 | `server.py` | FastAPI 应用与路由组装、HTTP 监听与 Uvicorn 生命周期 |
-| `../session_host.py` | GUI 与移动端共享的活动 Session 注册表、控制附着与事件续传 |
+| `../session_host.py` | 活动 Session 注册表、控制附着与事件续传 |
 | `windows_folders.py` | 通过 Windows Explorer 定位并打开 Workspace 文件夹 |
 
 常驻 Bridge 进程的生命周期、通道收发与故障广播由宿主侧模块 `interfaces/bridge_process.py` 提供；GUI 只决定何时创建、附着与关闭，不实现协议语义。
@@ -102,7 +101,7 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 
 ## 附件与媒体
 
-上传文件和 Agent 生成图片保存在当前 Workspace 的 `.RADE/attachments/`。Session 只持久化稳定的 Workspace 相对路径、文件名、MIME type 和大小。
+上传的文件保存在当前 Workspace 的 `.RADE/attachments/`。Session 只持久化稳定的 Workspace 相对路径、文件名、MIME type 和大小。
 
 浏览器不直接获得任意本地路径。图片显示前向服务端换取短期签名 URL；附件下载和文件树读取也会校验目标属于该 Session 的 Workspace。图片作为视觉附件进入模型，其他文件由 Agent 通过 Workspace Tool 读取。
 

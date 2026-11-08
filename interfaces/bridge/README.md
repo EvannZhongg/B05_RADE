@@ -20,7 +20,7 @@ Bridge，无需了解内部模块路径。入口在保留协议 stdout 后调用
 
 `__main__.py` 在 import Provider 相关模块前保留专用 stdout 协议通道，并把普通 `print()` 和第三方库输出重定向到 stderr，防止日志破坏 JSON 消息流。它也统一处理 UTF-8 stdin、启动期中断和无法进入协议循环时的 `fatal` 错误。
 
-TUI 与 `RADE-server` 各自管理一个常驻 Bridge 进程；后者由 HTTP 和 IM 适配器共享。宿主通过协议关闭通道或整个进程，强制退出时终止进程树。
+TUI 与 `RADE-server` 各自管理一个常驻 Bridge 进程。宿主通过协议关闭通道或整个进程，强制退出时终止进程树。
 
 ## 连接与路由
 

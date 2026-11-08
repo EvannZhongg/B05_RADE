@@ -33,9 +33,6 @@ ROLE_TOOL_NAMES = (
     "search_files",
     "list_directory",
     "shell",
-    "web_search",
-    "web_fetch",
-    "scheduled_task",
 )
 FRONT_MATTER = re.compile(
     r"\A---[ \t]*\r?\n(?P<metadata>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)",

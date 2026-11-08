@@ -33,7 +33,7 @@ Commands receive one UTF-8 JSON object on stdin. Common fields are `schema_versi
 
 | Event | Additional input | Decisions |
 | --- | --- | --- |
-| `InputSubmitted` | `input.text`, `input.source`: user, steering, scheduled or delegation | `pass`, `deny` |
+| `InputSubmitted` | `input.text`, `input.source`: user, steering or delegation | `pass`, `deny` |
 | `PreToolUse` | `tool_call`: id, name, arguments | `pass`, `deny` |
 | `PostToolUse` | `tool_call`, `tool_result.ok`, `tool_result.content` | `pass` with optional feedback |
 | `Stop` | `response`, `correction_attempt`, `executions.tools`, `executions.jobs` | `pass`, `continue` |

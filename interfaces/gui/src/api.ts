@@ -34,31 +34,6 @@ export type SessionSearchMatch = {
   suffix_omitted: boolean;
 };
 export type SessionSearchResults = { matches: SessionSearchMatch[]; has_more: boolean };
-export type ScheduleTrigger =
-  | { type: "once"; at: string }
-  | { type: "interval"; seconds: number; start_at?: string | null }
-  | { type: "cron"; expression: string; timezone: string };
-export type ScheduleSummary = {
-  schedule_id: string;
-  prompt: string;
-  trigger: ScheduleTrigger;
-  workspace: string;
-  permission_preset: PermissionPreset;
-  origin_session_id: string;
-  schedule_session_id: string;
-  session_available: boolean;
-  enabled: boolean;
-  end_at?: string | null;
-  next_run_at?: string | null;
-  latest_run?: {
-    run_id: string;
-    status: string;
-    scheduled_for: string;
-    started_at?: string | null;
-    finished_at?: string | null;
-    error?: string | null;
-  } | null;
-};
 export type ModelOption = { id: string; model: string };
 export type ModelOptions = { default: string; models: ModelOption[] };
 export type MemoryDocument = {

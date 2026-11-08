@@ -4,32 +4,29 @@
   <b>English</b> &middot; <a href="README.zh-CN.md">简体中文</a>
 </div>
 
-RADE is an open-source, lightweight personal agent application. It provides local workspace operations, human approval, session persistence, context management, long-term memory, plans, subagents, scheduled tasks, and Skill / Plugin / MCP extensibility — with a TUI, a GUI, and Feishu messaging access.
+RADE is an open-source, lightweight personal agent application. It provides local workspace operations, human approval, session persistence, context management, long-term memory, plans, subagents, and Skill / Plugin / MCP extensibility, with a TUI and a GUI.
 
 ```text
 TUI ───────────────────────── Bridge ── agent_runtime ── agent_core
 RADE-server
-├─ HTTP / WebSocket (optional) ── GUI
-├─ IM (Feishu)
+├─ HTTP / WebSocket ── GUI
 └─ Session Host ── Bridge ── agent_runtime ── agent_core
 ```
 
 - `agent_core` provides frontend-agnostic agent mechanisms.
 - `agent_runtime` reads application configuration and assembles the Core into a runnable instance.
 - Bridge runs as a standalone process and is the only channel through which a frontend drives the Runtime.
-- The TUI, GUI, and messaging hosts share execution state and interaction semantics through the Bridge protocol; the Bridge subprocess channel uses newline-delimited JSON.
+- The TUI and GUI share execution and interaction semantics through the Bridge protocol. The Bridge subprocess channel uses newline-delimited JSON.
 
 ## Key capabilities
 
 - **Controlled local execution**: A session supports three permission presets — `Ask for approval`, `Workspace Access`, and `Full Access`. Shell enters the workspace sandbox or the host environment according to scope, while file tools are always confined to the current workspace.
-- **Desktop automation**: The main agent can observe and operate the visible desktop through `computer_screenshot` and `computer_action`, covering screenshots, clicks, drags, scrolling, key presses, and text input. Both tools are on by default and visible only to the main agent, and each call is confirmed according to the current permission preset. Actions return a screenshot by default and can skip it with `screenshot: false`. On Windows the tools also support visible-window crops and window-relative input. Pass the latest screenshot path as `observation` and use its `hwnd:<decimal>` for a window-scoped action.
-- **Web research**: `web_fetch` reads public pages directly or via DeepSeek; `web_search`, when enabled, queries DuckDuckGo by default and can switch to Exa or DeepSeek.
 - **A complete agent loop**: streaming responses, tool batches, context compaction, steer, cancel, plans, and background jobs.
 - **Resumable sessions**: conversation and execution events are written to an append-only JSONL journal, and the TUI and GUI can read the same kind of session.
-- **Memory and scheduled tasks**: global and workspace-scoped long-term memory, plus one-shot, interval, and cron tasks.
-- **Models and media**: OpenAI-compatible endpoints use the native OpenAI SDK; other routes and image generation use LiteLLM. Providers can be routed independently for the main agent, vision, image generation, auxiliary model calls, and each subagent role.
+- **Memory** stores long-term context globally and per workspace.
+- **Models and media** use Chat Completions or Responses through the OpenAI SDK. The main agent, auxiliary calls, and each subagent role can use different providers. Models with image input can inspect workspace images.
 - **Extension system**: standalone skills, skills / agents / MCP / [command hooks](docs/plugin-hooks.md) provided by plugins, and standalone MCP servers.
-- **Multiple frontends**: the TUI suits terminal workflows; the GUI offers multi-session management, attachments, a file tree, settings, memory, and scheduled tasks; Feishu supports workspace and session selection, streaming text, questions, and approval cards.
+- **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, attachments, a file tree, settings, and memory.
 
 ## Quick start
 
@@ -67,7 +64,7 @@ Then restart the TUI:
 RADE
 ```
 
-Or start the shared GUI / IM server:
+To start the GUI server, run
 
 ```bash
 RADE-server
@@ -75,7 +72,7 @@ RADE-server
 
 The GUI listens on <http://127.0.0.1:8737> by default.
 
-Feishu messaging access is configured in `.RADE/im_channels.json`; see [Mobile / IM setup](interfaces/mobile/README.md). `RADE-server` runs HTTP and IM adapters alongside a shared Session Host and Bridge. Use `RADE-server --no-http` to run without HTTP dependencies or a local listening port. A configuration-directory process lock prevents duplicate servers; a second launch reports that the server is already running.
+`RADE-server` manages HTTP and the shared Session Host and Bridge. A configuration-directory process lock prevents duplicate servers.
 
 ## Module documentation
 
@@ -96,7 +93,7 @@ Runtime layers:
 
 | Document | Scope |
 | --- | --- |
-| [`agent_core`](agent_core/README.md) | Agent loop, context, session, tools, execution, permissions, memory, plans, jobs, scheduler, providers, skills, and MCP mechanisms |
+| [`agent_core`](agent_core/README.md) | Agent loop, context, session, tools, execution, permissions, memory, plans, jobs, providers, skills, and MCP mechanisms |
 | [`agent_runtime`](agent_runtime/README.md) | Configuration, prompts, plugin discovery, runtime assembly, execution plane, session binding, and turn entry |
 
 Frontends and SDK:
@@ -109,7 +106,6 @@ Frontends and SDK:
 | [`interfaces/client`](interfaces/client/README.md) | Public Node/TypeScript stdio client, process lifecycle and integration example |
 | [`interfaces/tui`](interfaces/tui/README.md) | The Ink terminal interface, commands, input state, and Bridge subprocess attachment |
 | [`interfaces/gui`](interfaces/gui/README.md) | The FastAPI service, React interface, multi-session connections, HTTP / WebSocket API, and media access |
-| [`interfaces/mobile`](interfaces/mobile/README.md) | Feishu transport, workspace and session selection, streaming text, questions, approvals, and shared-host setup |
 
 ## Configuration and data
 
@@ -119,8 +115,6 @@ Frontends and SDK:
 | --- | --- |
 | `.RADE/provider_config.json` | Providers, models, and role routing, including the optional `fast_model` |
 | `.RADE/agent_config.json` | Tools, context, memory, skill paths, subagents, MCP, workspace instructions, and scratch workspace settings |
-| `.RADE/im_channels.json` | Messaging channels, credentials, and authorized Feishu users |
-| `.RADE/tool_config.json` | Web Search and Web Fetch provider selection and API keys |
 | `.RADE/.env` | The secrets and environment variables referenced by the configuration |
 | `.RADE/prompts/` | Main agent, subagent, compaction, and memory prompts |
 | `.RADE/skills/` | Standalone skills |
@@ -128,8 +122,7 @@ Frontends and SDK:
 | `.RADE/AGENTS.md` | Project-wide workspace instruction |
 | `.RADE/MEMORY.md` | Global long-term memory |
 | `.RADE/sessions/` | Session journals, workspace memory, artifacts, subagent records, and per-session auxiliary usage logs |
-| `.RADE/schedule.jsonl` | Scheduled tasks and run records |
-| `<workspace>/.RADE/attachments/` | Uploaded attachments and agent-generated images |
+| `<workspace>/.RADE/attachments/` | Uploaded attachments |
 
 The default configuration and built-in resources live in [`agent_runtime/defaults/`](agent_runtime/defaults). See [`agent_runtime/README.md`](agent_runtime/README.md) for how assembly works.
 
@@ -148,7 +141,7 @@ On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
 
 Pytest distributes test classes across four isolated worker processes. Use `-n 0` for a serial run or `-n 2` on smaller machines. The full suite includes package installation and real local MCP/sandbox processes; `--ignore=tests/test_bridge_client.py` omits the package installation check during iteration. The standalone plugin testkit has its own command in [docs/plugin-interop.md](docs/plugin-interop.md).
 
-The server extra includes FastAPI, Uvicorn, the WebSocket backend, and multipart support; Windows, macOS, and Linux use the same installation. The TUI and `RADE-server --no-http` do not require this extra.
+The server extra includes FastAPI, Uvicorn, the WebSocket backend, and multipart support; Windows, macOS, and Linux use the same installation. The TUI runs with the base installation.
 
 Frontend build, type checking, and tests:
 

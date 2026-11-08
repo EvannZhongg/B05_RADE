@@ -88,4 +88,3 @@ class BridgeServer:
             bridge.stop()
         for _, thread in channels:
             thread.join()
-        self.services.close()

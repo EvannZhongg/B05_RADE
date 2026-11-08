@@ -16,11 +16,7 @@ from agent_core import (
     ToolCatalog,
 )
 from agent_core.llm import LLMProvider
-from agent_core.image_generation import ImageGenerator
-from agent_core.tools.config import ToolSettings
 from agent_core.hooks import HookRunner
-
-from .desktop import DesktopCapability
 
 if TYPE_CHECKING:
     from .session_title import SessionTitleTask
@@ -40,24 +36,19 @@ class ExecutionPlane:
     instructions: WorkspaceInstructions
     provider: LLMProvider
     fast_provider: LLMProvider
-    vision_provider: LLMProvider | None
-    image_generator: ImageGenerator | None
     catalog: ToolCatalog
     skills: SkillRegistry
     prompts: "PromptTemplates"
     plugin_agents: tuple["PluginAgent", ...]
-    computer_tools: tuple[str, ...]
     execution_router: ExecutionRouter
     mcp: "McpClientManager"
     hooks: HookRunner = field(default_factory=HookRunner)
     role_tools: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    tool_settings: ToolSettings = field(default_factory=ToolSettings)
     memory: MemoryManager | None = None
     title_task: "SessionTitleTask | None" = None
     agent: Agent | None = None
     jobs: JobManager | None = None
     context_window: ContextWindow | None = None
-    computer: DesktopCapability | None = None
     runtime_warnings: tuple[str, ...] = ()
 
     def matches(
@@ -79,32 +70,27 @@ class ExecutionPlane:
         )
 
     def unbind_session(self) -> None:
-        if self.computer is not None:
-            self.computer.clear_observation()
-        title_task = self.title_task
+        title_task, jobs = self.title_task, self.jobs
         self.title_task = None
-        if title_task is not None:
-            title_task.close()
-        jobs = self.jobs
         self.jobs = None
         self.agent = None
         self.memory = None
         self.context_window = None
-        if jobs is not None:
-            jobs.close()
+        try:
+            if title_task is not None:
+                title_task.close()
+        finally:
+            if jobs is not None:
+                jobs.close()
 
     def close(self) -> None:
         try:
-            if self.computer is not None:
-                self.computer.close()
+            self.unbind_session()
         finally:
             try:
-                self.unbind_session()
+                self.mcp.close()
             finally:
-                try:
-                    self.mcp.close()
-                finally:
-                    self.execution_router.close()
+                self.execution_router.close()
 
 
 __all__ = ["ExecutionPlane"]

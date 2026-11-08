@@ -157,7 +157,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
     def open(self, peer, session_id=None):
         peer.send({"type": "open_session", "workspace": str(self.external), "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 3)
+        self.assertEqual(ready["protocol_version"], 4)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 
@@ -197,7 +197,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
         self.assertFalse(ready["resumed"])
         self.assertEqual(ready["transcript"]["items"], [])
         config = self.config
-        for filename in ("agent_config.json", "provider_config.json", "tool_config.json", "prompts/Soul.md"):
+        for filename in ("agent_config.json", "provider_config.json", "prompts/Soul.md"):
             self.assertTrue((config / filename).is_file(), filename)
         preserved = (config / "provider_config.json").read_bytes()
         peer.send({"type": "permission_set", "preset": "workspace_access"})
@@ -272,7 +272,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
         config = self.config
         provider_path = config / "provider_config.json"
         provider = json.loads(provider_path.read_text(encoding="utf-8"))
-        provider["main_agent"] = {"provider": "fixture", "vision_provider": ""}
+        provider["main_agent"] = {"provider": "fixture"}
         provider["providers"] = {"fixture": {
             "model": "gpt-4o", "url": f"http://127.0.0.1:{server.server_port}/v1",
             "key": "fixture-key", "api": "responses", "max_context_tokens": 128000,

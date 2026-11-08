@@ -1,36 +1,4 @@
-from dataclasses import dataclass, field
-
-
-WEB_SEARCH_PROVIDERS = ("duckduckgo", "exa", "deepseek")
-WEB_FETCH_PROVIDERS = ("direct", "deepseek")
-
-
-@dataclass(frozen=True)
-class WebSearchConfig:
-    provider: str = WEB_SEARCH_PROVIDERS[0]
-    api_key: str | None = field(default=None, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.provider not in WEB_SEARCH_PROVIDERS:
-            raise ValueError(f"Unsupported web search provider: {self.provider}")
-
-
-@dataclass(frozen=True)
-class WebFetchConfig:
-    provider: str = WEB_FETCH_PROVIDERS[0]
-    api_key: str | None = field(default=None, repr=False)
-
-    def __post_init__(self) -> None:
-        if self.provider not in WEB_FETCH_PROVIDERS:
-            raise ValueError(f"Unsupported web fetch provider: {self.provider}")
-
-
-@dataclass(frozen=True)
-class ToolSettings:
-    """Tool options resolved by the Runtime, shared by every Agent."""
-
-    web_search: WebSearchConfig = field(default_factory=WebSearchConfig)
-    web_fetch: WebFetchConfig = field(default_factory=WebFetchConfig)
+from dataclasses import dataclass
 
 
 TOOL_NAMES = (
@@ -38,37 +6,16 @@ TOOL_NAMES = (
     "apply_patch",
     "edit_file",
     "write_file",
-    "generate_image",
     "search_files",
     "list_directory",
     "shell",
-    "web_search",
-    "web_fetch",
     "subagent",
     "job_control",
-    "scheduled_task",
-    "computer_screenshot",
-    "computer_action",
 )
 
-# ``read_image``, ``analyze_image`` and ``read_skill`` are absent by design:
-# they are derived from Runtime capabilities rather than configured. See
-# ``agent_core.subagent``.
-
-# A role runs inside a sub-agent, so it cannot delegate or manage parent jobs. Image
-# generation is kept on the main Agent so generated media joins the visible
-# parent conversation directly.
-ROLE_TOOL_NAMES = tuple(
-    name
-    for name in TOOL_NAMES
-    if name not in {
-        "subagent",
-        "job_control",
-        "generate_image",
-        "computer_screenshot",
-        "computer_action",
-    }
-)
+# Image and Skill tools are selected from the available capabilities.
+# Subagents cannot delegate work or manage parent jobs.
+ROLE_TOOL_NAMES = tuple(name for name in TOOL_NAMES if name not in {"subagent", "job_control"})
 
 
 @dataclass(frozen=True)

@@ -114,7 +114,7 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 | `AGENTS.md` | 项目级 Workspace Instruction |
 | `MEMORY.md` | 全局长期记忆 |
 
-仓库内的 [`defaults/`](defaults) 是首次初始化时的安装源。已有配置、Prompt、Skill 或 Plugin 目录不会被默认资源覆盖。
+初始化时从仓库内的 [`defaults/`](defaults) 补齐缺失的配置、Prompt 和 Skill，并创建用于手动安装插件的 `plugins/` 目录。
 
 `agent_config.json` 的 `skills.global_paths` 相对配置目录解析、`skills.workspace_paths` 相对当前 Workspace 解析。`scratch_workspace_root` 的相对路径也以配置目录为基准，默认为 `workspaces/scratch`。同名 Skill 保留最先注册的来源，Plugin Skill 排在配置来源之后。
 

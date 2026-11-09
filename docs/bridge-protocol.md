@@ -114,9 +114,10 @@ Successful open emits, in order:
 
 `session_ready` confirms the control plane only. Apply the first standalone
 `runtime_state` before dispatching follow-up commands. Provider/Tool/MCP/Agent
-construction is lazy and happens on the first turn or an explicit refresh. First-use startup installs
-missing default configuration, prompts, Skills and Plugins under `.RADE` in the Bridge process's working directory
-through agent_runtime; it preserves existing files. A session can open without
+construction is lazy and happens on the first turn or an explicit refresh.
+On startup, agent_runtime fills in missing default configuration, prompts, and
+Skills under `.RADE` in the Bridge process's working directory and creates the
+directory for user-installed Plugins. It preserves existing files. A session can open without
 provider credentials. Configure credentials in the installed provider config or
 its referenced environment variables before a model turn; this API does not
 prompt interactively or invent credentials.

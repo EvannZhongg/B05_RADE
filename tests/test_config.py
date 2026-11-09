@@ -201,7 +201,6 @@ class ConfigTest(unittest.TestCase):
                     config_directory / "prompts" / "SessionTitle.md",
                     config_directory / "skills" / "plugin-creator",
                     config_directory / "skills" / "skill-creator",
-                    config_directory / "plugins" / "playwright",
                 ),
             )
             provider_config = json.loads(created[0].read_text(encoding="utf-8"))
@@ -232,7 +231,6 @@ class ConfigTest(unittest.TestCase):
                 agent_config["scratch_workspace_root"],
                 "workspaces/scratch",
             )
-            # The built-in MCP plugin only loads while MCP is switched on.
             self.assertTrue(agent_config["mcp"]["enabled"])
             self.assertEqual(
                 agent_config["workspace_instruction_files"],
@@ -284,17 +282,7 @@ class ConfigTest(unittest.TestCase):
             )
             plugins = PluginManager.discover(config_directory / "plugins")
             self.assertEqual(plugins.warnings, ())
-            self.assertEqual(
-                [plugin.name for plugin in plugins.plugins],
-                ["playwright"],
-            )
-            servers, warnings = plugins.load_mcp_servers()
-            self.assertEqual(warnings, ())
-            self.assertEqual(
-                [server.identifier for server in servers],
-                ["playwright:browser"],
-            )
-            self.assertIn("--output-dir", servers[0].args)
+            self.assertEqual(plugins.plugins, ())
             self.assertTrue(agent_config["main_agent"]["tools"]["read_file"])
             self.assertTrue(agent_config["main_agent"]["tools"]["job_control"])
             # Every shipped role carries an explicit enable switch.
@@ -312,7 +300,7 @@ class ConfigTest(unittest.TestCase):
             existing_skill.mkdir(parents=True)
             skill_path = existing_skill / "SKILL.md"
             skill_path.write_text("custom skill", encoding="utf-8")
-            existing_plugin = config_directory / "plugins" / "playwright"
+            existing_plugin = config_directory / "plugins" / "custom"
             existing_plugin.mkdir(parents=True)
             plugin_path = existing_plugin / "plugin.json"
             plugin_path.write_text("custom plugin", encoding="utf-8")
@@ -348,7 +336,6 @@ class ConfigTest(unittest.TestCase):
                 plugin_path.read_text(encoding="utf-8"),
                 "custom plugin",
             )
-            self.assertFalse((existing_plugin / ".mcp.json").exists())
             self.assertEqual(soul_path.read_text(encoding="utf-8"), "custom prompt")
             self.assertEqual(
                 instructions_path.read_text(encoding="utf-8"),
@@ -370,7 +357,6 @@ class ConfigTest(unittest.TestCase):
                 "GlobalMemory.md", "WorkspaceMemory.md", "SessionTitle.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
-            (defaults / "plugins").mkdir()
 
             direct = defaults / "skills" / "direct"
             direct.mkdir(parents=True)
@@ -399,48 +385,6 @@ class ConfigTest(unittest.TestCase):
                 (config_directory / "skills" / "not-a-skill").exists()
             )
 
-    def test_installs_only_plugin_directories(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            defaults = root / "defaults"
-            defaults.mkdir()
-            for filename in EXECUTION_CONFIG_FILENAMES:
-                (defaults / filename).write_text("{}", encoding="utf-8")
-            prompts = defaults / "prompts_template"
-            prompts.mkdir()
-            for filename in (
-                "Soul.md", "SubAgent.md", "Consolidator.md",
-                "GlobalMemory.md", "WorkspaceMemory.md", "SessionTitle.md",
-            ):
-                (prompts / filename).write_text(filename, encoding="utf-8")
-            (defaults / "skills").mkdir()
-
-            packaged = defaults / "plugins" / "demo"
-            packaged.mkdir(parents=True)
-            (packaged / "plugin.json").write_text("{}", encoding="utf-8")
-            (packaged / ".mcp.json").write_text("{}", encoding="utf-8")
-            nested = defaults / "plugins" / "group" / "nested"
-            nested.mkdir(parents=True)
-            (nested / "plugin.json").write_text("{}", encoding="utf-8")
-            without_manifest = defaults / "plugins" / "not-a-plugin"
-            without_manifest.mkdir()
-            (without_manifest / "resource.txt").write_text("x", encoding="utf-8")
-
-            config_directory = root / "RADE"
-            with patch(
-                "agent_runtime.config.files",
-                return_value=defaults,
-            ):
-                initialize_config_directory(config_directory)
-
-            installed = config_directory / "plugins" / "demo"
-            self.assertTrue((installed / "plugin.json").is_file())
-            self.assertTrue((installed / ".mcp.json").is_file())
-            self.assertFalse((config_directory / "plugins" / "group").exists())
-            self.assertFalse(
-                (config_directory / "plugins" / "not-a-plugin").exists()
-            )
-
     def test_installs_a_skill_without_caches_or_finder_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -455,7 +399,6 @@ class ConfigTest(unittest.TestCase):
                 "GlobalMemory.md", "WorkspaceMemory.md", "SessionTitle.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
-            (defaults / "plugins").mkdir()
 
             packaged = defaults / "skills" / "demo"
             scripts = packaged / "scripts"

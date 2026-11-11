@@ -16,7 +16,6 @@ class ContextCompressionConfig:
 @dataclass(frozen=True)
 class MemoryConfig:
     enabled: bool = True
-    global_max_tokens: int = 2000
     workspace_max_tokens: int = 3000
 
 
@@ -300,9 +299,6 @@ def _memory_config(value: object) -> MemoryConfig:
         raise ValueError("config field 'memory.enabled' must be a boolean")
     return MemoryConfig(
         enabled=enabled,
-        global_max_tokens=_positive_integer_with_default(
-            value, "global_max_tokens", 2000, prefix="memory"
-        ),
         workspace_max_tokens=_positive_integer_with_default(
             value, "workspace_max_tokens", 3000, prefix="memory"
         ),

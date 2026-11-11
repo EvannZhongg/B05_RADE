@@ -1,7 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from "react";
 import { ComposerPrimitive, unstable_useComposerInput } from "@assistant-ui/react";
-import { AlertTriangle, ArrowUp, Check, ChevronDown, Folder, LoaderCircle, MessageCircleQuestion, Paperclip, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
-import type { PermissionPreset } from "@rade/protocol";
+import { AlertTriangle, ArrowUp, Check, ChevronDown, Folder, LoaderCircle, MessageCircleQuestion, Paperclip, Plus, RefreshCw, X } from "lucide-react";
 import { shouldBlockRunningAttachmentSubmit, shouldSubmitAttachmentOnly, shouldSubmitComposerEnter } from "./composerState";
 import { PendingAttachment } from "./Messages/Attachments";
 import { ContextWindowIndicator, RuntimeIndicators } from "./RuntimeIndicators";
@@ -13,7 +12,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
   const commandMenuId = useId();
   const showRefreshCommand = !commandDismissed && composerText.startsWith("/") && "/refresh".startsWith(composerText);
   const refreshDisabled = !runtime.workspaceSelected || runtime.controlsDisabled || runtime.sessionRunning
-    || runtime.attaching || runtime.providerSaving || runtime.workspaceSaving || runtime.permissionSaving || runtime.refreshing;
+    || runtime.attaching || runtime.providerSaving || runtime.workspaceSaving || runtime.refreshing;
   const [workspaceEditing, setWorkspaceEditing] = useState(false);
   const [workspaceMenuBounds, setWorkspaceMenuBounds] = useState({ maxHeight: 360, maxWidth: 320 });
   const workspaceMenuId = useId();
@@ -167,7 +166,6 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
 
   return <div className="composer-area">
     {runtime.attachmentReplaced && <div className="attachment-replaced" role="status"><span>此会话由另一个页面控制，可在此页面手动接管。</span><button type="button" onClick={runtime.takeOverAttachment} disabled={runtime.attaching}>{runtime.attaching ? "正在接管…" : "在此页面接管"}</button></div>}
-    {!runtime.attachmentReplaced && runtime.approval && <div className="approval-card" role="region" aria-label="工具执行确认"><div className="approval-title"><ShieldCheck size={17} /> 允许执行此工具调用？</div><pre>{runtime.approval.command}</pre><div className="approval-actions"><button onClick={() => runtime.respondToApproval(false)}>拒绝</button><button className="approve-button" onClick={() => runtime.respondToApproval(true)}>允许执行</button></div></div>}
     {!runtime.attachmentReplaced && runtime.question && <div className="question-card" role="region" aria-label="需要你的选择">
       <div className="question-title"><MessageCircleQuestion size={18} /><span>{runtime.question.question}</span></div>
       <div className="question-options">{runtime.question.options.map((option) => <button type="button" className="question-option" key={option.id} autoFocus={option.id === questionFocusOptionId} onClick={() => runtime.answerQuestion({ option_id: option.id })}>
@@ -192,7 +190,6 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
         reconnecting={runtime.reconnecting}
         runtimePhase={runtime.runtimePhase}
         pendingSteers={runtime.pendingSteers}
-        approval={runtime.approval}
         question={runtime.question}
         plan={runtime.plan}
         jobs={runtime.jobs}
@@ -235,7 +232,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
         </div>}
       </div>
       <ComposerPrimitive.Input
-        placeholder={!runtime.workspaceSelected ? "请先选择工作区…" : runtime.question ? "请先回答上方问题…" : runtime.approval ? "请先处理上方确认…" : "Ask RADE…"}
+        placeholder={!runtime.workspaceSelected ? "请先选择工作区…" : runtime.question ? "请先回答上方问题…" : "Ask RADE…"}
         aria-label="消息"
         aria-autocomplete="list"
         aria-expanded={showRefreshCommand}
@@ -260,14 +257,6 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
           <select aria-label="选择模型" value={runtime.displayedProvider} disabled={!runtime.workspaceSelected || runtime.controlsDisabled || runtime.sessionRunning || runtime.providerSaving} onChange={(event) => runtime.changeProvider(event.target.value)}>
             {runtime.providers.map((option) => <option key={option.id} value={option.id}>{option.model}</option>)}
           </select>{runtime.providerSaving ? <LoaderCircle size={12} className="spin" aria-label="正在切换模型" /> : <ChevronDown size={12} />}
-        </label>
-        <label className="permission-selector" title="权限模式">
-          <ShieldCheck size={13} />
-          <select aria-label="权限模式" value={runtime.displayedPermissionPreset} disabled={!runtime.workspaceSelected || runtime.controlsDisabled || runtime.permissionSaving} onChange={(event) => runtime.changePermissionPreset(event.target.value as PermissionPreset)}>
-            <option value="ask_for_approval">请求批准</option>
-            <option value="workspace_access">工作区访问</option>
-            <option value="full_access">完全访问</option>
-          </select>{runtime.permissionSaving ? <LoaderCircle size={12} className="spin" aria-label="正在保存权限" /> : <ChevronDown size={12} />}
         </label>
         <div className="composer-actions"><ContextWindowIndicator window={runtime.contextWindow} cacheUsage={runtime.cacheUsage} />
           <button type="submit" className="send-button" aria-label={runtime.running ? "发送引导" : "发送消息"} disabled={runtime.composerGate.sendDisabled || (runtime.pendingFiles.length > 0 ? runtime.sessionRunning : !canSend)}><ArrowUp size={19} /></button>

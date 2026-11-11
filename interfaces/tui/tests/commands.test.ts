@@ -10,16 +10,16 @@ describe('matchCommands', () => {
   });
 
   it('narrows by the name being typed', () => {
-    expect(names('/perm')).toEqual(['/permissions']);
+    expect(names('/sess')).toEqual(['/sessions']);
   });
 
   it('closes once the name is followed by an argument', () => {
-    expect(names('/permissions ')).toEqual([]);
-    expect(names('/permissions\n')).toEqual([]);
+    expect(names('/sessions ')).toEqual([]);
+    expect(names('/sessions\n')).toEqual([]);
   });
 
   it('ignores drafts that are not a command name', () => {
-    expect(names('ask about /permissions')).toEqual([]);
+    expect(names('ask about /sessions')).toEqual([]);
     expect(names('/unknown')).toEqual([]);
   });
 });

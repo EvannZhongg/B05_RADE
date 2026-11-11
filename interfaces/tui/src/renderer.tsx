@@ -3,8 +3,8 @@ import { Box, Static, Text, useBoxMetrics } from 'ink';
 import type { DOMElement } from 'ink';
 import Spinner from 'ink-spinner';
 import { cacheHitPercent, formatArguments } from '@rade/protocol';
-import type { ApprovalKind, PermissionPreset, PlanSnapshot, SettingsSnapshot } from '@rade/protocol/internal';
-import type { ApprovalChoice, Entry, NavigationPicker as NavigationPickerState, State, UserQuestionState } from './state.js';
+import type { PlanSnapshot, SettingsSnapshot } from '@rade/protocol/internal';
+import type { Entry, NavigationPicker as NavigationPickerState, State, UserQuestionState } from './state.js';
 
 function EntryView({ entry }: { entry: Entry }): React.ReactElement {
   if (entry.kind === 'user') {
@@ -345,94 +345,6 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
             )}s${state.pendingSteers ? ` · ${state.pendingSteers} steer pending` : ''} · esc to cancel · ${model}`
           : model}
       </Text>
-    </Box>
-  );
-}
-
-function Option({
-  label,
-  selected,
-  color,
-}: {
-  label: string;
-  selected: boolean;
-  color: string;
-}): React.ReactElement {
-  return (
-    <Box marginRight={2}>
-      <Text color={selected ? color : undefined} dimColor={!selected} bold={selected}>
-        {selected ? `❯ ${label}` : `  ${label}`}
-      </Text>
-    </Box>
-  );
-}
-
-export function ApprovalPrompt({
-  command,
-  kind,
-  choice,
-}: {
-  command: string;
-  kind?: ApprovalKind;
-  choice: ApprovalChoice;
-}): React.ReactElement {
-  const title = kind === 'mcp'
-    ? 'MCP tool call requires approval'
-    : kind === 'file'
-      ? 'File change requires approval'
-      : 'Shell command requires approval';
-  return (
-    <Box
-      marginTop={1}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="yellow"
-      paddingX={1}
-    >
-      <Text color="yellow" bold>
-        {title}
-      </Text>
-      <Box marginTop={1}>
-        <Text>{command}</Text>
-      </Box>
-      <Box marginTop={1}>
-        <Option label="Allow" selected={choice === 'allow'} color="green" />
-        <Option label="Deny" selected={choice === 'deny'} color="red" />
-      </Box>
-      <Text dimColor>←/→ select · enter confirm · esc deny</Text>
-    </Box>
-  );
-}
-
-export function PermissionPrompt({
-  selected,
-}: {
-  selected: PermissionPreset;
-}): React.ReactElement {
-  return (
-    <Box
-      marginTop={1}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Text color="cyan" bold>Permissions</Text>
-      <Box marginTop={1} flexDirection="column">
-        <Text color={selected === 'ask_for_approval' ? 'cyan' : undefined} dimColor={selected !== 'ask_for_approval'} bold={selected === 'ask_for_approval'}>
-          {selected === 'ask_for_approval' ? '❯ ' : '  '}Ask for approval
-        </Text>
-        <Text dimColor>    Ask before operations that require authorization.</Text>
-        <Text color={selected === 'workspace_access' ? 'cyan' : undefined} dimColor={selected !== 'workspace_access'} bold={selected === 'workspace_access'}>
-          {selected === 'workspace_access' ? '❯ ' : '  '}Workspace Access
-        </Text>
-        <Text dimColor>    Allow workspace-confined operations; ask before host access.</Text>
-        <Text color={selected === 'full_access' ? 'cyan' : undefined} dimColor={selected !== 'full_access'} bold={selected === 'full_access'}>
-          {selected === 'full_access' ? '❯ ' : '  '}Full Access
-        </Text>
-        <Text dimColor>    Skip approval and execute directly on the current host.</Text>
-      </Box>
-      <Text dimColor>↑/↓ select · enter confirm · esc close</Text>
     </Box>
   );
 }

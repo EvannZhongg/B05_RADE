@@ -49,10 +49,7 @@ class MemoryTest(unittest.TestCase):
         self.root = Path(directory.name)
         self.workspace = self.root / "project"
         self.workspace.mkdir()
-        self.store = MemoryStore(
-            self.root / "MEMORY.md",
-            self.root / "sessions",
-        )
+        self.store = MemoryStore(self.root / "sessions")
         self.store.initialize(self.workspace)
 
     def manager(self, provider: LLMProvider) -> MemoryManager:
@@ -61,15 +58,13 @@ class MemoryTest(unittest.TestCase):
             self.store,
             MemoryReconciler(
                 provider,
-                global_prompt="global prompt",
                 workspace_prompt="workspace prompt",
-                global_max_tokens=2000,
                 workspace_max_tokens=3000,
             ),
         )
 
     def test_independent_store_waits_for_the_memory_lock(self) -> None:
-        other = MemoryStore(self.store.global_path, self.store.sessions_directory)
+        other = MemoryStore(self.store.sessions_directory)
         attempted, finished = Event(), Event()
         expected = self.store.load(self.workspace)
 
@@ -96,10 +91,13 @@ class MemoryTest(unittest.TestCase):
             memory=manager,
         )
 
-        result = RememberTool().execute(
+        tool = RememberTool()
+        self.assertNotIn("scope", tool.definition(context).parameters["properties"])
+        with self.assertRaisesRegex(ValueError, "unknown remember argument"):
+            tool.execute({"kind": "fact", "scope": "global", "content": "Unused."}, context)
+        result = tool.execute(
             {
                 "kind": "preference",
-                "scope": "global",
                 "content": "Prefer concise answers.",
             },
             context,
@@ -107,59 +105,45 @@ class MemoryTest(unittest.TestCase):
 
         self.assertEqual(result, {
             "accepted": True,
-            "scope": "global",
             "kind": "preference",
         })
         self.assertEqual(
             manager.pending,
-            (MemoryCandidate("preference", "global", "Prefer concise answers."),),
+            (MemoryCandidate("preference", "Prefer concise answers."),),
         )
         self.assertNotIn(
             "Prefer concise answers",
-            (self.root / "MEMORY.md").read_text(encoding="utf-8"),
+            self.store.workspace_path(self.workspace).read_text(encoding="utf-8"),
         )
 
-    def test_batches_candidates_and_keeps_scopes_isolated(self) -> None:
-        provider = ReconcilerProvider([
-            json.dumps({
-                "entries": [
-                    {"kind": "preference", "content": "Prefer concise answers."},
-                    {"kind": "fact", "content": "The user works in Shanghai."},
-                ]
-            }),
-            json.dumps({
-                "entries": [
-                    {"kind": "decision", "content": "Use Bridge as the only runtime channel."}
-                ]
-            }),
-        ])
+    def test_batches_candidates_and_keeps_workspaces_isolated(self) -> None:
+        provider = ReconcilerProvider([json.dumps({
+            "entries": [
+                {"kind": "preference", "content": "Prefer concise answers."},
+                {"kind": "decision", "content": "Use Bridge as the only runtime channel."},
+            ]
+        })])
         manager = self.manager(provider)
-        manager.remember(MemoryCandidate("preference", "global", "Be concise."))
-        manager.remember(MemoryCandidate("fact", "global", "Lives in Shanghai."))
-        manager.remember(MemoryCandidate("decision", "workspace", "Use Bridge."))
+        manager.remember(MemoryCandidate("preference", "Be concise."))
+        manager.remember(MemoryCandidate("decision", "Use Bridge."))
 
         self.assertTrue(manager.reconcile_pending())
 
-        self.assertEqual(len(provider.requests), 2)
-        global_payload = json.loads(provider.requests[0].messages[0].content)
-        workspace_payload = json.loads(provider.requests[1].messages[0].content)
-        self.assertEqual(global_payload["scope"], "global")
-        self.assertEqual(len(global_payload["candidates"]), 2)
-        self.assertEqual(workspace_payload["scope"], "workspace")
-        self.assertNotIn("max_tokens", global_payload)
-        self.assertIsNone(provider.requests[0].max_generation_tokens)
-        self.assertIsNone(provider.requests[1].max_generation_tokens)
-        context = self.store.load(self.workspace)
-        self.assertEqual(
-            context.global_memory.preferences,
-            ("Prefer concise answers.",),
-        )
-        self.assertEqual(
-            context.workspace_memory.decisions,
-            ("Use Bridge as the only runtime channel.",),
-        )
-        other = self.store.load(self.root / "other")
-        self.assertTrue(other.workspace_memory.is_empty())
+        self.assertEqual(len(provider.requests), 1)
+        request = provider.requests[0]
+        payload = json.loads(request.messages[0].content)
+        self.assertEqual(payload, {
+            "current_memory": [],
+            "candidates": [
+                {"kind": "preference", "content": "Be concise."},
+                {"kind": "decision", "content": "Use Bridge."},
+            ],
+        })
+        self.assertIsNone(request.max_generation_tokens)
+        document = self.store.load(self.workspace)
+        self.assertEqual(document.preferences, ("Prefer concise answers.",))
+        self.assertEqual(document.decisions, ("Use Bridge as the only runtime channel.",))
+        self.assertTrue(self.store.load(self.root / "other").is_empty())
 
     def test_consecutive_reconciliations_use_the_latest_stored_memory(self) -> None:
         provider = ReconcilerProvider([
@@ -177,9 +161,9 @@ class MemoryTest(unittest.TestCase):
         ])
         manager = self.manager(provider)
 
-        manager.remember(MemoryCandidate("fact", "global", "First fact."))
+        manager.remember(MemoryCandidate("fact", "First fact."))
         self.assertTrue(manager.reconcile_pending())
-        manager.remember(MemoryCandidate("fact", "global", "Second fact."))
+        manager.remember(MemoryCandidate("fact", "Second fact."))
         self.assertTrue(manager.reconcile_pending())
 
         second_payload = json.loads(provider.requests[1].messages[0].content)
@@ -188,7 +172,7 @@ class MemoryTest(unittest.TestCase):
             [{"kind": "fact", "content": "First durable fact."}],
         )
         self.assertEqual(
-            self.store.load(self.workspace).global_memory.facts,
+            self.store.load(self.workspace).facts,
             ("First durable fact.", "Second durable fact."),
         )
 
@@ -215,23 +199,21 @@ class MemoryTest(unittest.TestCase):
                 self.store,
                 MemoryReconciler(
                     provider,
-                    global_prompt="global prompt",
                     workspace_prompt="workspace prompt",
-                    global_max_tokens=2000,
                     workspace_max_tokens=3000,
                 ),
             )
             for _ in range(2)
         ]
         for index, manager in enumerate(managers):
-            manager.remember(MemoryCandidate("fact", "global", f"Fact {index}."))
+            manager.remember(MemoryCandidate("fact", f"Fact {index}."))
         with ThreadPoolExecutor(max_workers=2) as pool:
             self.assertEqual(
                 list(pool.map(lambda manager: manager.reconcile_pending(), managers)),
                 [True, True],
             )
         self.assertCountEqual(
-            self.store.load(self.workspace).global_memory.facts,
+            self.store.load(self.workspace).facts,
             ("Fact 0.", "Fact 1."),
         )
 
@@ -245,38 +227,35 @@ class MemoryTest(unittest.TestCase):
         ])
         reconciler = MemoryReconciler(
             provider,
-            global_prompt="Keep this around {{global_max_tokens}} tokens.",
             workspace_prompt=(
                 "Keep this around {{workspace_max_tokens}} tokens."
             ),
-            global_max_tokens=12,
             workspace_max_tokens=34,
         )
 
         reconciler.reconcile(
-            "global",
             MemoryDocument(),
-            (MemoryCandidate("fact", "global", "Remember this."),),
+            (MemoryCandidate("fact", "Remember this."),),
         )
 
-        self.assertIn("around 12 tokens", provider.requests[0].system_prompt)
+        self.assertIn("around 34 tokens", provider.requests[0].system_prompt)
         self.assertIsNone(provider.requests[0].max_generation_tokens)
 
     def test_invalid_reconciliation_is_recorded(self) -> None:
         calls = []
         reconciler = MemoryReconciler(
             ReconcilerProvider(["not JSON"]),
-            global_prompt="global", workspace_prompt="workspace",
-            global_max_tokens=2000, workspace_max_tokens=3000,
+            workspace_prompt="workspace",
+            workspace_max_tokens=3000,
             on_auxiliary_call=calls.append,
         )
         with self.assertRaisesRegex(ValueError, "invalid JSON"):
             reconciler.reconcile(
-                "global", MemoryDocument(),
-                (MemoryCandidate("fact", "global", "A fact."),),
+                MemoryDocument(),
+                (MemoryCandidate("fact", "A fact."),),
             )
         self.assertEqual((calls[0].task, calls[0].scope, calls[0].status),
-                         ("memory", "global", "invalid_response"))
+                         ("memory", "workspace", "invalid_response"))
 
     def test_empty_provider_error_is_recorded_as_null(self) -> None:
         class FailingProvider(ReconcilerProvider):
@@ -286,14 +265,14 @@ class MemoryTest(unittest.TestCase):
         calls = []
         reconciler = MemoryReconciler(
             FailingProvider([]),
-            global_prompt="global", workspace_prompt="workspace",
-            global_max_tokens=2000, workspace_max_tokens=3000,
+            workspace_prompt="workspace",
+            workspace_max_tokens=3000,
             on_auxiliary_call=calls.append,
         )
         with self.assertRaises(RuntimeError):
             reconciler.reconcile(
-                "global", MemoryDocument(),
-                (MemoryCandidate("fact", "global", "A fact."),),
+                MemoryDocument(),
+                (MemoryCandidate("fact", "A fact."),),
             )
         self.assertEqual(calls[0].status, "failed")
         self.assertIsNone(calls[0].error)
@@ -308,33 +287,31 @@ class MemoryTest(unittest.TestCase):
                 calls = []
                 reconciler = MemoryReconciler(
                     CancellingProvider([]),
-                    global_prompt="global", workspace_prompt="workspace",
-                    global_max_tokens=2000, workspace_max_tokens=3000,
+                    workspace_prompt="workspace",
+                    workspace_max_tokens=3000,
                     on_auxiliary_call=calls.append,
                 )
                 with self.assertRaises(exception):
                     reconciler.reconcile(
-                        "global", MemoryDocument(),
-                        (MemoryCandidate("fact", "global", "A fact."),),
+                        MemoryDocument(),
+                        (MemoryCandidate("fact", "A fact."),),
                     )
                 self.assertEqual(len(calls), 1)
                 self.assertEqual(calls[0].status, "cancelled")
 
     def test_store_round_trips_stable_markdown(self) -> None:
-        self.store.write_updates(
+        self.store.write(
             self.workspace,
-            global_memory=MemoryDocument(facts=("A stable fact.",)),
-            workspace_memory=MemoryDocument(decisions=("A project decision.",)),
+            MemoryDocument(facts=("A stable fact.",), decisions=("A project decision.",)),
         )
 
         loaded = self.store.load(self.workspace)
 
-        self.assertEqual(loaded.global_memory.facts, ("A stable fact.",))
+        self.assertEqual(loaded.facts, ("A stable fact.",))
         self.assertEqual(
-            loaded.workspace_memory.decisions,
+            loaded.decisions,
             ("A project decision.",),
         )
-        self.assertIn("# RADE Global Memory", self.store.global_path.read_text())
         self.assertIn(
             "# RADE Workspace Memory",
             self.store.workspace_path(self.workspace).read_text(),
@@ -346,19 +323,17 @@ class MemoryTest(unittest.TestCase):
 
     def test_load_all_returns_every_workspace_memory(self) -> None:
         other = self.root / "other"
-        self.store.write_updates(
+        self.store.write(
             self.workspace,
-            global_memory=MemoryDocument(preferences=("Use Chinese.",)),
-            workspace_memory=MemoryDocument(facts=("First project.",)),
+            MemoryDocument(facts=("First project.",)),
         )
-        self.store.write_updates(
+        self.store.write(
             other,
-            workspace_memory=MemoryDocument(decisions=("Use SQLite.",)),
+            MemoryDocument(decisions=("Use SQLite.",)),
         )
 
-        global_memory, workspaces = self.store.load_all()
+        workspaces = self.store.load_all()
 
-        self.assertEqual(global_memory.preferences, ("Use Chinese.",))
         self.assertEqual(
             workspaces[str(self.workspace.resolve())].facts,
             ("First project.",),
@@ -370,13 +345,13 @@ class MemoryTest(unittest.TestCase):
 
     def test_each_workspace_uses_its_own_memory_file(self) -> None:
         other = self.root / "other"
-        self.store.write_updates(
+        self.store.write(
             self.workspace,
-            workspace_memory=MemoryDocument(facts=("First project.",)),
+            MemoryDocument(facts=("First project.",)),
         )
-        self.store.write_updates(
+        self.store.write(
             other,
-            workspace_memory=MemoryDocument(facts=("Second project.",)),
+            MemoryDocument(facts=("Second project.",)),
         )
 
         first_path = self.store.workspace_path(self.workspace)
@@ -390,9 +365,9 @@ class MemoryTest(unittest.TestCase):
         self.assertIn("Second project.", second_path.read_text(encoding="utf-8"))
 
     def test_prompt_states_memory_priority(self) -> None:
-        self.store.write_updates(
+        self.store.write(
             self.workspace,
-            global_memory=MemoryDocument(preferences=("Use Chinese.",)),
+            MemoryDocument(preferences=("Use Chinese.",)),
         )
 
         section = self.store.load(self.workspace).prompt_section()
@@ -409,20 +384,20 @@ class MemoryTest(unittest.TestCase):
 
     def test_rejects_a_stale_write_without_losing_new_memory(self) -> None:
         stale = self.store.load(self.workspace)
-        self.store.write_updates(
+        self.store.write(
             self.workspace,
-            global_memory=MemoryDocument(facts=("Newer fact.",)),
+            MemoryDocument(facts=("Newer fact.",)),
         )
 
         with self.assertRaisesRegex(RuntimeError, "changed during reconciliation"):
-            self.store.write_updates(
+            self.store.write(
                 self.workspace,
-                global_memory=MemoryDocument(facts=("Stale fact.",)),
+                MemoryDocument(facts=("Stale fact.",)),
                 expected=stale,
             )
 
         self.assertEqual(
-            self.store.load(self.workspace).global_memory.facts,
+            self.store.load(self.workspace).facts,
             ("Newer fact.",),
         )
 

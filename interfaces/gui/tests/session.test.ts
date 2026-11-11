@@ -43,10 +43,8 @@ const snapshot: Incoming = {
   phase: "inactive",
   turn_id: null,
   provider: "default",
-  permission_preset: "ask_for_approval",
   context_window: null,
   jobs: [],
-  approval: null,
   question: null,
   plan: null,
 };
@@ -63,7 +61,7 @@ describe("SessionSocket synchronization", () => {
     const socket = new SessionSocket({
       sessionId: "occupied", attachmentId: "page", onMessage, onClose, onError: vi.fn(),
     });
-    socket.send({ type: "permission_set", preset: "full_access" });
+    socket.send({ type: "provider_set", provider: "second" });
     const pending = socket.sendUserTurn({ type: "user_turn", turn_id: "t1", text: "keep draft" });
     const rejected = expect(pending).rejects.toThrow("already in use");
     const failed = FakeWebSocket.latest;
@@ -105,14 +103,13 @@ describe("SessionSocket synchronization", () => {
     }]);
 
     FakeWebSocket.latest.receive({
-      type: "session_ready", protocol_version: 4,
+      type: "session_ready", protocol_version: 5,
       session_id: "session-1",
       workspace: "/workspace",
       provider: "default",
       model: "test/model",
       resumed: false,
       message_count: 0,
-      permission_preset: "ask_for_approval",
     });
     expect(FakeWebSocket.latest.sent).toHaveLength(1);
 
@@ -176,7 +173,7 @@ describe("SessionSocket synchronization", () => {
     expect(consumed).not.toHaveBeenCalled();
   });
 
-  it("queues workspace, model and permission choices during startup in order", () => {
+  it("queues workspace and model choices during startup in order", () => {
     const socket = new SessionSocket({
       sessionId: "session-1",
       attachmentId: "page-1",
@@ -187,12 +184,10 @@ describe("SessionSocket synchronization", () => {
     const choices = [
       { type: "workspace_set", workspace: "/selected-workspace" },
       { type: "provider_set", provider: "selected-model" },
-      { type: "permission_set", preset: "workspace_access" },
     ] satisfies Outgoing[];
     socket.send(choices[0]);
     FakeWebSocket.latest.open();
     socket.send(choices[1]);
-    socket.send(choices[2]);
     expect(FakeWebSocket.latest.sent).toHaveLength(1);
 
     FakeWebSocket.latest.receive(snapshot);
@@ -200,7 +195,7 @@ describe("SessionSocket synchronization", () => {
 
     // Later snapshots from configuration changes must not resend the choices.
     FakeWebSocket.latest.receive(snapshot);
-    expect(FakeWebSocket.latest.sent).toHaveLength(4);
+    expect(FakeWebSocket.latest.sent).toHaveLength(3);
   });
 
   it("discards startup choices when the page cannot acquire the session", () => {
@@ -213,7 +208,7 @@ describe("SessionSocket synchronization", () => {
       onClose: () => {},
       onError: () => {},
     });
-    socket.send({ type: "permission_set", preset: "full_access" });
+    socket.send({ type: "provider_set", provider: "second" });
     FakeWebSocket.latest.open();
     FakeWebSocket.latest.receive({ type: "attachment_replaced", phase: "running" });
 
@@ -221,8 +216,8 @@ describe("SessionSocket synchronization", () => {
     expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message).type)).toEqual(["open_session"]);
   });
 
-  it.each(["starting", "running", "waiting_approval", "waiting_user"] as const)(
-    "rejects queued configuration for a %s session without blocking permissions or cancel",
+  it.each(["starting", "running", "waiting_user"] as const)(
+    "rejects queued configuration for a %s session without blocking steer or cancel",
     (phase) => {
       const rejected = vi.fn();
       const socket = new SessionSocket({
@@ -236,13 +231,13 @@ describe("SessionSocket synchronization", () => {
       socket.send({ type: "provider_set", provider: "second" });
       socket.send({ type: "workspace_set", workspace: "/new-workspace" });
       socket.send({ type: "runtime_refresh" });
-      socket.send({ type: "permission_set", preset: "workspace_access" });
+      socket.send({ type: "user_steer", turn_id: "active-turn", steer_id: "steer", text: "continue" });
       FakeWebSocket.latest.open();
       FakeWebSocket.latest.receive({ ...snapshot, phase, turn_id: "active-turn" });
 
       expect(rejected.mock.calls).toEqual([["provider_set"], ["workspace_set"], ["runtime_refresh"]]);
       expect(FakeWebSocket.latest.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
-        { type: "permission_set", preset: "workspace_access" },
+        { type: "user_steer", turn_id: "active-turn", steer_id: "steer", text: "continue" },
       ]);
       socket.send({ type: "cancel", turn_id: "active-turn" });
       expect(JSON.parse(FakeWebSocket.latest.sent.at(-1)!)).toEqual({ type: "cancel", turn_id: "active-turn" });

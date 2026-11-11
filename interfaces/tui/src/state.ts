@@ -1,10 +1,8 @@
 import { initialRuntimeState } from '@rade/protocol';
 import type {
-  ApprovalKind,
   Incoming,
   CacheUsage,
   ContextWindow,
-  PermissionPreset,
   PlanSnapshot,
   ProtocolError,
   SessionItem,
@@ -21,7 +19,6 @@ export type Status =
   | 'idle'
   | 'streaming'
   | 'running'
-  | 'awaiting_approval'
   | 'awaiting_user'
   | 'cancelling'
   | 'runtime_failed'
@@ -44,7 +41,6 @@ export type Entry =
     }
   | { kind: 'notice'; id: string; level: 'info' | 'warning' | 'error'; text: string };
 
-export type ApprovalChoice = 'deny' | 'allow';
 
 export type UserQuestionState = {
   requestId: string;
@@ -65,18 +61,9 @@ export type State = {
   workspace: string;
   model: string;
   provider: string;
-  permissionPreset: PermissionPreset;
   entries: Entry[];
   /** Latest MCP startup status; cleared once Runtime initialization finishes. */
   mcpStatus: string | null;
-  approval: {
-    requestId: string;
-    command: string;
-    kind?: ApprovalKind;
-    server?: string;
-    toolName?: string;
-    choice: ApprovalChoice;
-  } | null;
   question: UserQuestionState | null;
   picker: NavigationPicker | null;
   settings: SettingsSnapshot | null;
@@ -93,8 +80,6 @@ export type Action =
   | { type: 'submit'; turnId: string; text: string }
   | { type: 'steer_submitted' }
   | { type: 'refresh_submitted' }
-  | { type: 'approval_choice'; choice: ApprovalChoice }
-  | { type: 'approval_resolved' }
   | { type: 'question_choice'; selectedIndex: number }
   | { type: 'question_resolved' }
   | { type: 'picker_opened'; kind: NavigationPicker['kind'] }
@@ -114,10 +99,8 @@ export const initialState: State = {
   workspace: initialRuntime.workspace ?? '',
   model: '',
   provider: initialRuntime.provider ?? '',
-  permissionPreset: initialRuntime.permission_preset,
   entries: [],
   mcpStatus: null,
-  approval: null,
   question: null,
   picker: null,
   settings: null,
@@ -374,15 +357,6 @@ function reduceAction(state: State, action: Action): State {
     case 'refresh_submitted':
       return { ...state, status: 'starting', turnId: null };
 
-    case 'approval_choice':
-      return state.approval === null
-        ? state
-        : { ...state, approval: { ...state.approval, choice: action.choice } };
-
-    case 'approval_resolved':
-      // The runtime resumes the turn once the answer is sent.
-      return { ...state, status: 'running', approval: null };
-
     case 'question_choice':
       return state.question === null
         ? state
@@ -420,7 +394,7 @@ function reduceAction(state: State, action: Action): State {
     case 'cancelling':
       return state.status === 'idle' || state.status === 'fatal'
         ? state
-        : { ...state, status: 'cancelling', approval: null, question: null };
+        : { ...state, status: 'cancelling', question: null };
 
     case 'exited':
       return {
@@ -455,18 +429,15 @@ function applyMessage(state: State, message: Incoming): State {
         ? 'starting'
         : message.phase === 'running'
           ? 'running'
-          : message.phase === 'waiting_approval'
-            ? 'awaiting_approval'
-            : message.phase === 'waiting_user'
-              ? 'awaiting_user'
-              : message.phase === 'failed'
-                ? 'runtime_failed'
-                : 'idle';
+          : message.phase === 'waiting_user'
+            ? 'awaiting_user'
+            : message.phase === 'failed'
+              ? 'runtime_failed'
+              : 'idle';
       return {
         ...state,
         status,
         turnId: message.turn_id,
-        permissionPreset: message.permission_preset,
         contextWindow: message.context_window,
         cacheUsage: message.cache_usage,
         plan: visiblePlan(message.plan),
@@ -513,7 +484,6 @@ function applyMessage(state: State, message: Incoming): State {
         workspace: message.workspace,
         provider: message.provider,
         model: message.model,
-        permissionPreset: message.permission_preset,
         entries: message.resumed
           ? [
               {
@@ -650,41 +620,6 @@ function applyMessage(state: State, message: Incoming): State {
         ],
       };
 
-    case 'approval_request':
-      return {
-        ...state,
-        status: 'awaiting_approval',
-        approval: {
-          requestId: message.request_id,
-          command: message.command,
-          kind: message.kind,
-          server: message.server ?? undefined,
-          toolName: message.tool_name ?? undefined,
-          choice: 'allow',
-        },
-      };
-
-    case 'permission_changed':
-      const permissionLabel =
-        message.preset === 'full_access'
-          ? 'Full Access'
-          : message.preset === 'workspace_access'
-            ? 'Workspace Access'
-            : 'Ask for approval';
-      return {
-        ...state,
-        permissionPreset: message.preset,
-        entries: [
-          ...state.entries,
-          {
-            kind: 'notice',
-            id: nextId('notice'),
-            level: 'info',
-            text: `Permissions changed to ${permissionLabel}.`,
-          },
-        ],
-      };
-
     case 'provider_changed':
       return { ...state, provider: message.provider, model: message.model, usage: null };
 
@@ -748,13 +683,12 @@ function applyMessage(state: State, message: Incoming): State {
       return { ...state, cacheUsage: message.cache_usage };
 
     case 'turn_completed':
-      return { ...state, turnId: null, approval: null, question: null, pendingSteers: 0, usage: message.usage };
+      return { ...state, turnId: null, question: null, pendingSteers: 0, usage: message.usage };
 
     case 'turn_cancelled':
       return {
         ...state,
         turnId: null,
-        approval: null,
         question: null,
         pendingSteers: 0,
         entries: [
@@ -772,7 +706,6 @@ function applyMessage(state: State, message: Incoming): State {
       return {
         ...state,
         turnId: null,
-        approval: null,
         question: null,
         pendingSteers: 0,
         entries: [

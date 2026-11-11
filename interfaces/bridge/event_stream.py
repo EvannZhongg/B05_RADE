@@ -1,7 +1,7 @@
 """Protocol checkpoints shared by stream publishers and attachment hosts."""
 
 def runtime_is_active(phase: str) -> bool:
-    return phase in {"starting", "running", "waiting_approval", "waiting_user"}
+    return phase in {"starting", "running", "waiting_user"}
 
 
 class EventStream:

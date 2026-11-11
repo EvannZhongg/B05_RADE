@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { ApprovalKind, CacheUsage, ContextWindow, Incoming, PermissionPreset, UserQuestion } from "@rade/protocol/internal";
+import type { CacheUsage, ContextWindow, Incoming, UserQuestion } from "@rade/protocol/internal";
 import { attachmentDownloadUrl, type SessionItem } from "./api";
 
 /** A transcript item, plus the streaming state the live turn needs. */
@@ -15,15 +15,7 @@ export type Applied = {
   feedback?: Feedback;
   contextWindow?: ContextWindow;
   cacheUsage?: CacheUsage | null;
-  approval?: {
-    requestId: string;
-    command: string;
-    kind?: ApprovalKind;
-    server?: string;
-    toolName?: string;
-  } | null;
   question?: UserQuestion | null;
-  permissionPreset?: PermissionPreset;
   /** Set once the turn ended, so the caller can clean up turn-local state. */
   finished?: boolean;
 };
@@ -73,13 +65,11 @@ export function applyMessage(
     case "session_ready":
       return {
         items,
-        permissionPreset: message.permission_preset,
       };
 
     case "runtime_state":
       return {
         items,
-        permissionPreset: message.permission_preset,
         contextWindow: message.context_window ?? undefined,
         cacheUsage: message.cache_usage,
         feedback: message.runtime_warnings?.length
@@ -184,35 +174,6 @@ export function applyMessage(
         },
       };
 
-    case "approval_request":
-      return {
-        items,
-        question: null,
-        approval: {
-          requestId: message.request_id,
-          command: message.command,
-          kind: message.kind,
-          server: message.server ?? undefined,
-          toolName: message.tool_name ?? undefined,
-        },
-      };
-
-    case "permission_changed":
-      const permissionLabel = message.preset === "full_access"
-        ? "完全访问"
-        : message.preset === "workspace_access"
-          ? "工作区访问"
-          : "请求批准";
-      return {
-        items,
-        permissionPreset: message.preset,
-        feedback: {
-          kind: "toast",
-          level: "info",
-          text: `权限模式已切换为${permissionLabel}。`,
-        },
-      };
-
     case "provider_changed":
       return {
         items,
@@ -234,19 +195,18 @@ export function applyMessage(
       };
 
     case "user_question":
-      return { items, approval: null, question: message };
+      return { items, question: message };
 
     case "model_completed":
     case "compression_completed":
       return { items, cacheUsage: message.cache_usage };
 
     case "turn_completed":
-      return { items, approval: null, question: null, finished: true };
+      return { items, question: null, finished: true };
 
     case "turn_cancelled":
       return {
         items: settle(items),
-        approval: null,
         question: null,
         finished: true,
         feedback: {
@@ -260,7 +220,6 @@ export function applyMessage(
     case "fatal":
       return {
         items: settle(items),
-        approval: null,
         question: null,
         finished: true,
         feedback: {

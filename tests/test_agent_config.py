@@ -281,14 +281,13 @@ class AgentConfigTest(unittest.TestCase):
             {
                 "memory": {
                     "enabled": False,
-                    "global_max_tokens": 1200,
                     "workspace_max_tokens": 2400,
                 },
                 "main_agent": {"tools": ENABLED_TOOLS},
             }
         )
 
-        self.assertEqual(config.memory, MemoryConfig(False, 1200, 2400))
+        self.assertEqual(config.memory, MemoryConfig(enabled=False, workspace_max_tokens=2400))
 
     def test_defaults_memory_config(self) -> None:
         config = self.load({"main_agent": {"tools": ENABLED_TOOLS}})
@@ -298,7 +297,6 @@ class AgentConfigTest(unittest.TestCase):
     def test_rejects_invalid_memory_config(self) -> None:
         for memory in (
             {"enabled": "yes"},
-            {"global_max_tokens": 0},
             {"workspace_max_tokens": True},
         ):
             with self.subTest(memory=memory):

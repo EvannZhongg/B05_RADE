@@ -26,14 +26,14 @@ TUI 与 `RADE-server` 各自管理一个常驻 Bridge 进程。宿主通过协�
 
 进程预热默认 Provider SDK、tokenizer 与 TLS 信任上下文后发送 `bridge_ready`，不解析凭据或调用模型。每条会话命令以 `channel_command` 携带 `channel_id` 与 `command`，事件以 `channel_event` 携带同一通道 ID 与 `event`。每个通道的第一条命令必须是 `open_session`。Bridge 调用 `RuntimeHost.open_session()` 建立轻量 Session 控制面，然后依次发送：
 
-1. `session_ready`：Session、Workspace、Provider 和权限已恢复。
+1. `session_ready`：Session、Workspace 和 Provider 已恢复。
 2. `runtime_state`：当前执行面的权威快照，也是前端发送后续命令前的同步屏障。
 
 Journal 写入权被占用、工作区或配置无效、文件系统错误导致打开失败时，Bridge 返回 `session_open_failed`，保持协议连接并允许 `list_workspaces` 或重新发送 `open_session`；存在工作区浏览上下文时也允许 `list_sessions`。前端在收到 `session_ready` 前不得请求历史记录；在初始 `runtime_state` 前不得提交执行命令。同一应用宿主内打开已有会话会附着原 Bridge，模型或工作区变更通过显式协议消息执行，不另建 Session 写者。
 
 Provider、MCP、Tool 和 Agent 仍由 Runtime 在首个 `user_turn` 到来时延迟初始化。
 
-每个通道持有独立 RuntimeHost、命令队列、事件序号与审批等待者，不同通道并发执行。空闲时可以再次发送 `open_session`，在同一个通道内切换会话。Runtime 释放旧会话的任务和 Journal，按装配输入决定是否复用重型资源；Bridge 重新发送 `session_ready` 和 `runtime_state` 同步新会话。
+每个通道持有独立 RuntimeHost、命令队列、事件序号与用户问题等待者，不同通道并发执行。空闲时可以再次发送 `open_session`，在同一个通道内切换会话。Runtime 释放旧会话的任务和 Journal，按装配输入决定是否复用重型资源；Bridge 重新发送 `session_ready` 和 `runtime_state` 同步新会话。
 
 GUI、TUI 和 SDK 都使用这一常驻服务端。TUI 为访问过的会话保留独立通道，切回时发送 `session_snapshot`，由 Bridge 返回该 Runtime 的 ready/snapshot 对，不释放 Agent、Jobs、Journal 或 MCP。SDK 的发送与取消接口必须显式携带通道 ID。
 
@@ -44,8 +44,8 @@ GUI、TUI 和 SDK 都使用这一常驻服务端。TUI 为访问过的会话保�
 Bridge 路由的输入包括：
 
 - `user_turn`、`user_steer` 和 `cancel`
-- `approval_response` 与 `user_question_response`
-- `permission_set`、`provider_set` 和 `workspace_set`
+- `user_question_response`
+- `provider_set` 和 `workspace_set`
 - Session 列表与历史加载
 - 设置读取及 Provider、Agent、路由更新
 - 进程级 `close_channel` 与 `shutdown`，分别关闭一个或全部 Runtime

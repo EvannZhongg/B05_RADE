@@ -22,7 +22,6 @@ _HTTP_FIELDS = _COMMON_FIELDS | {"url", "headers"}
 @dataclass(frozen=True)
 class McpToolConfig:
     enabled: frozenset[str] | None = None
-    require_approval: frozenset[str] | None = None
 
 
 @dataclass(frozen=True)
@@ -200,43 +199,11 @@ def _tool_config(value: object, server_path: str) -> McpToolConfig:
         return McpToolConfig()
     if not isinstance(value, dict):
         raise ValueError(f"config field '{path}' must be an object")
-    _reject_unknown(value, {"enabled", "approval"}, path)
+    _reject_unknown(value, {"enabled"}, path)
 
     enabled = _optional_string_set(value, "enabled", path)
-    approval = value.get("approval", "always")
-    if approval == "always":
-        require_approval = None
-    elif approval == "never":
-        require_approval = frozenset()
-    elif isinstance(approval, dict):
-        _reject_unknown(approval, {"always"}, f"{path}.approval")
-        if "always" not in approval:
-            raise ValueError(
-                f"config field '{path}.approval.always' is required"
-            )
-        require_approval = _string_set(
-            approval["always"],
-            f"{path}.approval.always",
-        )
-    else:
-        raise ValueError(
-            f"config field '{path}.approval' must be 'always', 'never', "
-            "or an object with an 'always' array"
-        )
-
-    if (
-        enabled is not None
-        and require_approval is not None
-        and not require_approval <= enabled
-    ):
-        unknown = ", ".join(sorted(require_approval - enabled))
-        raise ValueError(
-            f"config field '{path}.approval.always' contains tools not "
-            f"listed in '{path}.enabled': {unknown}"
-        )
     return McpToolConfig(
         enabled=enabled,
-        require_approval=require_approval,
     )
 
 

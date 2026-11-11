@@ -14,7 +14,6 @@ from agent_core import (
     ImagePart,
     JsonlSessionStore,
     HostCommandExecutor,
-    PermissionPreset,
     PlanSnapshot,
     PlanStep,
     Session,
@@ -379,11 +378,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
             session.finish_turn("completed")
             persist(store, workspace, session)
             store.set_provider("source", "provider-1", workspace)
-            store.set_permission_preset(
-                "source",
-                PermissionPreset.FULL_ACCESS,
-                workspace,
-            )
 
             targets = store.editable_user_messages("source")
             self.assertEqual(
@@ -435,10 +429,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
             self.assertNotIn("turn-2", forked.turns)
             self.assertEqual(store.workspace_for("forked"), str(workspace.resolve()))
             self.assertEqual(store.provider_for("forked"), "provider-1")
-            self.assertEqual(
-                store.load("forked").permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
             summaries = {
                 item["session_id"]: item
                 for item in store.list_workspace_sessions(workspace)
@@ -456,11 +446,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
             session.add_item("assistant", "old answer")
             session.finish_turn("completed")
             persist(store, workspace, session)
-            store.set_permission_preset(
-                "source",
-                PermissionPreset.FULL_ACCESS,
-                workspace,
-            )
 
             target = store.editable_user_messages("source")[0]
             forked = store.fork_session(
@@ -471,14 +456,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
 
             self.assertEqual(forked.items, [])
             self.assertEqual(forked.journal, [])
-            self.assertEqual(
-                forked.permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
-            self.assertEqual(
-                store.load("forked").permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
             self.assertEqual(store.workspace_for("forked"), str(workspace.resolve()))
             self.assertEqual(
                 [item["session_id"] for item in store.list_workspace_sessions(workspace)],
@@ -687,69 +664,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
             )
             self.assertEqual(store.list_sessions(), [])
 
-    def test_permission_metadata_reads_defaults_and_initial_preset_without_a_journal(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
-            with patch.object(session_store_module, "_read_journal_records", side_effect=AssertionError("must not read journal")):
-                self.assertEqual(store.permission_preset_for("missing"), PermissionPreset.ASK_FOR_APPROVAL)
-                store.bind_workspace("session-1", workspace)
-                self.assertEqual(store.permission_preset_for("session-1"), PermissionPreset.ASK_FOR_APPROVAL)
-                store.set_permission_preset("session-1", PermissionPreset.FULL_ACCESS, workspace)
-                self.assertEqual(store.permission_preset_for("session-1"), PermissionPreset.FULL_ACCESS)
-            self.assertFalse(store.has_journal("session-1"))
-
-    def test_permission_metadata_tracks_appended_and_live_journal_events(self) -> None:
-        for grouped in (True, False):
-            with self.subTest(grouped=grouped), tempfile.TemporaryDirectory() as directory:
-                workspace = Path(directory)
-                store = JsonlSessionStore(workspace / "sessions", group_by_workspace=grouped)
-                reader = JsonlSessionStore(store.directory, group_by_workspace=grouped)
-                session = Session("session-1")
-                session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-                session.set_permission_preset(PermissionPreset.WORKSPACE_ACCESS)
-                store.append_events(session.session_id, session.journal, workspace=workspace)
-                self.assertEqual(reader.permission_preset_for(session.session_id), PermissionPreset.WORKSPACE_ACCESS)
-                with store.open_journal(session.session_id, workspace) as sink:
-                    session.attach_journal_sink(sink)
-                    try:
-                        for preset in (PermissionPreset.FULL_ACCESS, PermissionPreset.ASK_FOR_APPROVAL):
-                            session.set_permission_preset(preset)
-                            with patch.object(session_store_module, "_read_journal_records", side_effect=AssertionError("must not read journal")):
-                                self.assertEqual(reader.permission_preset_for(session.session_id), preset)
-                            self.assertEqual(reader.load(session.session_id).permission_preset, preset)
-                    finally:
-                        session.attach_journal_sink(None)
-
-    def test_stores_permission_preset_in_session_metadata(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
-            store.bind_workspace("session-1", workspace)
-
-            store.set_permission_preset(
-                "session-1", PermissionPreset.FULL_ACCESS, workspace
-            )
-            session = Session("session-1")
-            session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-            store.append_events("session-1", session.journal, workspace=workspace)
-
-            metadata = json.loads(
-                (
-                    session_log_path(store.directory, workspace, "session-1").parent
-                    / "session.json"
-                ).read_text(encoding="utf-8")
-            )
-            self.assertEqual(metadata, {
-                "permission_preset": "full_access", "title": "",
-                "title_source": "initial", "has_activity": False,
-            })
-            self.assertEqual(
-                JsonlSessionStore(store.directory).load("session-1").permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
-
-    def test_session_without_metadata_uses_its_group_workspace_and_default_permission(self) -> None:
+    def test_session_without_metadata_uses_its_group_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "项目 space"
             workspace.mkdir()
@@ -766,10 +681,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
 
             self.assertEqual(loaded.workspace, str(workspace.resolve()))
             self.assertEqual(
-                loaded.permission_preset,
-                PermissionPreset.ASK_FOR_APPROVAL,
-            )
-            self.assertEqual(
                 store.list_sessions()[0]["workspace"],
                 str(workspace.resolve()),
             )
@@ -785,48 +696,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
             reopened = JsonlSessionStore(store.directory)
             self.assertEqual(reopened.provider_for("session-1"), "second")
             self.assertEqual(reopened.list_sessions(), [])
-
-    def test_permission_metadata_can_exist_before_the_first_journal_event(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory) / "workspace"
-            workspace.mkdir()
-            store = JsonlSessionStore(Path(directory) / "sessions")
-
-            store.set_permission_preset(
-                "session-1", PermissionPreset.FULL_ACCESS, workspace
-            )
-
-            reopened = JsonlSessionStore(store.directory)
-            self.assertEqual(
-                reopened.workspace_for("session-1"),
-                str(workspace.resolve()),
-            )
-            self.assertEqual(
-                reopened.load("session-1").permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
-            self.assertEqual(reopened.list_sessions(), [])
-
-    def test_permission_journal_alone_is_not_listed_as_a_conversation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory) / "workspace"
-            workspace.mkdir()
-            store = JsonlSessionStore(Path(directory) / "sessions")
-            session = Session("session-1")
-            session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-            persist(store, workspace, session)
-            store.set_permission_preset(
-                session.session_id,
-                PermissionPreset.FULL_ACCESS,
-                workspace,
-            )
-
-            self.assertEqual(store.list_sessions(), [])
-            self.assertEqual(store.list_workspace_sessions(workspace), [])
-            self.assertEqual(
-                store.load("session-1").permission_preset,
-                PermissionPreset.FULL_ACCESS,
-            )
 
     def test_ungrouped_store_reports_no_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

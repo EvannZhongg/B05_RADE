@@ -15,14 +15,10 @@ class RememberTool(Tool):
         return ToolDefinition(
             name=self.name,
             description=(
-                "Mark one durable user preference, stable fact, or workspace "
-                "decision as worth retaining across sessions. This submits a "
-                "candidate only; the Runtime later reconciles it with existing "
-                "memory. Proactively correct outdated global or workspace memory "
-                "when verified new information supersedes it. Use global scope "
-                "for facts or preferences that apply "
-                "across workspaces, and workspace scope for decisions or facts "
-                "specific to the current workspace."
+                "Submit one durable preference, stable fact, or decision "
+                "for the current workspace. The Runtime reconciles candidates "
+                "with existing workspace memory after the turn succeeds. "
+                "Correct outdated memory when verified information supersedes it."
             ),
             parameters={
                 "type": "object",
@@ -31,16 +27,12 @@ class RememberTool(Tool):
                         "type": "string",
                         "enum": ["preference", "fact", "decision"],
                     },
-                    "scope": {
-                        "type": "string",
-                        "enum": ["global", "workspace"],
-                    },
                     "content": {
                         "type": "string",
                         "description": "A concise, self-contained memory candidate.",
                     },
                 },
-                "required": ["kind", "scope", "content"],
+                "required": ["kind", "content"],
                 "additionalProperties": False,
             },
         )
@@ -52,21 +44,18 @@ class RememberTool(Tool):
     ) -> JSONValue:
         if context.memory is None:
             raise RuntimeError("memory manager is unavailable")
-        unknown = set(arguments) - {"kind", "scope", "content"}
+        unknown = set(arguments) - {"kind", "content"}
         if unknown:
             raise ValueError(
                 f"unknown remember argument(s): {', '.join(sorted(unknown))}"
             )
         kind = arguments.get("kind")
-        scope = arguments.get("scope")
         content = arguments.get("content")
         if kind not in {"preference", "fact", "decision"}:
             raise ValueError("kind must be preference, fact, or decision")
-        if scope not in {"global", "workspace"}:
-            raise ValueError("scope must be global or workspace")
         if not isinstance(content, str) or not content.strip():
             raise ValueError("content must be a non-empty string")
         context.memory.remember(
-            MemoryCandidate(kind=kind, scope=scope, content=content.strip())
+            MemoryCandidate(kind=kind, content=content.strip())
         )
-        return {"accepted": True, "scope": scope, "kind": kind}
+        return {"accepted": True, "kind": kind}

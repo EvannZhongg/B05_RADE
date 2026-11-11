@@ -171,7 +171,7 @@ class ActiveSession:
                     )
                     if message["type"] == "fatal" and state is None:
                         state = {**self.state, "phase": "failed", "turn_id": None,
-                                 "approval": None, "question": None, "jobs": []}
+                                 "question": None, "jobs": []}
                         message = {**message, "runtime": state}
                     if state is not None:
                         self.state = {

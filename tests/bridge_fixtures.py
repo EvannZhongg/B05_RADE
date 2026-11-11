@@ -50,7 +50,7 @@ class Bridge(SessionBridge):
 
     def _read_stdin(self) -> None:
         assert self._stdin is not None
-        first_message = not self._session_opened
+        first_message = self.host.sessions.session is None
         while True:
             try:
                 line = self._stdin.readline()
@@ -119,7 +119,6 @@ def open_session_message(
             "Role {{role}}: {{role_description}} in {{workspace}}"
         ),
         "Consolidator.md": "Consolidate the conversation.",
-        "GlobalMemory.md": "Reconcile global memory as JSON.",
         "WorkspaceMemory.md": "Reconcile workspace memory as JSON.",
         "SessionTitle.md": "Name this conversation: {{conversation}}",
     }.items():

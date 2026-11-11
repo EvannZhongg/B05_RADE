@@ -126,8 +126,8 @@ def validate_hooks(path: Path, namespace: str, errors: list[str], registered: li
     if data is None:
         return
     reject_unknown(data, {"schema_version", "hooks"}, label, errors)
-    if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
-        errors.append(f"{label} schema_version must be 1")
+    if type(data.get("schema_version")) is not int or data["schema_version"] != 2:
+        errors.append(f"{label} schema_version must be 2")
     events = data.get("hooks")
     if not isinstance(events, dict):
         errors.append(f"{label} hooks must be an event map")
@@ -141,7 +141,7 @@ def validate_hooks(path: Path, namespace: str, errors: list[str], registered: li
             if not isinstance(entry, dict):
                 errors.append(f"{label} hook must be an object")
                 continue
-            reject_unknown(entry, {"name", "tools", "command", "args", "scope", "timeout_seconds"}, label, errors)
+            reject_unknown(entry, {"name", "tools", "command", "args", "timeout_seconds"}, label, errors)
             name = require_string(entry, "name", label, errors)
             if name is not None:
                 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
@@ -154,9 +154,6 @@ def validate_hooks(path: Path, namespace: str, errors: list[str], registered: li
             string_array(entry, "tools", label, errors)
             if "tools" in entry and event not in {"PreToolUse", "PostToolUse"}:
                 errors.append(f"{label} tools matching requires a tool event")
-            scope = entry.get("scope", "workspace")
-            if not isinstance(scope, str) or scope not in {"workspace", "host"}:
-                errors.append(f"{label} invalid scope")
             timeout = entry.get("timeout_seconds", 10)
             if type(timeout) is not int or not 1 <= timeout <= 24 * 60 * 60:
                 errors.append(f"{label} invalid timeout_seconds")
@@ -398,27 +395,15 @@ def validate_mcp_server(server: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label} field `tools` must be an object")
         return
     tool_label = f"{label} field `tools`"
-    reject_unknown(tools, {"enabled", "approval"}, tool_label, errors)
-    enabled = None
+    reject_unknown(tools, {"enabled"}, tool_label, errors)
     if "enabled" in tools:
-        enabled = mcp_tool_array(tools["enabled"], f"{tool_label}.enabled", errors)
-    approval = tools.get("approval", "always")
-    if isinstance(approval, dict):
-        reject_unknown(approval, {"always"}, f"{tool_label}.approval", errors)
-        required = mcp_tool_array(approval.get("always"), f"{tool_label}.approval.always", errors)
-        if enabled is not None and required is not None and not required <= enabled:
-            errors.append(f"{tool_label}.approval.always contains tools not listed in tools.enabled")
-    elif approval not in ("always", "never"):
-        errors.append(f"{tool_label}.approval must be 'always', 'never', or an object with an 'always' array")
+        enabled = tools["enabled"]
+        label = f"{tool_label}.enabled"
+        if not isinstance(enabled, list) or any(not isinstance(item, str) or not item for item in enabled):
+            errors.append(f"{label} must be an array of non-empty strings")
+        elif len(set(enabled)) != len(enabled):
+            errors.append(f"{label} cannot contain duplicates")
 
-
-def mcp_tool_array(value: Any, label: str, errors: list[str]) -> set[str] | None:
-    if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
-        errors.append(f"{label} must be an array of non-empty strings")
-        return None
-    if len(set(value)) != len(value):
-        errors.append(f"{label} cannot contain duplicates")
-    return set(value)
 
 
 def load_json_object(

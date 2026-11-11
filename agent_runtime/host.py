@@ -5,11 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from agent_core import (
-    AgentEvent, AttachmentPart, CompositeToolPolicy, ContextWindowEvent,
-    McpApprovalPolicy,
-    PermissionPreset, ShellApprovalPolicy, Workspace,
-    FileWriteApprovalPolicy,
-    UnitCompletedEvent,
+    AgentEvent, AttachmentPart, ContextWindowEvent, UnitCompletedEvent, Workspace,
 )
 
 from .callbacks import RuntimeCallbacks
@@ -39,17 +35,6 @@ class RuntimeHost:
         )
         self.sessions = SessionRuntimeController(
             self.config_directory, services.environment, runtime_callbacks,
-            CompositeToolPolicy(
-                ShellApprovalPolicy(self.callbacks.request_permission),
-                FileWriteApprovalPolicy(self.callbacks.request_permission),
-                McpApprovalPolicy(
-                    self._request_mcp_permission,
-                    lambda name: (
-                        self.planes.current.mcp.requires_approval(name)
-                        if self.planes.current is not None else False
-                    ),
-                ),
-            ),
         )
         self.turns = TurnRunner(runtime_callbacks)
 
@@ -98,19 +83,6 @@ class RuntimeHost:
         self.callbacks.on_phase("idle", plane.runtime_warnings)
         plane.runtime_warnings = ()
         return plane.provider_name, plane.provider.model_name
-
-    def set_permission_preset(self, preset: PermissionPreset) -> None:
-        if self.sessions.permissions is None:
-            raise RuntimeError("session is not initialized")
-        self.sessions.permissions.set_preset(preset)
-
-    def _request_mcp_permission(self, call) -> bool:
-        plane = self.planes.current
-        identity = plane.mcp.tool_identity(call.name) if plane is not None else None
-        server, tool_name = identity if identity is not None else (None, call.name)
-        return self.callbacks.request_permission(
-            f"{call.name}({call.arguments})", kind="mcp", server=server, tool_name=tool_name,
-        )
 
     def publish_event(self, event: AgentEvent, turn_id: str) -> None:
         plane = self.planes.current

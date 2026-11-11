@@ -14,7 +14,7 @@ const onTurnEnd = vi.fn();
 const onSessionAvailable = vi.fn();
 const onTitleChange = vi.fn();
 const noop = () => {};
-const session = { session_id: "commands", workspace: "/workspace", items: [], permission_preset: "full_access" as const };
+const session = { session_id: "commands", workspace: "/workspace", items: [] };
 const providers = [{ id: "test", model: "test/model" }];
 
 vi.mock("../src/session", () => ({
@@ -42,8 +42,8 @@ describe("composer commands", () => {
   let root: Root;
   const snapshot: Incoming = {
     type: "runtime_state", phase: "idle", turn_id: null, provider: "test",
-    permission_preset: "full_access", context_window: null, cache_usage: null,
-    jobs: [], approval: null, question: null, plan: null,
+    context_window: null, cache_usage: null,
+    jobs: [], question: null, plan: null,
   };
 
   beforeEach(async () => {

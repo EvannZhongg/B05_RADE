@@ -4,7 +4,7 @@
   <a href="README.md">English</a> &middot; <b>简体中文</b>
 </div>
 
-RADE 是一个开源的轻量级个人 Agent 应用。它提供本地 Workspace 操作、人工授权、会话持久化、上下文管理、长期记忆、计划、子 Agent 和 Skill、Plugin、MCP 扩展能力，并提供 TUI 与 GUI。
+RADE 是一个开源的轻量级个人 Agent 应用。它提供本地 Workspace 操作、会话持久化、上下文管理、长期记忆、计划、子 Agent 和 Skill、Plugin、MCP 扩展能力，并提供 TUI 与 GUI。
 
 ```text
 TUI ────────────────── Bridge ── agent_runtime ── agent_core
@@ -20,10 +20,10 @@ RADE-server（常驻宿主）
 
 ## 主要能力
 
-- **受控本地执行**：Session 支持 `Ask for approval`、`Workspace Access` 和 `Full Access` 三种权限 preset；Shell 根据 scope 进入 Workspace 沙箱或宿主环境，文件 Tool 始终限制在当前 Workspace。
+- **直接本地执行**：Shell 和命令 Hook 以当前用户的宿主权限运行，工作目录为当前 Workspace。内置文件 Tool 在 Workspace 内解析操作路径。
 - **完整 Agent Loop**：支持流式响应、Tool 批次、上下文压缩、steer、取消、计划和后台 Job。
 - **可恢复 Session**：对话和执行事件写入 append-only JSONL Journal，TUI 与 GUI 可读取同一类 Session。
-- **长期记忆**覆盖全局和各 Workspace。
+- **长期记忆**按 Workspace 保存偏好、事实与决策。
 - **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。主 Agent、辅助调用与子 Agent 角色可以独立选择 Provider。支持视觉输入的模型可以读取 Workspace 图片。
 - **扩展系统**：支持 standalone Skill、Plugin 提供的 Skill / Agent / MCP / [Hook](docs/plugin-hooks.md) 组件，以及独立 MCP Server。
 - **两个交互入口**分别是终端中的 TUI 和浏览器中的 GUI。GUI 提供多会话管理、附件、文件树、设置和记忆。
@@ -93,7 +93,7 @@ Runtime 层：
 
 | 文档 | 负责范围 |
 | --- | --- |
-| [`agent_core`](agent_core/README.md) | Agent Loop、上下文、Session、Tool、执行、权限、记忆、计划、Job、Provider、Skill 与 MCP 机制 |
+| [`agent_core`](agent_core/README.md) | Agent Loop、上下文、Session、Tool、执行、记忆、计划、Job、Provider、Skill 与 MCP 机制 |
 | [`agent_runtime`](agent_runtime/README.md) | 配置、Prompt、Plugin 发现、Runtime 装配、Execution Plane、Session 绑定和 Turn 入口 |
 
 前端与 SDK：
@@ -120,7 +120,6 @@ Runtime 层：
 | `.RADE/skills/` | standalone Skill |
 | `.RADE/plugins/` | Plugin capability package |
 | `.RADE/AGENTS.md` | 项目级 Workspace Instruction |
-| `.RADE/MEMORY.md` | 全局长期记忆 |
 | `.RADE/sessions/` | Session Journal、Workspace 记忆、Artifact、子 Agent 记录与 Session 级辅助调用用量日志 |
 | `<workspace>/.RADE/attachments/` | 上传附件和 Agent 生成的图片 |
 
@@ -139,7 +138,7 @@ python -m pytest --durations=20
 
 在 Windows 上改用 `.venv\Scripts\Activate.ps1` 激活环境。
 
-Pytest 默认用 4 个独立进程按测试类并行运行；串行调试使用 `-n 0`，资源较少时使用 `-n 2`。完整测试包含安装包验证及真实本地 MCP/沙箱进程；日常迭代可用 `--ignore=tests/test_bridge_client.py` 跳过安装包验证。独立插件测试包的运行方式见 [docs/plugin-interop.md](docs/plugin-interop.md)。
+Pytest 默认用 4 个独立进程按测试类并行运行；串行调试使用 `-n 0`，资源较少时使用 `-n 2`。完整测试包含安装包验证及真实本地 MCP 和 Shell 进程；日常迭代可用 `--ignore=tests/test_bridge_client.py` 跳过安装包验证。独立插件测试包的运行方式见 [docs/plugin-interop.md](docs/plugin-interop.md)。
 
 server extra 包含 FastAPI、Uvicorn、WebSocket 后端和 multipart 支持；Windows、macOS 与 Linux 使用相同的安装方式。TUI 使用基础安装。
 
@@ -151,7 +150,6 @@ npm run typecheck
 npm test
 ```
 
-Linux 沙箱集成测试需要可用的 bubblewrap 和 user namespace；未满足运行条件时测试会明确 skip。
 
 Windows 上 Shell Tool 使用 PowerShell 7，因此需要另外安装 PowerShell 7。
 

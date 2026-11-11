@@ -124,11 +124,7 @@ Each entry is a **file** holding a server map. Keys are server names and registe
 - Each execution plane owns its MCP connections and stdio subprocesses. Rebuilding or closing
   the plane closes them; another Runtime creates independent connections.
 - `tools.enabled` is an optional array of remote tool names (omitted exposes all; `[]`
-  exposes none). `tools.approval` is `always` by default, `never`, or
-  `{"always": ["analyze_code"]}`. Approval names must be included in `tools.enabled`
-  when that allowlist is present. Selecting an MCP tool in an Agent does not bypass approval.
-- Timeouts are positive integers; `enabled` is a boolean. `args` is an array of strings;
-  `env` and `headers` are maps of strings.
+  exposes none). Remove `tools.approval` from declarations for this Runtime.
 
 MCP components are only loaded when `"mcp": {"enabled": true}` is set in `agent_config.json`.
 

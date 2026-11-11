@@ -1,11 +1,11 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useExternalStoreRuntime, type AppendMessage } from "@assistant-ui/react";
-import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PermissionPreset, type PlanSnapshot, type RuntimePhase, type UserQuestion } from "@rade/protocol";
+import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase, type UserQuestion } from "@rade/protocol";
 import { createScratchWorkspace, releaseActiveSession, selectWorkspace, uploadAttachments, type ModelOption, type Session, type UserAttachment, type WorkspaceOption } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
 import { composerConnectionGate } from "./composerState";
-import { jobKindLabel, shouldShowPlan, updateBackgroundJobs, userMessagePreview, type Approval, type BackgroundJob } from "./runtimeState";
+import { jobKindLabel, shouldShowPlan, updateBackgroundJobs, userMessagePreview, type BackgroundJob } from "./runtimeState";
 
 export type SessionRuntimeOptions = {
   session: Session;
@@ -59,11 +59,8 @@ export function useSessionRuntime({
   const [toast, setToast] = useState<Extract<Feedback, { kind: "toast" }> | null>(null);
   const [alerts, setAlerts] = useState<Record<string, Extract<Feedback, { kind: "alert" }>>>({});
   const [reconnecting, setReconnecting] = useState(false);
-  const [approval, setApproval] = useState<Approval | null>(null);
   const [question, setQuestion] = useState<UserQuestion | null>(null);
   const [plan, setPlan] = useState<PlanSnapshot | null>(session.plan ?? null);
-  const [permissionPreset, setPermissionPreset] = useState<PermissionPreset>(session.permission_preset);
-  const [pendingPermissionPreset, setPendingPermissionPreset] = useState<PermissionPreset | null>(null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
   const [questionDraft, setQuestionDraft] = useState("");
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
@@ -103,15 +100,14 @@ export function useSessionRuntime({
   const turnPreviews = useMemo(() => messages
     .filter((message) => message.role === "user")
     .map((message) => userMessagePreview(message)), [messages]);
-  const permissionSaving = pendingPermissionPreset !== null;
   const providerSaving = pendingProvider !== null;
   const workspaceSaving = pendingWorkspace !== null;
-  const configurationPending = permissionSaving || providerSaving || workspaceSaving || refreshing;
+  const configurationPending = providerSaving || workspaceSaving || refreshing;
   const displayedProvider = pendingProvider ?? provider ?? "";
   const displayedWorkspace = pendingWorkspace ?? workspaceDraft;
   const workspaceSelected = Boolean(displayedWorkspace.trim());
   const running = runtimeIsActive(runtimePhase);
-  const interactionActive = approval !== null || question !== null;
+  const interactionActive = question !== null;
   const backgroundDisconnected = backgroundActive && socketRef.current === null;
   const composerGate = composerConnectionGate({
     attaching: attaching || uploadingAttachments || pendingUserItem !== null || Boolean(forkPreview),
@@ -199,14 +195,12 @@ export function useSessionRuntime({
     setPendingSteers(0);
     setJobs({});
     setReconnecting(false);
-    setApproval(null);
     setQuestion(null);
     setQuestionDraft("");
     onTurnEnd();
   }, [onTurnEnd]);
 
   function clearPendingSettings() {
-    setPendingPermissionPreset(null);
     setPendingProvider(null);
     setPendingWorkspace(null);
     setRefreshing(false);
@@ -245,7 +239,6 @@ export function useSessionRuntime({
           setAttaching(false);
           setReconnecting(false);
           setJobs({});
-          setApproval(null);
           setQuestion(null);
           applyRuntimePhase("inactive");
           eventCounterRef.current = 0;
@@ -271,7 +264,6 @@ export function useSessionRuntime({
           attachmentReplacedRef.current = true;
           setAttachmentReplaced(true);
           setAttaching(false);
-          setApproval(null);
           setQuestion(null);
           applyRuntimePhase(message.phase);
           socket.close();
@@ -308,16 +300,8 @@ export function useSessionRuntime({
           applyRuntimePhase(message.phase);
           if (message.phase === "starting" && message.turn_id === null) setRefreshing(true);
           if (!pendingUserItemRef.current) activeTurnIdRef.current = message.turn_id;
-          setApproval(message.approval ? {
-            requestId: message.approval.request_id,
-            command: message.approval.command,
-            kind: message.approval.kind,
-            server: message.approval.server ?? undefined,
-            toolName: message.approval.tool_name ?? undefined,
-          } : null);
           setQuestion(message.question);
           setJobs(Object.fromEntries(message.jobs.map((job) => [job.job_id, job])));
-          setPermissionPreset(message.permission_preset);
           setPlan(message.plan ?? null);
           onContextWindowChange(message.context_window);
           setCacheUsage(message.cache_usage);
@@ -368,7 +352,6 @@ export function useSessionRuntime({
           }
           setToast(null);
         }
-        if (message.type === "permission_changed" && !message.replayed) setPendingPermissionPreset(null);
         if (message.type === "plan_updated") setPlan(message.plan);
         if (message.type === "provider_changed") {
           if (!message.replayed) setPendingProvider(null);
@@ -391,12 +374,10 @@ export function useSessionRuntime({
         if (applied.feedback?.kind === "alert") showAlert(applied.feedback);
         if (applied.contextWindow !== undefined) onContextWindowChange(applied.contextWindow);
         if (applied.cacheUsage !== undefined) setCacheUsage(applied.cacheUsage);
-        if (applied.approval !== undefined) setApproval(applied.approval);
         if (applied.question !== undefined) {
           setQuestion(applied.question);
           setQuestionDraft("");
         }
-        if (applied.permissionPreset !== undefined) setPermissionPreset(applied.permissionPreset);
         if (applied.finished) endTurn();
       },
       onClose: () => {
@@ -523,18 +504,6 @@ export function useSessionRuntime({
     });
   }, [initialPrompt, onInitialPromptConsumed, selected]);
 
-  function respondToApproval(approved: boolean) {
-    if (!approval) return;
-    socketRef.current?.send({ type: "approval_response", request_id: approval.requestId, approved });
-    setApproval(null);
-  }
-
-  function changePermissionPreset(preset: PermissionPreset) {
-    if (!workspaceSelected || preset === permissionPreset) return;
-    setPendingPermissionPreset(preset);
-    (socketRef.current ?? connect()).send({ type: "permission_set", preset });
-  }
-
   function changeProvider(nextProvider: string) {
     if (!workspaceSelected) return;
     setPendingProvider(nextProvider);
@@ -627,15 +596,12 @@ export function useSessionRuntime({
     toast,
     alerts: Object.values(alerts),
     reconnecting,
-    approval,
     question,
     questionDraft,
     setQuestionDraft,
     plan: shouldShowPlan(plan) ? plan : null,
-    displayedPermissionPreset: pendingPermissionPreset ?? permissionPreset,
     displayedProvider,
     displayedWorkspace,
-    permissionSaving,
     providerSaving,
     workspaceSaving,
     refreshing,
@@ -659,9 +625,7 @@ export function useSessionRuntime({
     }),
     submitMessage,
     takeOverAttachment,
-    respondToApproval,
     answerQuestion,
-    changePermissionPreset,
     changeProvider,
     refreshRuntime,
     saveWorkspace,

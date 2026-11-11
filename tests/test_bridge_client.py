@@ -157,7 +157,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
     def open(self, peer, session_id=None):
         peer.send({"type": "open_session", "workspace": str(self.external), "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 4)
+        self.assertEqual(ready["protocol_version"], 5)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 
@@ -200,15 +200,12 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
         for filename in ("agent_config.json", "provider_config.json", "prompts/Soul.md"):
             self.assertTrue((config / filename).is_file(), filename)
         preserved = (config / "provider_config.json").read_bytes()
-        peer.send({"type": "permission_set", "preset": "workspace_access"})
-        self.assertEqual(peer.until("permission_changed")["runtime"]["permission_preset"], "workspace_access")
         peer.send({"type": "list_sessions"})
         self.assertIsInstance(peer.until("sessions_listed")["sessions"], list)
         peer.send({"type": "load_session"})
         self.assertEqual(peer.until("session_items")["items"], [])
         rebound = self.open(peer, ready["session_id"])
         self.assertTrue(rebound["resumed"])
-        self.assertEqual(rebound["permission_preset"], "workspace_access")
         self.assertEqual([m["event_sequence"] for m in peer.messages], list(range(1, len(peer.messages) + 1)))
         peer.close()
         self.assertEqual(peer.process.returncode, 0)
@@ -293,7 +290,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
             return [{"id": "fc_" + call_id, "type": "function_call", "status": "completed",
                      "call_id": call_id, "name": name, "arguments": json.dumps(arguments)}]
 
-        outputs.put(tool("shell", {"command": "echo denied", "scope": "host"}, "shell-1"))
+        outputs.put(tool("shell", {"command": "echo direct"}, "shell-1"))
         question = {"question": "Proceed?", "options": [{"id": "yes", "label": "Yes"}]}
         outputs.put(tool("ask_user", question, "question-1"))
         outputs.put([{"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed",

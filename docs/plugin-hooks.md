@@ -19,18 +19,17 @@ Paths follow the existing component rules: relative to the Plugin root, explicit
 declared and contained within that root. `capabilities` describes the package and
 does not grant execution authority. Disabled Plugins contribute no hooks.
 
-## Hook declaration, schema version 1
+## Hook declaration, schema version 2
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "hooks": {
     "PreToolUse": [{
       "name": "check-writes",
       "tools": ["write_file", "edit_file", "apply_patch"],
       "command": "python",
       "args": ["-B", "${PLUGIN_ROOT}/hooks/check.py"],
-      "scope": "workspace",
       "timeout_seconds": 10
     }]
   }
@@ -48,11 +47,14 @@ The working directory is the bound Workspace.
 MCP names. Omitted matches every tool; an empty array matches none. It is valid only
 for tool events. The Core does not interpret Plugin-specific rule conditions.
 
-`scope` is `workspace` by default or `host`. `timeout_seconds` defaults to 10 and
+`timeout_seconds` defaults to 10 and
 must be an integer from 1 to 86400. Unknown fields and unsupported schema versions
 are errors. Manifest errors skip the Plugin; invalid Hook components are skipped
 with warnings while other components remain available. Duplicate names keep the
 first declaration and report both sources.
+
+To update a version 1 declaration, set `schema_version` to 2 and remove `scope`. The
+stdin payload uses its own schema version.
 
 Matching hooks run in discovery, component-file and declaration order. All matching
 checks run; denials take precedence over passing decisions and feedback is combined.
@@ -86,7 +88,7 @@ Event-specific data:
 | Event | Fields and checkpoint |
 | --- | --- |
 | `InputSubmitted` | `input.text` and `input.source`: `user`, `steering` or `delegation`; before accepting the input into model context |
-| `PreToolUse` | `tool_call`; after Tool lookup and JSON-object decoding, before routing, approval and execution; each Tool still validates its own argument schema |
+| `PreToolUse` | `tool_call`; after Tool lookup and JSON-object decoding, before execution; each Tool still validates its own argument schema |
 | `PostToolUse` | `tool_call`, `tool_result.ok` and `tool_result.content`; after the actual Tool invocation and normalized result commit, including Tool execution errors |
 | `Stop` | `response`, `correction_attempt`, `executions.tools`, `executions.jobs`; after pending Jobs/results and steering, before atomically closing Turn control |
 
@@ -96,12 +98,12 @@ Hooks do not receive unbounded raw results or binary attachments. Tool entries c
 `id`, `name`, `arguments`, `status`, `result`. Job entries carry `id`, `kind`, `status`,
 `details`, `result_summary`. The summary includes only the current Turn.
 
-Invalid calls, pre-hook denials and approval denials do not trigger `PostToolUse`.
+Invalid calls and pre-hook denials do not trigger `PostToolUse`.
 A background Tool submission does trigger it, but its returned handle is not the
 background operation's final result. Final Job facts are available at `Stop`.
-Question/approval answers and synthetic feedback do not trigger `InputSubmitted`.
+Question answers and synthetic feedback do not trigger `InputSubmitted`.
 Child Agents use their own Session and role metadata while inheriting the same Hook
-definitions and authority. Their events travel on the owning Bridge turn stream.
+definitions and command executor. Their events travel on the owning Bridge turn stream.
 
 ## Command response
 
@@ -135,17 +137,10 @@ Diagnostics use the shared Tool output budget and Session Artifact machinery.
 
 ## Authority and lifecycle
 
-Hook commands use an internal, model-invisible ToolSet and the same ExecutionRouter,
-PermissionController, executors, cancellation and process-tree cleanup as ordinary
-commands. Their approval is independent from the original Tool's approval. This
-internal invocation cannot recursively trigger command hooks. Scope cannot exceed
-the Session permission preset; unattended workers cannot obtain interactive approval.
-
-Workspace execution makes the Plugin directory readable inside the existing Linux
-and macOS sandbox. Executables and dependencies must also be accessible within that
-sandbox. Windows uses the existing write-restricted token and inherited host read
-view, with the same limitations as ordinary workspace commands. Host scope retains
-the ordinary host command environment and authority semantics.
+Hook commands use an internal ToolSet and the same host executor, cancellation and
+process-tree cleanup as Shell. They run with the current user's permissions and
+the Workspace as their working directory. The internal invocation cannot
+recursively trigger command hooks.
 
 ExecutionPlane owns immutable Hook definitions; Session/Turn state, rejection counts
 and feedback are not retained in the shared runner. `hook_started` and `hook_finished`
@@ -163,5 +158,5 @@ fixture does.
 `plugin-creator/scripts/validate_plugin.py` validates declarations without importing
 RADE or starting commands. Contract tests compare its acceptance with Runtime.
 `tests/test_hooks.py` covers Core decisions, sequence integrity, cancellation,
-approval, diagnostics and Windows stdin. `tests/test_hook_interop.py` covers Plugin
+diagnostics and UTF-8 stdin. `tests/test_hook_interop.py` covers Plugin
 assembly, Skill/Agent composition, refresh and Session reuse.

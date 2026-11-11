@@ -18,7 +18,7 @@ from .tool_batch import ToolBatchExecutor
 from .tools import ToolCall, ToolExecutionContext, ToolResult, ToolSet
 from .turn_control import AgentCancelled, TurnControl, UserSteer
 from .loop_policy import ToolCallRepetitionGuard, TurnContinuationPolicy
-from .memory import MemoryContext
+from .memory import MemoryDocument
 from .usage import CacheUsage, TokenUsage
 from .hooks import (
     HookCompletedEvent, HookRejectedError, append_hook_feedback, turn_execution_summary,
@@ -160,7 +160,7 @@ class Agent:
         tools: ToolSet,
         context: ToolExecutionContext,
         now: Callable[[], datetime] | None = None,
-        memory_context: MemoryContext | None = None,
+        memory_context: MemoryDocument | None = None,
     ) -> None:
         self._provider = provider
         self._session = session

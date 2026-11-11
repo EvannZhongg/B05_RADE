@@ -7,7 +7,7 @@ from agent_core import (
     Agent,
     AgentConfig,
     ContextWindow,
-    ExecutionRouter,
+    HostCommandExecutor,
     JobManager,
     MemoryManager,
     Workspace,
@@ -40,7 +40,7 @@ class ExecutionPlane:
     skills: SkillRegistry
     prompts: "PromptTemplates"
     plugin_agents: tuple["PluginAgent", ...]
-    execution_router: ExecutionRouter
+    command_executor: HostCommandExecutor
     mcp: "McpClientManager"
     hooks: HookRunner = field(default_factory=HookRunner)
     role_tools: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -87,10 +87,7 @@ class ExecutionPlane:
         try:
             self.unbind_session()
         finally:
-            try:
-                self.mcp.close()
-            finally:
-                self.execution_router.close()
+            self.mcp.close()
 
 
 __all__ = ["ExecutionPlane"]

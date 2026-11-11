@@ -7,7 +7,7 @@ import sys
 import tempfile
 from unittest.mock import patch
 
-from agent_core import HostCommandExecutor, LLMResponse, PermissionPreset, ToolCall
+from agent_core import LLMResponse, ToolCall
 from agent_runtime.plane_manager import ExecutionPlaneManager
 from agent_runtime.plugins import PluginManager
 from tests.agent_fixtures import MockProvider
@@ -33,9 +33,6 @@ class HookInteropTest(BridgeTestCase):
         self.child = MockProvider([])
         self.enterContext(patch.object(ExecutionPlaneManager, "_provider_for", side_effect=lambda config, *_:
             None if config is None else self.child if config.model == "child" else self.main))
-        # Runtime integration isolates assembly from OS-specific sandbox tests.
-        self.enterContext(patch("agent_runtime.plane_manager.SandboxedCommandExecutor",
-                                side_effect=lambda workspace, *args, **kwargs: HostCommandExecutor(workspace)))
 
     def open(self):
         bridge, stdout = self.make_bridge([], self.root)
@@ -48,7 +45,6 @@ class HookInteropTest(BridgeTestCase):
             "providers": {"main": {"model": "main", "max_context_tokens": 1000},
                           "child": {"model": "child", "max_context_tokens": 1000}},
         }))
-        bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         return bridge, stdout
 
     def install_rule(self, filename, name="rule"):
@@ -117,7 +113,7 @@ class HookInteropTest(BridgeTestCase):
         (self.root / "test_sample.py").write_text("import unittest\nclass Sample(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n")
         self.main = MockProvider([
             "I mention pytest but have not run it.",
-            calls(ToolCall("test", "shell", {"command": "python -m unittest", "scope": "host"})),
+            calls(ToolCall("test", "shell", {"command": "python -m unittest"})),
             "Tests passed",
             "Next turn", "Still no tests",
         ])
@@ -135,7 +131,6 @@ class HookInteropTest(BridgeTestCase):
         plane = bridge.host.planes.current
         first = bridge.host.sessions.session
         bridge.host.open_session(self.root, session_id="other")
-        bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         result = bridge.host.run_turn("second", "second")
         self.assertEqual(result.status, "completed")
         self.assertIs(bridge.host.planes.current, plane)

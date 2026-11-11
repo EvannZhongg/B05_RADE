@@ -17,7 +17,6 @@ from agent_core import (
 from agent_core.path_utils import relative_to_root
 from agent_core.tools import ROLE_TOOL_NAMES
 from agent_core.hooks import HOOK_EVENTS, HookDefinition
-from agent_core.execution.authority import ExecutionScope
 from agent_core.execution.process import MAX_COMMAND_TIMEOUT_SECONDS
 
 
@@ -286,8 +285,8 @@ def _load_hooks(path: Path, plugin: PluginDescriptor) -> tuple[HookDefinition, .
     if not isinstance(data, dict):
         raise ValueError("hook component must be an object")
     _reject_unknown(data, {"schema_version", "hooks"}, "hooks")
-    if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
-        raise ValueError("hook schema_version must be 1")
+    if type(data.get("schema_version")) is not int or data["schema_version"] != 2:
+        raise ValueError("hook schema_version must be 2")
     events = data.get("hooks")
     if not isinstance(events, dict):
         raise ValueError("hooks must be an event map")
@@ -300,7 +299,7 @@ def _load_hooks(path: Path, plugin: PluginDescriptor) -> tuple[HookDefinition, .
         for entry in entries:
             if not isinstance(entry, dict):
                 raise ValueError("hook declaration must be an object")
-            _reject_unknown(entry, {"name", "tools", "command", "args", "scope", "timeout_seconds"}, "hook")
+            _reject_unknown(entry, {"name", "tools", "command", "args", "timeout_seconds"}, "hook")
             name = _required_string(entry, "name", "hook")
             if not _PLUGIN_NAME.fullmatch(name) or name in names:
                 raise ValueError(f"invalid or duplicate hook name: {name}")
@@ -312,16 +311,13 @@ def _load_hooks(path: Path, plugin: PluginDescriptor) -> tuple[HookDefinition, .
             tools = _string_tuple(entry, "tools", "hook") if "tools" in entry else None
             if tools is not None and event not in {"PreToolUse", "PostToolUse"}:
                 raise ValueError("tools matching is only supported for tool events")
-            scope = entry.get("scope", "workspace")
-            if not isinstance(scope, str) or scope not in {"workspace", "host"}:
-                raise ValueError("hook scope must be workspace or host")
             timeout = entry.get("timeout_seconds", 10)
             if type(timeout) is not int or not 1 <= timeout <= MAX_COMMAND_TIMEOUT_SECONDS:
                 raise ValueError(f"hook timeout_seconds must be between 1 and {MAX_COMMAND_TIMEOUT_SECONDS}")
             hooks.append(HookDefinition(
                 name=f"{plugin.name}:{name}", event=event, command=command,
                 args=tuple(args), tools=tools, root=plugin.root, source=path,
-                scope=ExecutionScope(scope), timeout_seconds=timeout,
+                timeout_seconds=timeout,
             ))
     return tuple(hooks)
 

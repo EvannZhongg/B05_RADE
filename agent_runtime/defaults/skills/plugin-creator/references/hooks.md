@@ -4,14 +4,13 @@ Declare files under `components.hooks`, for example `["hooks/hooks.json"]`.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "hooks": {
     "PreToolUse": [{
       "name": "check-writes",
       "tools": ["write_file", "edit_file", "apply_patch"],
       "command": "python",
       "args": ["-B", "${PLUGIN_ROOT}/hooks/check.py"],
-      "scope": "workspace",
       "timeout_seconds": 10
     }]
   }
@@ -22,8 +21,8 @@ Names are unique within the Plugin and register as `<plugin>:<name>`. `command` 
 executable; `args` are passed directly, without Shell expansion. RADE replaces
 `${PLUGIN_ROOT}`; cwd is the Workspace. `tools` matches exact names, including MCP names:
 omitted matches all, `[]` matches none; valid only for tool events.
-`scope` defaults to `workspace` and also accepts `host`; timeout defaults to 10 seconds
-and accepts integers 1..86400. Scope never bypasses Runtime authority or approval.
+Commands run with the current user's host permissions. Timeout defaults to 10 seconds
+and accepts integers 1..86400.
 
 ## Input and decisions
 
@@ -55,7 +54,7 @@ print(json.dumps({"decision": "pass"}))
 Replace the passing response with the intended checks. Input denial fails the Turn;
 pre-tool denial returns a paired `HookDenied` result. Post-tool checks run only for
 invoked tools after results commit. Stop permits one correction round; another
-`continue` fails. Cancellation never waits for Stop approval.
+`continue` fails. Cancellation interrupts running Hook commands.
 
 Feedback is synthetic model context, not human input. Tool results are normalized JSON
 strings and may reference Artifacts. Stop summaries contain current-turn Tool/Job facts;
@@ -65,4 +64,4 @@ Hooks also apply to sub-agents; use `agent.role` when a check should target only
 Nonzero exit, timeout, invalid JSON/decisions or stdout over 16000 characters fails the
 Hook. Do not hide errors by always returning success. Validate declarations with
 `scripts/validate_plugin.py`, then exercise real behavior in RADE. The executable and
-dependencies must be accessible inside the declared scope. Use `/refresh` for declaration changes.
+dependencies must be accessible to the host user. Use `/refresh` for declaration changes.

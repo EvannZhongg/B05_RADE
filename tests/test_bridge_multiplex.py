@@ -50,10 +50,10 @@ class ModelPeer(BaseHTTPRequestHandler):
             self.server.entered.set()
             self.server.release.wait(15)
         tool_result = next((message for message in reversed(messages) if message["role"] == "tool"), None)
-        if text in {"approval", "read-workspace"} and tool_result is None:
+        if text in {"question", "read-workspace"} and tool_result is None:
             name, arguments = (
                 ("read_file", {"path": "marker.txt"}) if text == "read-workspace"
-                else ("shell", {"command": "echo should-not-execute"})
+                else ("ask_user", {"question": "Continue?", "options": [{"id": "yes", "label": "Yes"}]})
             )
             delta = {"tool_calls": [{"index": 0, "id": "call", "type": "function", "function": {
                 "name": name, "arguments": json.dumps(arguments),
@@ -131,7 +131,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         channel = self.bridge.open_channel(key)
         channel.send({**self.opening, "session_id": session_id or key})
         ready, _ = await self.until(channel, "session_ready")
-        self.assertEqual(ready["protocol_version"], 4)
+        self.assertEqual(ready["protocol_version"], 5)
         await self.until(channel, "runtime_state")
         return channel
 
@@ -154,14 +154,14 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(store.load("two").turns["same"].status, "completed")
         self.assertEqual([item.content for item in store.load("two").items if item.role == "user"], ["second", "still-alive"])
 
-    async def test_identical_approval_ids_do_not_cross_session_boundaries(self):
+    async def test_identical_question_ids_do_not_cross_session_boundaries(self):
         first, second = await asyncio.gather(self.open("one"), self.open("two"))
         for channel in (first, second):
-            channel.send({"type": "user_turn", "turn_id": "same", "text": "approval"})
-        a, _ = await self.until(first, "approval_request")
-        b, _ = await self.until(second, "approval_request")
+            channel.send({"type": "user_turn", "turn_id": "same", "text": "question"})
+        a, _ = await self.until(first, "user_question")
+        b, _ = await self.until(second, "user_question")
         self.assertEqual(a["request_id"], b["request_id"])
-        second.send({"type": "approval_response", "request_id": b["request_id"], "approved": False})
+        second.send({"type": "user_question_response", "request_id": b["request_id"], "option_id": "yes"})
         await self.until(second, "turn_completed")
         with self.assertRaises(asyncio.TimeoutError):
             await asyncio.wait_for(first.read(), 0.1)

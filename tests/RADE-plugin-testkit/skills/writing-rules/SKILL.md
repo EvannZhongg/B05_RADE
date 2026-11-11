@@ -7,7 +7,7 @@ description: Create, inspect or update Hookify project rules for inputs, tool ca
 
 Rules live in the current Workspace at `.RADE/hookify.<name>.json`. Read existing
 rules before editing. Use the ordinary RADE file tools to create or update rules;
-creating a rule does not bypass their permissions. Each hook reads rules again,
+creating a rule does not skip those checks. Each hook reads rules again,
 so rule edits apply to the next checkpoint without a runtime refresh.
 
 Required fields: `name`, `event`, `conditions`, `message`. Optional: `enabled`

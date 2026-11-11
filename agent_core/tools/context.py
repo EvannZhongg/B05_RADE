@@ -8,7 +8,7 @@ from .base import JSONValue
 
 if TYPE_CHECKING:
     from ..hooks import HookRunner, HookInvocation, HookCompletedEvent
-    from ..execution.router import ExecutionRouter, ResolvedExecution
+    from ..execution.executor import CommandExecutor
     from ..execution.process import CancellationSignal
     from ..mcp.manager import McpClientManager
     from ..plan import PlanManager
@@ -37,8 +37,7 @@ class ToolExecutionContext:
     sessions_directory: Path = field(
         default_factory=default_sessions_directory
     )
-    execution_router: "ExecutionRouter | None" = None
-    execution: "ResolvedExecution | None" = None
+    command_executor: "CommandExecutor | None" = None
     vision_input: bool = False
     mcp: "McpClientManager | None" = None
     subagents: "SubagentRuntime | None" = None

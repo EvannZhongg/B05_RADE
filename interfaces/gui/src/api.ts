@@ -1,4 +1,4 @@
-import type { CacheUsage, ContextWindow, PermissionPreset, PlanSnapshot, SessionItem, SessionSummary, UserAttachment } from "@rade/protocol";
+import type { CacheUsage, ContextWindow, PlanSnapshot, SessionItem, SessionSummary, UserAttachment } from "@rade/protocol";
 import type { SettingsSnapshot } from "@rade/protocol/internal";
 
 export type { SessionItem, SessionSummary };
@@ -7,7 +7,6 @@ export type Session = {
   session_id: string;
   items: SessionItem[];
   workspace?: string | null;
-  permission_preset: PermissionPreset;
   provider?: string | null;
   context_window?: ContextWindow | null;
   cache_usage?: CacheUsage | null;
@@ -42,7 +41,6 @@ export type MemoryDocument = {
   decisions: string[];
 };
 export type MemorySnapshot = {
-  global: MemoryDocument;
   workspaces: { workspace: string; memory: MemoryDocument }[];
 };
 export type { UserAttachment };

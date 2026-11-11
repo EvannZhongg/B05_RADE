@@ -7,7 +7,6 @@ from time import monotonic
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from .execution.authority import ExecutionScope
 from .tools.base import JSONValue, Tool, ToolCall, ToolDefinition, ToolOutput, ToolPolicy
 from .tools.context import ToolExecutionContext
 from .turn_control import AgentCancelled
@@ -38,7 +37,6 @@ class HookDefinition:
     root: Path
     source: Path
     tools: tuple[str, ...] | None = None
-    scope: ExecutionScope = ExecutionScope.WORKSPACE
     timeout_seconds: int = 10
 
 
@@ -82,17 +80,16 @@ class HookCommandTool(Tool):
         from .tools.builtin.shell import _command_output
 
         invocation = context.hook_invocation
-        route = context.execution
-        if invocation is None or route is None or route.executor is None:
+        executor = context.command_executor
+        if invocation is None or executor is None:
             raise RuntimeError("hook command execution is not bound")
         definition = invocation.definition
         command = (arguments["command"], *arguments["args"])
-        return _command_output(route.executor.execute(
+        return _command_output(executor.execute(
             command,
             definition.timeout_seconds,
             cancellation=context.cancellation,
             stdin=json.dumps(invocation.payload, ensure_ascii=False).encode("utf-8"),
-            read_only_paths=(definition.root,),
         ))
 
 
@@ -176,7 +173,6 @@ class HookRunner:
             result = tools.execute(ToolCall(invocation_id, HookCommandTool.name, {
                 "command": expand(definition.command),
                 "args": [expand(arg) for arg in definition.args],
-                "scope": definition.scope.value,
             }))
             diagnostics = ToolResultNormalizer(
                 context.workspace, context.session.session_id,

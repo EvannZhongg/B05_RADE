@@ -78,7 +78,7 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 
 ## Tool 系统
 
-所有 Tool 使用统一的 `Tool`、`ToolDefinition`、`ToolCall`、`ToolResult` 和 `ToolExecutionContext` 接口。`ToolCatalog` 保存完整能力集合，`ToolSet` 按 Agent 角色选择实际可见 Tool，`ToolPolicy` 在执行前处理授权。参数不是合法的 JSON object 时，`ToolCall` 保留 Provider 的原文并直接得到 `invalid_tool_arguments` 错误结果，模型可据此重新调用，Turn 不中断。
+所有 Tool 使用统一的 `Tool`、`ToolDefinition`、`ToolCall`、`ToolResult` 和 `ToolExecutionContext` 接口。`ToolCatalog` 保存完整能力集合，`ToolSet` 按 Agent 角色选择实际可见 Tool，嵌入 Core 的调用方可以为 `ToolSet` 注入 `ToolPolicy`。参数不是合法的 JSON object 时，`ToolCall` 保留 Provider 的原文并直接得到 `invalid_tool_arguments` 错误结果，模型可据此重新调用，Turn 不中断。
 
 内置 Tool 覆盖：
 
@@ -103,33 +103,15 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 | `context.py` | 每次调用所需的 Workspace、Session、执行器等依赖 |
 | `paths.py` | 读取路径解析与 Workspace 包含校验 |
 | `globs.py` | 文件路径 glob 匹配 |
-| `policy.py` | Shell、文件写入与 MCP 的授权策略组合 |
 | `files.py` | Workspace 写入的共享落盘与路径校验 |
 | `budget.py` | Tool 结果大小预算 |
 | `builtin/` | 内置 Tool 实现 |
 
-## 命令执行与权限
+## 命令执行
 
-Shell 通过 `ExecutionRouter` 根据 `ExecutionScope` 和当前 `ExecutionAuthority` 选择宿主执行器或 Workspace 沙箱执行器。`permissions.py` 的 `PermissionController` 把 Session 的权限 preset 转换为默认 scope、允许范围和人工确认规则。
+Runtime 将 `HostCommandExecutor` 注入 `ToolExecutionContext`。Shell 和命令 Hook 共用它，以当前用户的宿主权限在 Workspace 工作目录中启动进程。Windows Shell 使用 PowerShell 7，其他平台使用 `/bin/sh`。进程层负责超时、取消、进程树清理和输出 spool。Windows Shell 启用严格模式和原生命令错误处理。
 
-| preset | 默认 scope | 授权行为 |
-| --- | --- | --- |
-| `Ask for approval` | `workspace` | 两种 scope 都请求确认 |
-| `Workspace Access` | `workspace` | 仅 `host` 请求确认 |
-| `Full Access` | `host` | 不请求确认 |
-
-显式传入的 scope 始终生效，但仍受 Session 权限 preset 的授权范围约束。`apply_patch`、`edit_file`、`write_file` 解析为 Workspace scope，因此同样按 preset 决定是否确认：`Ask for approval` 请求确认，`Workspace Access` 与 `Full Access` 直接执行。文件 Tool 在任何 preset 下都限制在 Workspace 内，不使用宿主执行器。
-
-`approval.py` 生成审批提示与审批历史的有界摘要：路径、字节与行数、每个文本字段的前 3 行预览，整体不超过 2048 字符，patch 最多列出 8 个文件操作并说明省略数量。完整参数保留在原始 Tool Call 中，不重复写入用户交互记录。
-
-`execution/` 负责进程超时、取消、输出 spool、平台 shell 和沙箱路由：
-
-- macOS 使用 Seatbelt。
-- Linux 使用 bubblewrap；缺失时报错，namespace 初始化失败时保留原始诊断，两者都不回退宿主执行。
-- Windows 使用 Restricted Token（`windows_sandbox.py`），Shell 方言为 PowerShell 7。
-- Windows 的 host/workspace Shell 统一启用 `ErrorActionPreference=Stop`、严格模式与原生命令错误处理；清理脚本须使用任务专用变量并先验证目标路径边界，不得吞掉初始化或删除错误。
-
-沙箱策略使用结构化的文件系统、网络、临时目录和进程隔离能力描述；平台 backend 负责把策略翻译成具体 OS 约束。
+`apply_patch`、`edit_file`、`write_file` 由 Tool 实现直接写入，沿用 Workspace 路径解析与校验。
 
 ## Provider 与模型协议
 
@@ -180,7 +162,7 @@ Core 只定义扩展机制，不决定扩展从哪个目录加载：
 
 ## Memory 与 Job
 
-长期记忆分为全局和 Workspace 两层。`MemoryManager` 在 Turn 开始时提供记忆上下文，收集候选更新，并在成功结束后通过 `MemoryReconciler` 合并；失败或取消时丢弃待提交更新。
+长期记忆按 Workspace 隔离。`MemoryManager` 在 Turn 开始时提供记忆上下文，收集候选更新，并在成功结束后通过 `MemoryReconciler` 合并到当前 Workspace；失败或取消时丢弃待提交更新。
 
 `JobManager` 管理可取消的后台任务和状态事件，供子 Agent 等长任务使用。Job 快照（原始详情、耗时、progress、错误与结果摘要）随 Journal 持久化，Turn 恢复后仍可由 `job_control` 查询；已恢复的中断 Job 不能再取消。
 
@@ -193,4 +175,4 @@ Core 只定义扩展机制，不决定扩展从哪个目录加载：
 
 ## Hooks
 
-`hooks.py` 定义与前端无关的执行检查点、不可变 Hook 声明和 command Hook 机制。Agent、ToolSet、ToolBatchExecutor 和 TurnContinuationPolicy 显式应用决策；内部命令 Tool 复用权限、执行路由、沙箱和取消。Plugin 来源解析与装配属于 Runtime。完整契约见 [Plugin Hooks](../docs/plugin-hooks.md)。
+`hooks.py` 定义与前端无关的执行检查点、不可变 Hook 声明和 command Hook 机制。Agent、ToolSet、ToolBatchExecutor 和 TurnContinuationPolicy 显式应用决策；内部命令 Tool 复用宿主命令执行器和取消。Plugin 来源解析与装配属于 Runtime。完整契约见 [Plugin Hooks](../docs/plugin-hooks.md)。

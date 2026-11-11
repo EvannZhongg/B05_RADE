@@ -6,7 +6,7 @@ from queue import Queue
 from threading import Lock, RLock
 from typing import Callable, TYPE_CHECKING
 
-from agent_core import AgentCancelled as Cancelled, AgentEvent, PermissionPreset, SessionInUseError, message_to_dict, runtime_error_info
+from agent_core import AgentCancelled as Cancelled, AgentEvent, SessionInUseError, message_to_dict, runtime_error_info
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
@@ -46,10 +46,8 @@ class Bridge:
         ] = {}
         self._input_closed = False
         self._shutdown_requested = False
-        self._session_opened = False
         self._interaction_ids = count(1)
         self._interaction_lock = Lock()
-        self._approval: dict[str, object] | None = None
         self._question: dict[str, object] | None = None
         self._stream = EventStream()
         self._phase = "inactive"
@@ -67,7 +65,6 @@ class Bridge:
                     **session_title_updated_message(session_id, title, source),
                 ),
                 on_mcp_status=self._emit_mcp_status,
-                request_permission=self.request_permission,
                 ask_user=self.request_user_choice,
             ),
         )
@@ -85,7 +82,7 @@ class Bridge:
                     self._jobs.pop(job_id, None)
             if type == "fatal":
                 self._phase = "failed"
-                self._approval = self._question = None
+                self._question = None
                 self._jobs.clear()
             state = None
             if type == "runtime_state":
@@ -93,7 +90,7 @@ class Bridge:
             elif type == "session_open_failed" and self.host.sessions.session is not None:
                 state = self._runtime_snapshot()
             elif type in {
-                "permission_changed", "provider_changed", "workspace_changed",
+                "provider_changed", "workspace_changed",
                 "plan_updated", "context_window", "model_completed", "compression_completed", "job_status", "fatal",
                 "turn_completed", "turn_cancelled", "turn_failed",
                 "runtime_refreshed", "runtime_refresh_failed",
@@ -124,7 +121,7 @@ class Bridge:
     def submit(self, message: dict[str, object]) -> None:
         """Route one decoded command without blocking the process transport."""
         message_type = message["type"]
-        if message_type in {"approval_response", "user_question_response"}:
+        if message_type == "user_question_response":
             request_id = message.get("request_id")
             if not isinstance(request_id, str):
                 return
@@ -132,12 +129,6 @@ class Bridge:
                 waiter = self._waiters.get(request_id)
                 if waiter is not None:
                     waiter[1].put(message)
-            return
-        if message_type == "permission_set":
-            if self._session_opened:
-                self._set_permission_preset(message)
-            else:
-                self._messages.put(message)
             return
         if message_type == "user_steer":
             self._route_steer(message)
@@ -232,43 +223,6 @@ class Bridge:
         return response
 
 
-    def request_permission(
-        self,
-        command: str,
-        *,
-        kind: str = "shell",
-        server: str | None = None,
-        tool_name: str | None = None,
-    ) -> bool:
-        # Serialized so concurrent tool calls queue their prompts instead of
-        # racing for each other's answers; the user still answers one at a time.
-        with self._interaction_lock:
-            turn_id = self.host.turns.turn_id
-            request_id = f"{turn_id}:{next(self._interaction_ids)}"
-            waiter = self._register_interaction(request_id, turn_id)
-            self._approval = {
-                "type": "approval_request",
-                "turn_id": turn_id,
-                "request_id": request_id,
-                "command": command,
-                "kind": kind,
-                "server": server,
-                "tool_name": tool_name,
-            }
-            self._question = None
-            if self.host.sessions.session is not None:
-                self._emit_runtime_state("waiting_approval")
-            self.emit(**self._approval)
-            try:
-                message = self._wait_for_interaction(waiter)
-                return bool(message.get("approved"))
-            finally:
-                self._unregister_interaction(request_id)
-                self._approval = None
-                if self.host.sessions.session is not None:
-                    self._emit_runtime_state("running")
-
-
     def request_user_choice(
         self,
         question: str,
@@ -279,7 +233,6 @@ class Bridge:
             turn_id = self.host.turns.turn_id
             request_id = f"{turn_id}:{next(self._interaction_ids)}"
             waiter = self._register_interaction(request_id, turn_id)
-            self._approval = None
             self._question = {
                 "type": "user_question",
                 "turn_id": turn_id,
@@ -329,16 +282,12 @@ class Bridge:
     def _runtime_snapshot(self) -> dict[str, object]:
         plane = self.host.planes.current
         session = self.host.sessions.session
-        session_fields = {
-            "permission_preset": session.permission_preset.value,
-            "cache_usage": cache_usage_to_dict(session.cache_usage),
-        } if session is not None else {}
         return runtime_state_message(
             phase=self._phase,
             turn_id=self.host.turns.turn_id,
-            approval=self._approval,
             question=self._question,
             provider=self.host.sessions.provider_name,
+            cache_usage=cache_usage_to_dict(session.cache_usage) if session is not None else None,
             context_window=(
                 context_window_to_dict(plane.context_window)
                 if plane is not None and plane.context_window is not None
@@ -348,7 +297,6 @@ class Bridge:
             runtime_warnings=self._runtime_warnings,
             plan=self.host.sessions.plan.snapshot if self.host.sessions.plan is not None else None,
             workspace=str(self.host.sessions.workspace.path) if self.host.sessions.workspace is not None else None,
-            **session_fields,
         )
 
 
@@ -499,14 +447,11 @@ class Bridge:
                     self.open_session(message)
                 except (SessionInUseError, ValueError, OSError) as error:
                     opened = self.host.sessions.session is not None
-                    self._session_opened = opened
                     self.emit(**session_open_failed_message(message.get("session_id"), error))
                     continue
                 opened = True
             elif message["type"] == "user_turn":
                 self.run_turn(message)
-            elif message["type"] == "permission_set":
-                self._set_permission_preset(message)
             elif message["type"] == "provider_set":
                 self._set_provider(message)
             elif message["type"] == "workspace_set":
@@ -536,11 +481,10 @@ class Bridge:
             provider=message.get("provider"),
         )
         self._phase = "inactive"
-        self._approval = self._question = None
+        self._question = None
         self._runtime_warnings = ()
         self._jobs.clear()
         self._checkpoint_turn = None
-        self._session_opened = True
         self._emit_session_snapshot(resumed=resumed)
 
     def _emit_session_snapshot(self, *, resumed: bool) -> None:
@@ -552,14 +496,8 @@ class Bridge:
             model=load_model_options(self.host.config_directory / "provider_config.json")[1][state.provider_name],
             resumed=resumed,
             message_count=len(state.session.items),
-            permission_preset=state.session.permission_preset.value,
         ))
         self.emit(**self._runtime_snapshot())
-
-    def _set_permission_preset(self, message: dict[str, object]) -> None:
-        preset = PermissionPreset(str(message.get("preset")))
-        self.host.set_permission_preset(preset)
-        self.emit("permission_changed", preset=preset.value)
 
     def _set_provider(self, message: dict[str, object]) -> None:
         provider = message.get("provider")
@@ -597,7 +535,7 @@ class Bridge:
             turn_id, str(message["text"]),
             attachments=lambda: parse_attachments(message.get("attachments"), self.host.sessions.workspace),
         )
-        self._approval = self._question = None
+        self._question = None
         self._jobs.clear()
         self._emit_runtime_state(
             "failed" if result.startup_failed else "idle",

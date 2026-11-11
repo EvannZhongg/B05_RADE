@@ -10,7 +10,6 @@ from .errors import (
     RuntimeErrorInfo,
     runtime_error_from_dict,
 )
-from .permissions import PermissionPreset
 from .plan import PlanSnapshot, plan_snapshot_from_dict, plan_snapshot_to_dict
 from .tools import ToolCall
 from .usage import CacheUsage, InputTokenAnchor, TokenUsage, usage_to_dict
@@ -141,7 +140,6 @@ class Session:
     archived_summary: str | None = None
     archived_item_cursor: int = 0
     compression_count: int = 0
-    permission_preset: PermissionPreset = PermissionPreset.ASK_FOR_APPROVAL
     plan: PlanSnapshot | None = None
     cache_usage: CacheUsage | None = field(default=None, init=False)
     input_token_anchor: InputTokenAnchor | None = field(default=None, init=False)
@@ -325,8 +323,6 @@ class Session:
             )
             self.archived_item_cursor = int(payload["item_cursor"])
             self.compression_count += 1
-        elif event.event_type == "permission_preset_changed":
-            self.permission_preset = PermissionPreset(str(payload["preset"]))
         elif event.event_type == "plan_updated" and isinstance(
             payload.get("plan"), dict
         ):
@@ -548,15 +544,6 @@ class Session:
             "context_archived",
             self._current_turn_id,
             {"summary": summary, "item_cursor": item_cursor},
-        )
-
-    def set_permission_preset(self, preset: PermissionPreset) -> None:
-        if preset is self.permission_preset:
-            return
-        self._event(
-            "permission_preset_changed",
-            self._current_turn_id,
-            {"preset": preset.value},
         )
 
     def set_plan(self, snapshot: PlanSnapshot) -> None:

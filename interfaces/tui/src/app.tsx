@@ -1,12 +1,10 @@
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
-import type { Incoming, Outgoing, PermissionPreset } from '@rade/protocol/internal';
+import type { Incoming, Outgoing } from '@rade/protocol/internal';
 import { BridgeClient } from '@rade/client';
 import { COMMANDS, parseCommand } from './commands.js';
 import { Prompt } from './input.js';
 import {
-  ApprovalPrompt,
-  PermissionPrompt,
   PlanView,
   ModelPicker,
   ProviderOverview,
@@ -28,22 +26,6 @@ type SessionSelection = {
   channelId: string;
 };
 
-const PERMISSION_PRESETS: PermissionPreset[] = [
-  'ask_for_approval',
-  'workspace_access',
-  'full_access',
-];
-
-function nextPermissionPreset(
-  current: PermissionPreset,
-  direction: 1 | -1,
-): PermissionPreset {
-  const index = PERMISSION_PRESETS.indexOf(current);
-  return PERMISSION_PRESETS[
-    (index + direction + PERMISSION_PRESETS.length) % PERMISSION_PRESETS.length
-  ];
-}
-
 /** Keep Windows paths unambiguous on the newline-delimited JSON channel. */
 function protocolPath(path: string): string {
   return path.replaceAll('\\', '/');
@@ -55,7 +37,6 @@ export function App(props: AppProps): React.ReactElement {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [draft, setDraft] = useState('');
   const [questionDraft, setQuestionDraft] = useState('');
-  const [permissionChoice, setPermissionChoice] = useState<PermissionPreset | null>(null);
   const [selection, setSelection] = useState<SessionSelection>({ workspace: props.workspace, sessionId: null, channelId: 'session-1' });
   const [settingsMode, setSettingsMode] = useState<'model' | 'provider' | null>(null);
   const [modelChoice, setModelChoice] = useState(0);
@@ -172,16 +153,6 @@ export function App(props: AppProps): React.ReactElement {
     return () => clearInterval(timer);
   }, [busy]);
 
-  const answerApproval = (approved: boolean): void => {
-    if (!state.approval) return;
-    send({
-      type: 'approval_response',
-      request_id: state.approval.requestId,
-      approved,
-    });
-    dispatch({ type: 'approval_resolved' });
-  };
-
   const answerQuestion = (answer: { option_id: string } | { text: string }): void => {
     if (!state.question) return;
     send({
@@ -236,47 +207,6 @@ export function App(props: AppProps): React.ReactElement {
       }
     },
     { isActive: state.question !== null },
-  );
-
-  // Approval answers are handled here while the text input is unfocused.
-  useInput(
-    (_input, key) => {
-      if (key.leftArrow || key.rightArrow || key.tab) {
-        dispatch({
-          type: 'approval_choice',
-          choice: state.approval?.choice === 'allow' ? 'deny' : 'allow',
-        });
-        return;
-      }
-      if (key.return) {
-        answerApproval(state.approval?.choice === 'allow');
-        return;
-      }
-      if (key.escape) {
-        answerApproval(false);
-      }
-    },
-    { isActive: state.approval !== null },
-  );
-
-  useInput(
-    (_input, key) => {
-      if (key.upArrow || key.leftArrow) {
-        setPermissionChoice((current) => current === null ? current : nextPermissionPreset(current, -1));
-        return;
-      }
-      if (key.downArrow || key.rightArrow || key.tab) {
-        setPermissionChoice((current) => current === null ? current : nextPermissionPreset(current, 1));
-        return;
-      }
-      if (key.return && permissionChoice) {
-        send({ type: 'permission_set', preset: permissionChoice });
-        setPermissionChoice(null);
-        return;
-      }
-      if (key.escape) setPermissionChoice(null);
-    },
-    { isActive: permissionChoice !== null },
   );
 
   const openSession = (workspace: string, sessionId: string | null): void => {
@@ -383,7 +313,7 @@ export function App(props: AppProps): React.ReactElement {
     },
     {
       isActive:
-        state.approval === null && state.question === null && permissionChoice === null
+        state.question === null
         && state.picker === null && settingsMode === null,
     },
   );
@@ -403,8 +333,7 @@ export function App(props: AppProps): React.ReactElement {
     setDraft('');
     // Commands are answered by the TUI, so the agent never sees them.
     if (parsed) {
-      if (parsed.command.name === '/permissions') setPermissionChoice(state.permissionPreset);
-      else if (parsed.command.name === '/sessions') {
+      if (parsed.command.name === '/sessions') {
         send({ type: 'list_sessions' });
         dispatch({ type: 'picker_opened', kind: 'sessions' });
       } else if (parsed.command.name === '/workspaces') {
@@ -458,19 +387,9 @@ export function App(props: AppProps): React.ReactElement {
 
         {state.plan ? <PlanView plan={state.plan} /> : null}
 
-        {state.approval ? (
-          <Box flexShrink={0}>
-            <ApprovalPrompt command={state.approval.command} kind={state.approval.kind} choice={state.approval.choice} />
-          </Box>
-        ) : null}
         {state.question ? (
           <Box flexShrink={0}>
             <UserQuestionPrompt question={state.question} />
-          </Box>
-        ) : null}
-        {permissionChoice ? (
-          <Box flexShrink={0}>
-            <PermissionPrompt selected={permissionChoice} />
           </Box>
         ) : null}
         {state.picker ? (
@@ -487,7 +406,7 @@ export function App(props: AppProps): React.ReactElement {
         <Box flexShrink={0} marginTop={1}>
           <Text dimColor>Press Ctrl+C to exit.</Text>
         </Box>
-      ) : permissionChoice || state.picker || settingsMode ? null : state.question && freeTextSelected ? (
+      ) : state.picker || settingsMode ? null : state.question && freeTextSelected ? (
         <Prompt
           value={questionDraft}
           onChange={setQuestionDraft}
@@ -505,7 +424,7 @@ export function App(props: AppProps): React.ReactElement {
           value={draft}
           onChange={setDraft}
           onSubmit={submit}
-          focus={state.approval === null && permissionChoice === null && state.picker === null && settingsMode === null}
+          focus={state.picker === null && settingsMode === null}
           busy={inputBusy}
           docked
           commands={state.status === 'session_unavailable' ? COMMANDS.filter((command) => command.name === '/sessions' || command.name === '/workspaces') : COMMANDS}

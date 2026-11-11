@@ -119,7 +119,7 @@ def create_components(plugin_root: Path, args: argparse.Namespace) -> dict[str, 
         components["mcp"] = [".mcp.json"]
     if args.with_hooks:
         write_text(plugin_root / "hooks" / "hooks.json",
-                   json.dumps({"schema_version": 1, "hooks": {}}, indent=2) + "\n", args.force)
+                   json.dumps({"schema_version": 2, "hooks": {}}, indent=2) + "\n", args.force)
         components["hooks"] = ["hooks/hooks.json"]
     return components
 

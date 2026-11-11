@@ -1,4 +1,4 @@
-"""File-write calls shared by permission and Bridge protocol tests."""
+"""File-write calls shared by tool and Bridge tests."""
 
 from agent_core import ToolCall
 

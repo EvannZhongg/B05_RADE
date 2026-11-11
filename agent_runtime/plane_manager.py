@@ -10,22 +10,18 @@ from agent_core import (
     JobStatusEvent,
     MemoryManager,
     MemoryReconciler,
-    ExecutionRouter,
     McpConfig,
-    PermissionController,
     SkillLoader,
     SubagentRole,
     SubagentRoleRegistry,
     SubagentRuntime,
     HostCommandExecutor,
-    SandboxedCommandExecutor,
     ToolExecutionContext,
     Workspace,
     WorkspaceInstructions,
     builtin_catalog,
     load_agent_config,
     merge_mcp_servers,
-    platform_workspace_sandbox_backend,
     Session,
 )
 from agent_core.prompting import render_system_prompt
@@ -186,20 +182,6 @@ class ExecutionPlaneManager:
                 role_tools[agent.name] = tools
                 resolved_agents.append(agent)
 
-            workspace_executor = SandboxedCommandExecutor(
-                workspace.path,
-                platform_workspace_sandbox_backend(),
-                excluded_environment_names=self._environment.loaded_names,
-            )
-            startup.callback(workspace_executor.close)
-            host_executor = HostCommandExecutor(workspace.path)
-            startup.callback(host_executor.close)
-            execution_router = ExecutionRouter(
-                workspace_executor,
-                host_executor,
-                authority=lambda: session.permissions.authority,
-                host_tool=mcp.requires_approval,
-            )
             plane = ExecutionPlane(
                 workspace=workspace,
                 provider_name=session.provider_name,
@@ -212,7 +194,7 @@ class ExecutionPlaneManager:
                 skills=skills,
                 prompts=prompts,
                 plugin_agents=tuple(resolved_agents),
-                execution_router=execution_router,
+                command_executor=HostCommandExecutor(workspace.path),
                 mcp=mcp,
                 hooks=HookRunner(hook_definitions),
                 role_tools=role_tools,
@@ -235,8 +217,8 @@ class ExecutionPlaneManager:
         try:
             agent_config = plane.agent_config
             workspace = plane.workspace
-            if session.permissions is None or session.session is None:
-                raise RuntimeError("session permissions are not initialized")
+            if session.session is None:
+                raise RuntimeError("session is not initialized")
             main_provider = plane.provider
             fast_provider = plane.fast_provider
             catalog = plane.catalog
@@ -245,7 +227,6 @@ class ExecutionPlaneManager:
             instructions = plane.instructions
             plugin_agents = plane.plugin_agents
             mcp = plane.mcp
-            execution_router = plane.execution_router
             config_path = self._config_path
             store = None
             memory_context = None
@@ -264,9 +245,7 @@ class ExecutionPlaneManager:
                     store,
                     MemoryReconciler(
                         fast_provider,
-                        global_prompt=prompts.global_memory,
                         workspace_prompt=prompts.workspace_memory,
-                        global_max_tokens=agent_config.memory.global_max_tokens,
                         workspace_max_tokens=agent_config.memory.workspace_max_tokens,
                         on_auxiliary_call=partial(
                             owner.auxiliary_model_completed, model=fast_provider.model_name,
@@ -295,7 +274,6 @@ class ExecutionPlaneManager:
                 catalog,
                 config_path,
                 workspace,
-                session.permissions,
                 prompts.subagent,
                 prompts.consolidator,
                 instructions,
@@ -307,7 +285,7 @@ class ExecutionPlaneManager:
                 workspace=workspace,
                 session=session.session,
                 sessions_directory=session.sessions_directory,
-                execution_router=execution_router,
+                command_executor=plane.command_executor,
                 vision_input=(
                     "image" in main_provider.capabilities.input_modalities
                 ),
@@ -332,7 +310,6 @@ class ExecutionPlaneManager:
                     "remember",
                 ),
                 context,
-                policy=session.permissions,
             )
             agent = Agent(
                 provider=main_provider,
@@ -399,7 +376,6 @@ class ExecutionPlaneManager:
         catalog,
         config_path: Path,
         workspace: Workspace,
-        permission_controller: PermissionController,
         subagent_prompt_template: str,
         consolidator_prompt: str,
         workspace_instructions: WorkspaceInstructions,
@@ -459,7 +435,6 @@ class ExecutionPlaneManager:
             subagent_prompt_template=subagent_prompt_template,
             consolidator_prompt=consolidator_prompt,
             workspace_instructions=workspace_instructions,
-            tool_policy=permission_controller,
             memory_factory=memory_factory,
         )
 

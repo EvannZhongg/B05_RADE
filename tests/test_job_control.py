@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent_core import (
-    CommandExecutionResult, ExecutionRouter, JobContext, JobControlTool, JobManager, JobResult,
-    JsonlSessionStore, ListDirectoryTool, Session, ShellTool, ToolCall, ToolExecutionContext,
+    CommandExecutionResult, JobContext, JobControlTool, JobManager, JobResult,
+    JsonlSessionStore, ListDirectoryTool, Session, ShellTool, ToolExecutionContext,
     ToolResultNormalizer, Workspace, builtin_catalog,
 )
 
@@ -203,10 +203,8 @@ class JobControlTest(unittest.TestCase):
                         self.context.workspace, self.session.session_id,
                         sessions_directory=Path(directory),
                     ))
-                    router = ExecutionRouter(Executor(), Executor())
                     arguments = {"command": "command", "background": True, "timeout_seconds": 1}
-                    call = ToolCall("shell-call", "shell", arguments)
-                    context = replace(self.context, execution=router.resolve(call))
+                    context = replace(self.context, command_executor=Executor())
                     handle = ShellTool().execute(arguments, context)
                     self.jobs.wait_for_turn("turn")
                     snapshot = self.call("get", handle["job_id"])["job"]
@@ -226,8 +224,7 @@ class JobControlTest(unittest.TestCase):
                 return CommandExecutionResult(command, 0, "done", "")
 
         arguments = {"command": "pwd"}
-        router = ExecutionRouter(Executor(), Executor())
-        context = replace(self.context, execution=router.resolve(ToolCall("call", "shell", arguments)))
+        context = replace(self.context, command_executor=Executor())
         result = ShellTool().execute(arguments, context)
         self.assertEqual(result["stdout"], "done")
         self.assertEqual(self.session.jobs, {})

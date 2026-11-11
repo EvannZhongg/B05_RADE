@@ -1,15 +1,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { ApprovalKind, BackgroundJob, PlanSnapshot } from "@rade/protocol";
+import type { BackgroundJob, PlanSnapshot } from "@rade/protocol";
 
 export type { BackgroundJob } from "@rade/protocol/internal";
-
-export type Approval = {
-  requestId: string;
-  command: string;
-  kind?: ApprovalKind;
-  server?: string;
-  toolName?: string;
-};
 
 export type RuntimeIndicator = "plan" | "jobs";
 

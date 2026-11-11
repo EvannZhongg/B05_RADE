@@ -138,7 +138,6 @@ class SubagentRuntime:
             plan=None,
             memory=memory,
             cancellation=cancellation,
-            execution=None,
             agent_role=role.name,
             parent_session_id=parent.session.session_id,
             artifact_directory=child_session_directory,

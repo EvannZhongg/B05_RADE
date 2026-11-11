@@ -18,7 +18,6 @@ PROMPT_FILENAMES = (
     "Soul.md",
     "SubAgent.md",
     "Consolidator.md",
-    "GlobalMemory.md",
     "WorkspaceMemory.md",
     "SessionTitle.md",
 )
@@ -40,7 +39,6 @@ class PromptTemplates:
     system: str
     subagent: str
     consolidator: str
-    global_memory: str
     workspace_memory: str
     session_title: str
 
@@ -70,10 +68,7 @@ def load_scratch_workspace_root(path: Path) -> Path:
 
 
 def memory_store(directory: Path) -> MemoryStore:
-    return MemoryStore(
-        directory / "MEMORY.md",
-        directory / "sessions",
-    )
+    return MemoryStore(directory / "sessions")
 
 
 def configured_skill_sources(
@@ -130,8 +125,6 @@ def initialize_config_directory(directory: Path) -> tuple[Path, ...]:
         instructions_path.touch()
         created.append(instructions_path)
 
-    created.extend(memory_store(directory).initialize())
-
     prompts_directory = directory / "prompts"
     prompts_directory.mkdir(exist_ok=True)
     packaged_prompts = defaults.joinpath("prompts_template")
@@ -187,9 +180,6 @@ def load_prompt_templates(directory: Path) -> PromptTemplates:
         subagent=(directory / "SubAgent.md").read_text(encoding="utf-8").strip(),
         consolidator=(
             (directory / "Consolidator.md").read_text(encoding="utf-8").strip()
-        ),
-        global_memory=(
-            (directory / "GlobalMemory.md").read_text(encoding="utf-8").strip()
         ),
         workspace_memory=(
             (directory / "WorkspaceMemory.md").read_text(encoding="utf-8").strip()

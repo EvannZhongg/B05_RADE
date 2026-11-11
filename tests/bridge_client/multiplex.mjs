@@ -63,17 +63,13 @@ try {
   open('one');
   open('two');
   await Promise.all([until('one', 'runtime_state'), until('two', 'runtime_state')]);
-  client.send({ type: 'permission_set', preset: 'full_access' }, 'one');
-  await until('one', 'permission_changed');
   client.send({ type: 'user_turn', turn_id: 'same', text: 'blocked' }, 'one');
   assert.equal((await until('one', 'assistant_delta')).text, 'waiting');
   client.send({ type: 'user_turn', turn_id: 'same', text: 'second' }, 'two');
   const second = await until('two', 'turn_completed');
-  assert.equal(second.runtime.permission_preset, 'ask_for_approval');
   assert.ok(second.transcript.items.some(item => item.content === 'reply:second'));
   client.cancel('same', 'one');
   const cancelled = await until('one', 'turn_cancelled');
-  assert.equal(cancelled.runtime.permission_preset, 'full_access');
   client.send({ type: 'session_snapshot' }, 'one');
   const original = await until('one', 'session_ready');
   const snapshot = await until('one', 'runtime_state');
@@ -92,7 +88,6 @@ try {
   }
   open('one');
   const reopened = await until('one', 'session_ready');
-  assert.equal(reopened.permission_preset, 'full_access');
   assert.ok(reopened.transcript.items.some(item => item.role === 'user' && item.content === 'blocked'));
   assert.equal((await until('one', 'runtime_state')).phase, 'inactive');
   assert.equal((await client.shutdown()).code, 0);

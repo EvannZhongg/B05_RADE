@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export type JSONValue =
   | string
@@ -41,7 +41,6 @@ export type ProtocolError = {
   details?: { readonly [key: string]: JSONValue };
 };
 
-export type ApprovalKind = 'shell' | 'file' | 'mcp';
 
 export type RuntimeFailure = ProtocolError & {
   details: { readonly [key: string]: JSONValue };
@@ -93,21 +92,18 @@ export type PlanSnapshot = {
   steps: PlanStep[];
 };
 
-export type PermissionPreset = 'ask_for_approval' | 'workspace_access' | 'full_access';
 
 export type RuntimePhase =
   | 'inactive'
   | 'starting'
   | 'idle'
   | 'running'
-  | 'waiting_approval'
   | 'waiting_user'
   | 'failed';
 
 export function runtimeIsActive(phase: RuntimePhase): boolean {
   return phase === 'starting'
     || phase === 'running'
-    || phase === 'waiting_approval'
     || phase === 'waiting_user';
 }
 
@@ -173,21 +169,11 @@ export type RuntimeState = {
   phase: RuntimePhase;
   turn_id: string | null;
   provider: string | null;
-  permission_preset: PermissionPreset;
   context_window: ContextWindow | null;
   cache_usage: CacheUsage | null;
   event_sequence?: number;
   workspace?: string;
   jobs: BackgroundJob[];
-  approval: {
-    type: 'approval_request';
-    turn_id: string | null;
-    request_id: string;
-    command: string;
-    kind?: ApprovalKind;
-    server?: string | null;
-    tool_name?: string | null;
-  } | null;
   question: UserQuestion | null;
   runtime_warnings?: string[];
   plan: PlanSnapshot | null;
@@ -199,10 +185,8 @@ export function initialRuntimeState(): RuntimeState {
     type: 'runtime_state',
     phase: 'inactive',
     turn_id: null,
-    approval: null,
     question: null,
     provider: null,
-    permission_preset: 'ask_for_approval',
     context_window: null,
     cache_usage: null,
     jobs: [],
@@ -227,7 +211,6 @@ export type Incoming = (
       model: string;
       resumed: boolean;
       message_count: number;
-      permission_preset: PermissionPreset;
     }
   | { type: 'assistant_delta'; turn_id: string; text: string; model_call_index: number }
   | { type: 'reasoning_delta'; turn_id: string; text: string; model_call_index: number }
@@ -284,16 +267,6 @@ export type Incoming = (
       text: string;
       timestamp_utc: string;
     }
-  | {
-      type: 'approval_request';
-      turn_id: string | null;
-      request_id: string;
-      command: string;
-      kind?: ApprovalKind;
-      server?: string | null;
-      tool_name?: string | null;
-    }
-  | { type: 'permission_changed'; preset: PermissionPreset }
   | { type: 'provider_changed'; provider: string; model: string }
   | { type: 'workspace_changed'; workspace: string }
   | { type: 'runtime_refreshed'; provider: string; model: string }
@@ -328,8 +301,6 @@ export type Outgoing =
     }
   | { type: 'user_turn'; turn_id: string; text: string; attachments?: UserAttachment[] }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
-  | { type: 'approval_response'; request_id: string; approved: boolean }
-  | { type: 'permission_set'; preset: PermissionPreset }
   | { type: 'provider_set'; provider: string }
   | { type: 'workspace_set'; workspace: string }
   | { type: 'runtime_refresh' }

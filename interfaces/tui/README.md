@@ -25,7 +25,7 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 - assistant 文本与 reasoning 流
 - Tool 调用、结果和错误
 - Context Window 占用、token 用量、缓存命中率、计划及后台 Job
-- Provider、权限和 Runtime phase
+- Provider 和 Runtime phase
 - 授权请求与结构化用户提问
 - 历史 Session 列表和恢复结果
 
@@ -33,7 +33,6 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 
 | 命令 | 作用 |
 | --- | --- |
-| `/permissions` | 切换当前 Session 的权限 preset |
 | `/sessions` | 列出并切换当前 Workspace 的历史 Session |
 | `/workspaces` | 列出有历史会话的 Workspace，选择后在目标工作区新建 Session，可直接开始对话 |
 | `/model` | 切换当前 Session 的 Provider |

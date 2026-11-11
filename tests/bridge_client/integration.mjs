@@ -36,12 +36,6 @@ function handleMessage(message) {
     stage = 'complete';
     client.send({ type: 'user_turn', turn_id: 'complete', text: 'External 中文 client' }, 'main');
   }
-  if (message.type === 'approval_request') {
-    assert.equal(message.turn_id, 'complete');
-    assert.equal(message.kind, 'shell');
-    client.send({ type: 'approval_response', request_id: 'stale', approved: true }, 'main');
-    client.send({ type: 'approval_response', request_id: message.request_id, approved: false }, 'main');
-  }
   if (message.type === 'user_question') {
     if (stage === 'complete') {
       client.send({ type: 'user_steer', turn_id: 'complete', steer_id: 'steer-1', text: 'Use this answer' }, 'main');
@@ -95,11 +89,10 @@ clearTimeout(timeout);
 assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
 assert.deepEqual(problems, []);
 assert.equal(result.code, 0);
-assert.equal(messages.filter(message => message.type === 'approval_request').length, 1);
 assert.equal(messages.filter(message => message.type === 'user_question').length, 2);
 assert.equal(messages.filter(message => message.type === 'model_completed').length, 4);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));
-assert.ok(messages.some(message => message.type === 'tool_result' && message.name === 'shell' && !message.ok));
+assert.ok(messages.some(message => message.type === 'tool_result' && message.name === 'shell' && message.ok));
 for (let i = 0; i < messages.length; i++) assert.equal(messages[i].event_sequence, i + 1);
 for (const message of messages) {
   if (message.transcript) assert.equal(message.transcript.event_sequence, message.event_sequence);

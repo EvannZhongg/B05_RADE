@@ -89,16 +89,6 @@ class CommandCancelled(AgentCancelled):
     """The Runtime cancelled a running command and its process group."""
 
 
-class RunningProcess(Protocol):
-    pid: int
-    returncode: int | None
-
-    def poll(self) -> int | None: ...
-
-    def wait(self, timeout: float | None = None) -> int: ...
-
-
-ProcessLauncher = Callable[..., RunningProcess]
 ShellLauncher = Callable[[str, Path], list[str]]
 
 
@@ -110,9 +100,6 @@ def _execute_process(
     timeout_seconds: int,
     cancellation: CancellationSignal | None,
     environment: dict[str, str] | None = None,
-    spool_directory: Path | None = None,
-    reports_sandbox_entry_failure: bool = False,
-    process_launcher: ProcessLauncher | None = None,
     stdin: bytes | None = None,
 ) -> CommandExecutionResult:
     if cancellation is not None and cancellation.cancelled:
@@ -135,7 +122,6 @@ def _execute_process(
         stdout_file = tempfile.NamedTemporaryFile(
             prefix=SPOOL_FILE_PREFIX,
             suffix="-stdout",
-            dir=spool_directory,
             delete=False,
         )
         stdout_path = Path(stdout_file.name)
@@ -143,7 +129,6 @@ def _execute_process(
         stderr_file = tempfile.NamedTemporaryFile(
             prefix=SPOOL_FILE_PREFIX,
             suffix="-stderr",
-            dir=spool_directory,
             delete=False,
         )
         stderr_path = Path(stderr_file.name)
@@ -167,26 +152,16 @@ def _execute_process(
             input_file = tempfile.TemporaryFile()
             input_file.write(stdin)
             input_file.seek(0)
-        if process_launcher is None:
-            process = subprocess.Popen(
-                argv,
-                cwd=working_directory,
-                env=environment,
-                # Commands must never read the stream the UI protocol uses.
-                stdin=input_file if input_file is not None else subprocess.DEVNULL,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                start_new_session=True,
-            )
-        else:
-            process = process_launcher(
-                argv,
-                cwd=working_directory,
-                environment=environment,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                stdin=input_file,
-            )
+        process = subprocess.Popen(
+            argv,
+            cwd=working_directory,
+            env=environment,
+            # Commands must never read the stream the UI protocol uses.
+            stdin=input_file if input_file is not None else subprocess.DEVNULL,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            start_new_session=True,
+        )
         deadline = time.monotonic() + timeout_seconds
         while process.poll() is None:
             if cancellation is not None and cancellation.cancelled:
@@ -229,14 +204,6 @@ def _execute_process(
         _unlink_best_effort(stdout_path)
     if stderr_spool is None:
         _unlink_best_effort(stderr_path)
-    if (
-        reports_sandbox_entry_failure
-        and process.returncode == 71
-        and "sandbox_apply: Operation not permitted" in stderr
-    ):
-        raise RuntimeError(
-            "workspace sandbox could not be entered: Operation not permitted"
-        )
     return CommandExecutionResult(
         command=command,
         exit_code=process.returncode,
@@ -247,10 +214,6 @@ def _execute_process(
         stdout_spool=stdout_spool,
         stderr_spool=stderr_spool,
     )
-
-
-def command_argv(command: str | tuple[str, ...], working_directory: Path) -> list[str]:
-    return list(command) if isinstance(command, tuple) else platform_shell_launcher(command, working_directory)
 
 
 def command_display(command: str | tuple[str, ...]) -> str:
@@ -306,17 +269,8 @@ def _powershell_7() -> str:
     raise RuntimeError("Windows shell requires PowerShell 7 (pwsh.exe)")
 
 
-def _kill_process_tree(process: RunningProcess) -> None:
-    """Kill a command tree using its native lifecycle container when present."""
-    terminate_tree = getattr(process, "terminate_tree", None)
-    if callable(terminate_tree):
-        try:
-            terminate_tree()
-            return
-        except OSError:
-            # A process may have exited and released its job between polling
-            # and cancellation.  Keep the platform fallback for that race.
-            pass
+def _kill_process_tree(process: subprocess.Popen[bytes]) -> None:
+    """Terminate the command and its descendants."""
     if os.name == "nt":
         subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(process.pid)],

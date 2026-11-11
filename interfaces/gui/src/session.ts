@@ -16,7 +16,7 @@ export type SessionSocketOptions = {
 
 /** What the browser may send: relayed bridge messages plus 'cancel'. */
 type Sendable =
-  Extract<Outgoing, { type: "user_turn" | "user_steer" | "approval_response" | "permission_set" | "provider_set" | "workspace_set" | "runtime_refresh" | "user_question_response" | "cancel" }>;
+  Extract<Outgoing, { type: "user_turn" | "user_steer" | "provider_set" | "workspace_set" | "runtime_refresh" | "user_question_response" | "cancel" }>;
 type UserTurn = Extract<Sendable, { type: "user_turn" }>;
 type QueuedCommand = {
   message: Sendable;

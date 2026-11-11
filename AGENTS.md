@@ -19,11 +19,11 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 `agent_runtime` 是共享的应用 Runtime；Bridge 以 `python -m interfaces.bridge` 作为独立进程运行，由前端宿主启动，是前端与 Runtime 之间的唯一通道，两端用 newline-delimited JSON 交换协议消息。
 
 * 依赖方向单向：`interfaces/* → agent_runtime → agent_core`；`agent_core` 不得 import `interfaces` 或 `agent_runtime`，`agent_runtime` 不得 import `interfaces`。
-* 驱动 Agent、执行 Tool、发起审批只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变 Workspace 或 Session 的 Tool。
+* 驱动 Agent、执行 Tool只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变 Workspace 或 Session 的 Tool。
 * 前端对 Core 的复用仅限只读能力（如 Session 读取、Workspace 路径解析、只读 Tool 的文件列举）；执行语义不得在前端复制。
 * TUI 与 GUI 共享 Agent Runtime。GUI 宿主通过 `interfaces/session_host.py` 管理 Bridge 进程、活动 Session 和页面附着。
 * `RADE-server`（`interfaces/application_host.py`）在初始化配置前取得配置目录级进程锁，负责启动 Bridge 和 HTTP，并在退出时关闭两者。单实例判断使用该锁。
-* 授权、取消、Session 与 Tool 执行语义只实现一次，不得由两个前端各维护一套。
+* 取消、Session 与 Tool 执行语义只实现一次，不得由两个前端各维护一套。
 * 保持清晰的依赖方向，避免模块间循环依赖。
 
 ## 3. Agent Core 与 Bridge
@@ -41,7 +41,7 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 * Agent Loop、模型调用、错误处理与终止条件
 * 上下文管理与上下文压缩
 * Tool 调用与结果回灌；超出预算的输出落盘为 Session Artifact
-* Session 状态与 append-only JSONL Journal，含权限 preset、Provider 与当前计划
+* Session 状态与 append-only JSONL Journal，含 Provider 与当前计划
 * 执行事件输出
 * Tool 抽象、Tool Catalog 与调用时依赖注入
 * Shell 进程执行的超时、输出上限与 spool
@@ -65,7 +65,7 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 
 * 选择 Provider，读取 `provider_config.json` 与 `agent_config.json`，并处理配置写入
 * 初始化配置目录、安装内置 Skill 与 Plugin、读取 Prompt 模板与 Workspace Instructions
-* 组装 Tool Catalog、按角色 select、安装 `ToolPolicy`
+* 组装 Tool Catalog、按角色 select、注入宿主命令执行器
 * MCP Server 生命周期
 * 发现 Plugin：把其声明的 Skill、MCP 与 Agent 组件加 namespace 后交给对应子系统
 * 子 Agent 角色注册表
@@ -80,7 +80,7 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 
 ### 3.3 Bridge：协议适配
 
-Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户输入、授权、提问与取消，不持有装配工厂。
+Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户输入、提问与取消，不持有装配工厂。
 
 * 协议消息的增改必须同时更新 `interfaces/protocol/src/protocol.ts` 与发送方：`protocol.py` 定义大部分消息，其余由 `bridge.py` 与 `__main__.py` 内联发出。
 * 允许存在只服务单个前端的协议消息（如 `attach_only`、`takeover`、`attachment_replaced`），但它们只表达呈现与进程附着，不得承载 Agent 语义。
@@ -89,7 +89,7 @@ Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户�
 
 * 所有工具使用统一接口和注册机制。
 * Tool 本身只负责自身能力，不包含 Agent 决策逻辑。
-* Shell、文件修改等高风险能力必须经过权限控制层。
+* Shell 和命令 Hook 使用当前用户的宿主权限执行，文件修改通过内置文件 Tool 的 Workspace 路径规则。
 * 不允许模型绕过 Tool 系统直接执行系统操作。
 * Tool 的输入、输出和错误应使用结构化数据。
 * 输出超出预算的 Tool 由 Runtime 落盘为 Session Artifact，前端不参与截断或存储决策。
@@ -113,7 +113,7 @@ Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户�
 - 新能力优先复用现有 Skill、MCP、Agent 与 Tool 机制。无法满足明确的第三方开发需求时，允许在现有模块边界内增加最小必要的扩展接口。
 - 区分公开扩展契约与内部实现。公开接口应保持明确、精简且稳定；内部接口不因插件需求而默认公开。
 - 对外扩展契约的破坏性变更应明确说明和管理版本；内部重构仍遵循现有简化原则。
-- 第三方工具与组件必须复用现有权限、生命周期和执行约束，不得绕过 Runtime 直接控制 Agent 或 Session。
+- 第三方工具与组件必须复用现有生命周期和执行约束，不得绕过 Runtime 直接控制 Agent 或 Session。
 - 不为假设性的插件需求提前建立通用 Hook 系统、事件总线、依赖注入框架或额外服务。
 
 ## 7. 代码要求

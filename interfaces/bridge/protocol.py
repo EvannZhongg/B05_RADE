@@ -30,15 +30,15 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 
 
 class ProtocolError(ValueError):
     pass
 
 COMMAND_TYPES = frozenset({
-    "open_session", "user_turn", "user_steer", "cancel", "approval_response",
-    "user_question_response", "permission_set", "provider_set", "workspace_set",
+    "open_session", "user_turn", "user_steer", "cancel",
+    "user_question_response", "provider_set", "workspace_set",
     "list_sessions", "list_workspaces", "load_session", "session_snapshot", "settings_get",
     "settings_provider_save", "settings_agent_save", "settings_routing_save",
     "runtime_refresh",
@@ -129,7 +129,6 @@ def session_ready_message(
     model: str,
     resumed: bool,
     message_count: int,
-    permission_preset: str,
 ) -> dict[str, object]:
     return {
         "type": "session_ready",
@@ -140,7 +139,6 @@ def session_ready_message(
         "model": model,
         "resumed": resumed,
         "message_count": message_count,
-        "permission_preset": permission_preset,
     }
 
 
@@ -156,10 +154,8 @@ def runtime_state_message(
     *,
     phase: str,
     turn_id: str | None = None,
-    approval: dict[str, object] | None = None,
     question: dict[str, object] | None = None,
     provider: str | None = None,
-    permission_preset: str = "ask_for_approval",
     context_window: dict[str, object] | None = None,
     cache_usage: dict[str, int] | None = None,
     jobs: list[dict[str, object]] | None = None,
@@ -177,10 +173,8 @@ def runtime_state_message(
         "type": "runtime_state",
         "phase": phase,
         "turn_id": turn_id,
-        "approval": approval,
         "question": question,
         "provider": provider,
-        "permission_preset": permission_preset,
         "context_window": context_window,
         "cache_usage": cache_usage,
         "jobs": jobs if jobs is not None else [],

@@ -6,7 +6,7 @@ import { Prompt, caretPoint, caretPosition } from '../src/input.js';
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const COMMANDS = [
-  { name: '/permissions', description: 'Choose permissions' },
+  { name: '/sessions', description: 'Choose a session' },
   { name: '/model', description: 'Switch model' },
 ];
 
@@ -225,11 +225,11 @@ describe('Prompt command menu', () => {
     await type(stdin, '/');
 
     const frame = lastFrame() ?? '';
-    expect(frame).toContain('❯ /permissions');
-    expect(frame).toContain('Choose permissions');
+    expect(frame).toContain('❯ /sessions');
+    expect(frame).toContain('Choose a session');
     expect(frame).toContain('/model');
 
-    const menuLine = lineContaining(frame, 'Choose permissions');
+    const menuLine = lineContaining(frame, 'Choose a session');
     const ruleLine = frame.split('\n').findIndex((line) => line.includes('─'));
     expect(menuLine).toBeLessThan(ruleLine);
   });
@@ -241,7 +241,7 @@ describe('Prompt command menu', () => {
 
     const frame = lastFrame() ?? '';
     expect(frame).toContain('❯ /model');
-    expect(frame).not.toContain('/permissions');
+    expect(frame).not.toContain('/sessions');
   });
 
   it('wraps the highlight with the arrow keys and runs the highlighted command', async () => {
@@ -252,7 +252,7 @@ describe('Prompt command menu', () => {
     await type(stdin, '\u001B[A'); // up from the first command wraps to the last
     expect(lastFrame()).toContain('❯ /model');
     await type(stdin, '\u001B[B'); // down from the last wraps back
-    expect(lastFrame()).toContain('❯ /permissions');
+    expect(lastFrame()).toContain('❯ /sessions');
     await type(stdin, '\u001B[B');
     expect(lastFrame()).toContain('❯ /model');
 
@@ -267,8 +267,8 @@ describe('Prompt command menu', () => {
     await type(stdin, '\u001B[B');
     expect(lastFrame()).toContain('❯ /model');
 
-    await type(stdin, 'p');
-    expect(lastFrame()).toContain('❯ /permissions');
+    await type(stdin, 's');
+    expect(lastFrame()).toContain('❯ /sessions');
   });
 
   it('closes the menu once the name is followed by an argument', async () => {
@@ -286,7 +286,7 @@ describe('Prompt command menu', () => {
     await wait(40);
     await type(stdin, '/unknown');
 
-    expect(lastFrame()).not.toContain('/permissions');
+    expect(lastFrame()).not.toContain('/sessions');
     await type(stdin, '\r');
     expect(submits).toEqual(['/unknown']);
   });
@@ -297,6 +297,6 @@ describe('Prompt command menu', () => {
     );
     await wait(60);
 
-    expect(lastFrame()).not.toContain('/permissions');
+    expect(lastFrame()).not.toContain('/sessions');
   });
 });

@@ -12,7 +12,7 @@ from .llm import (
     AuxiliaryModelCall, LLMProvider, LLMRequest, LLMResponse,
     with_generation_limit,
 )
-from .memory import MemoryContext
+from .memory import MemoryDocument
 from .plan import plan_snapshot_to_dict
 from .projection import ContextUnit, project_context_units
 from .session import Message, Session, UserAnchor
@@ -86,7 +86,7 @@ class ContextManager:
         consolidator_prompt: str,
         config: AgentConfig,
         media_root: Path | None = None,
-        memory_context: MemoryContext | None = None,
+        memory_context: MemoryDocument | None = None,
         jobs: "JobManager | None" = None,
     ) -> None:
         self._provider = provider

@@ -142,11 +142,6 @@ class ToolSet:
             context = self._context
             if turn_control is not None:
                 context = replace(context, cancellation=turn_control)
-            if context.execution_router is not None:
-                context = replace(
-                    context,
-                    execution=context.execution_router.resolve(call),
-                )
             if self._policy is not None:
                 self._policy.authorize(call, context)
             if cancellation is not None and cancellation.cancelled:

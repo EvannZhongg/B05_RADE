@@ -3,7 +3,7 @@
 A small Node.js (22+) ESM client for the [public stdio Bridge API](../../docs/bridge-protocol.md).
 It reuses the TUI's process transport and `@rade/protocol` framing. It owns the
 child process, dispatches messages in wire order and keeps bounded stderr
-diagnostics. It holds no Runtime, Session, transcript or permission state.
+diagnostics. It holds no Runtime, Session or transcript state.
 
 Install `rade-agent` in a Python environment to obtain `RADE-bridge`. Install
 `@rade/client` and `@rade/protocol` package artifacts in the Node application.
@@ -21,7 +21,7 @@ npm install /path/to/rade-protocol-0.1.0.tgz /path/to/rade-client-0.1.0.tgz
 
 Run [`examples/chat.mjs`](examples/chat.mjs) with a workspace and prompt. The example
 uses the installed command on PATH, checks the advertised protocol major, waits
-for the initial Runtime snapshot, denies Tool approval and cancels unanswered
+for the initial Runtime snapshot and cancels unanswered
 questions. Real frontends should display those interactions and send the user's
 answer. Model turns require configured provider credentials.
 

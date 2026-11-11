@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "hooks": {
     "InputSubmitted": [
       {
@@ -9,7 +9,6 @@
           "-B",
           "${PLUGIN_ROOT}/hooks/run.py"
         ],
-        "scope": "workspace",
         "timeout_seconds": 10
       }
     ],
@@ -21,7 +20,6 @@
           "-B",
           "${PLUGIN_ROOT}/hooks/run.py"
         ],
-        "scope": "workspace",
         "timeout_seconds": 10
       }
     ],
@@ -33,7 +31,6 @@
           "-B",
           "${PLUGIN_ROOT}/hooks/run.py"
         ],
-        "scope": "workspace",
         "timeout_seconds": 10
       }
     ],
@@ -45,7 +42,6 @@
           "-B",
           "${PLUGIN_ROOT}/hooks/run.py"
         ],
-        "scope": "workspace",
         "timeout_seconds": 10
       }
     ]

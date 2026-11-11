@@ -11,7 +11,6 @@ from typing import BinaryIO, Callable, Iterable, Iterator, TextIO
 from .atomic import atomic_write_text
 from .content import text_content
 from .file_lock import acquire_file_lock
-from .permissions import PermissionPreset
 from .session import JournalEvent, JournalSink, Session, message_from_dict
 from .session_title import initial_session_title
 from .session_paths import (
@@ -288,13 +287,10 @@ class JsonlSessionStore:
         recover: bool,
     ) -> Session:
         path = self._session_path(session_id, workspace)
-        current = self._find_session_directory(session_id)
         session = Session(
             session_id=session_id,
             workspace=self._workspace_for_unlocked(session_id),
         )
-        if current is not None:
-            session.permission_preset = _permission_preset(current)
         if path is None or not path.is_file():
             return session
         with path.open(encoding="utf-8") as file:
@@ -340,27 +336,6 @@ class JsonlSessionStore:
         if current is None:
             return None
         return workspace_from_key(current.parent.name)
-
-    def permission_preset_for(self, session_id: str) -> PermissionPreset:
-        """Read the current permission projection without opening the journal."""
-        with self._locked_session(session_id):
-            directory = self._find_session_directory(session_id)
-            if directory is None:
-                return PermissionPreset.ASK_FOR_APPROVAL
-            return _permission_preset(directory)
-
-    def set_permission_preset(
-        self,
-        session_id: str,
-        preset: PermissionPreset,
-        workspace: Path | str,
-    ) -> None:
-        with self._locked_session(session_id):
-            directory = session_directory(self._directory, workspace, session_id)
-            directory.mkdir(parents=True, exist_ok=True)
-            metadata = _session_metadata(directory)
-            metadata["permission_preset"] = preset.value
-            _write_session_metadata(directory, metadata)
 
     def provider_for(self, session_id: str) -> str | None:
         _validate_session_id(session_id)
@@ -678,15 +653,6 @@ def _session_metadata(directory: Path) -> dict[str, object]:
     return data
 
 
-def _permission_preset(directory: Path) -> PermissionPreset:
-    value = _session_metadata(directory).get("permission_preset")
-    return (
-        PermissionPreset(str(value))
-        if value is not None
-        else PermissionPreset.ASK_FOR_APPROVAL
-    )
-
-
 def _write_session_metadata(
     directory: Path,
     metadata: dict[str, object],
@@ -707,12 +673,7 @@ def _update_session_metadata(
     metadata = _session_metadata(directory)
     changed = False
     for event in events:
-        if event.event_type == "permission_preset_changed":
-            metadata["permission_preset"] = PermissionPreset(str(event.payload["preset"])).value
-            changed = True
-        if not metadata["has_activity"] and event.event_type not in {
-            "permission_preset_changed", "plan_updated",
-        }:
+        if not metadata["has_activity"] and event.event_type != "plan_updated":
             metadata["has_activity"] = True
             changed = True
         message = event.payload.get("message")

@@ -1,7 +1,6 @@
 import json
 import threading
 import unittest
-from dataclasses import replace
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -11,7 +10,6 @@ from agent_core import (
     AgentConfig,
     CommandExecutionResult,
     CommandCancelled,
-    ExecutionRouter,
     JobManager,
     LLMProvider,
     LLMRequest,
@@ -211,7 +209,7 @@ class BackgroundJobTest(unittest.TestCase):
                 executor = Executor()
                 context = ToolExecutionContext(
                     workspace=Workspace(Path(__file__).parent), session=session,
-                    execution_router=ExecutionRouter(executor, executor),
+                    command_executor=executor,
                 )
                 agent = Agent(provider, session, "system", CONSOLIDATOR_PROMPT, CONFIG,
                               ToolCatalog((ConcurrentShell(),)).select(("shell",), context), context)
@@ -266,7 +264,7 @@ class BackgroundJobTest(unittest.TestCase):
         context = ToolExecutionContext(
             workspace=Workspace(Path(__file__).parent),
             session=session,
-            execution_router=ExecutionRouter(executor, executor),
+            command_executor=executor,
             jobs=jobs,
         )
         tools = ToolCatalog((ShellTool(),)).select(("shell",), context)
@@ -334,9 +332,7 @@ class BackgroundJobTest(unittest.TestCase):
         context = ToolExecutionContext(
             workspace=Workspace(Path(__file__).parent),
             session=session,
-            execution_router=ExecutionRouter(
-                ImmediateExecutor(), ImmediateExecutor()
-            ),
+            command_executor=ImmediateExecutor(),
             jobs=jobs,
         )
         tool = ShellTool()
@@ -345,11 +341,7 @@ class BackgroundJobTest(unittest.TestCase):
             "background": True,
             "timeout_seconds": 86400,
         }
-        call = ToolCall("call-1", "shell", arguments)
-        result = tool.execute(
-            arguments,
-            replace(context, execution=context.execution_router.resolve(call)),
-        )
+        result = tool.execute(arguments, context)
         jobs.wait_for_turn("turn-1")
 
         self.assertIn("background", tool.definition(context).parameters["properties"])
@@ -436,7 +428,7 @@ class BackgroundJobTest(unittest.TestCase):
         context = ToolExecutionContext(
             workspace=Workspace(Path(__file__).parent),
             session=session,
-            execution_router=ExecutionRouter(executor, executor),
+            command_executor=executor,
             jobs=jobs,
         )
         agent = Agent(

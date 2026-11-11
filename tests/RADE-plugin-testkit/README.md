@@ -7,7 +7,7 @@
 
 - `code-review` Skill → `reviewer` Agent → `analyzer` MCP：检查 Python 的 `eval` 和裸 `except`。
 - `writing-rules` Skill 与 `conversation-analyzer` Agent：编写 Hookify 项目规则。
-- `hooks/hooks.json`：声明 InputSubmitted、PreToolUse、PostToolUse、Stop 四类命令 Hook，使用 Workspace scope。
+- `hooks/hooks.json`：声明 InputSubmitted、PreToolUse、PostToolUse、Stop 四类命令 Hook，命令以宿主权限执行。
 
 组件统一使用 `repo-review-kit:` 命名空间。Hookify 规则引擎仅依赖 Python 标准库，原始授权见 `LICENSE`。
 
@@ -35,7 +35,7 @@
 python -m unittest discover -s tests/RADE-plugin-testkit/tests -v
 ```
 
-覆盖 Hook 命令与规则、MCP 发现与错误、Skill → Agent → MCP → Hook 协同、审批、组件禁用与隔离、
+覆盖 Hook 命令与规则、MCP 发现与错误、Skill → Agent → MCP → Hook 协同、组件禁用与隔离、
 输入拒绝、文件写入拦截、规则更新、结果反馈和 Stop 纠正。
 Bridge 测试仅经公开 NDJSON 与本地 HTTP Mock Provider 驱动，不使用外部 API 或真实密钥。
 每例使用临时配置和 Workspace，不改动本机配置。

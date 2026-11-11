@@ -13,7 +13,6 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
   expect(next.runtime_warnings).toEqual([]);
   expect(initialState).toMatchObject({
     status: 'opening',
-    permissionPreset: next.permission_preset,
     turnId: next.turn_id,
     cacheUsage: next.cache_usage,
     contextWindow: next.context_window,
@@ -23,14 +22,13 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 4 as const,
+  protocol_version: 5 as const,
   session_id: 'abc12345-0000',
   workspace: '/tmp/work',
   provider: 'deepseek',
   model: 'deepseek/deepseek-chat',
   resumed: false,
   message_count: 0,
-  permission_preset: 'ask_for_approval' as const,
 };
 
 const RUNTIME_READY = {
@@ -38,8 +36,6 @@ const RUNTIME_READY = {
   phase: 'idle' as const,
   turn_id: null,
   provider: 'deepseek',
-  permission_preset: 'ask_for_approval' as const,
-  approval: null,
   question: null,
   jobs: [],
   context_window: {
@@ -143,33 +139,6 @@ describe('MessageDecoder', () => {
   it('throws on malformed json', () => {
     const decoder = new MessageDecoder();
     expect(() => decoder.push('not json\n')).toThrow();
-  });
-});
-
-describe('permissions', () => {
-  it('restores the preset from session readiness and records later changes', () => {
-    let state = ready();
-    expect(state.permissionPreset).toBe('ask_for_approval');
-
-    state = reducer(state, {
-      type: 'message',
-      message: { type: 'permission_changed', preset: 'full_access' },
-    });
-
-    expect(state.permissionPreset).toBe('full_access');
-    expect(state.entries.at(-1)).toMatchObject({
-      kind: 'notice',
-      text: 'Permissions changed to Full Access.',
-    });
-
-    state = reducer(state, {
-      type: 'message',
-      message: { type: 'permission_changed', preset: 'workspace_access' },
-    });
-    expect(state.permissionPreset).toBe('workspace_access');
-    expect(state.entries.at(-1)).toMatchObject({
-      text: 'Permissions changed to Workspace Access.',
-    });
   });
 });
 
@@ -377,32 +346,6 @@ describe('reducer', () => {
     const tools = state.entries.filter((entry) => entry.kind === 'tool');
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({ state: 'error' });
-  });
-
-  it('tracks an approval request and clears it once answered', () => {
-    let state = ready();
-    state = reducer(state, {
-      type: 'message',
-      message: {
-        type: 'approval_request',
-        turn_id: 't1',
-        request_id: 't1:1',
-        command: 'rm -rf build',
-      },
-    });
-    expect(state.status).toBe('awaiting_approval');
-    expect(state.approval).toEqual({
-      requestId: 't1:1',
-      command: 'rm -rf build',
-      choice: 'allow',
-    });
-
-    state = reducer(state, { type: 'approval_choice', choice: 'deny' });
-    expect(state.approval?.choice).toBe('deny');
-
-    state = reducer(state, { type: 'approval_resolved' });
-    expect(state.approval).toBeNull();
-    expect(state.status).toBe('running');
   });
 
 

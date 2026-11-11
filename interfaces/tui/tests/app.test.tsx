@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
 import { render } from 'ink-testing-library';
-import type { ApprovalKind, Incoming } from '@rade/protocol/internal';
+import type { Incoming } from '@rade/protocol/internal';
 
 const sent: any[] = [];
 let emit: (message: Incoming, channelId?: string) => void = () => {};
@@ -37,24 +37,21 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 4,
+              type: 'session_ready', protocol_version: 5,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               workspace: message.workspace,
               provider: 'test',
               model: 'test/model',
               resumed: false,
               message_count: 0,
-              permission_preset: 'ask_for_approval',
             }, channelId);
             emit({
               type: 'runtime_state', cache_usage: null,
               phase: 'inactive',
               turn_id: null,
               provider: 'test',
-              permission_preset: 'ask_for_approval',
               context_window: null,
               jobs: [],
-              approval: null,
               question: null,
               plan: null,
             }, channelId);
@@ -86,7 +83,7 @@ type Frame = () => string | undefined;
  * Polls an assertion instead of sleeping for a fixed delay, so the suite does
  * not race Ink when the machine is busy. The condition must also survive one
  * event-loop turn before we return: Ink detaches its stdin listener while focus
- * hands over to the approval prompt and only re-attaches it in a passive
+ * hands over to the question prompt and only re-attaches it in a passive
  * effect, so a frame can look right slightly before keys are accepted.
  */
 async function waitFor(assertion: () => void, timeout = 1500): Promise<void> {
@@ -118,7 +115,6 @@ function renderApp() {
 const waitForReady = (lastFrame: Frame) =>
   waitFor(() => expect(lastFrame()).toContain('test/model'));
 
-const approvalResponse = () => sent.find((m) => m.type === 'approval_response');
 const questionResponse = () => sent.find((m) => m.type === 'user_question_response');
 const turns = () => sent.filter((m) => m.type === 'user_turn');
 const steers = () => sent.filter((m) => m.type === 'user_steer');
@@ -132,10 +128,6 @@ async function typeDraft(
   stdin.write(text);
   await waitFor(() => expect(lastFrame()).toContain(text));
 }
-
-const requestApproval = (command: string, kind?: ApprovalKind): void => {
-  emit({ type: 'approval_request', turn_id: 't1', request_id: 't1:1', command, kind });
-};
 
 const requestQuestion = (allowFreeText = true): void => {
   emit({
@@ -301,50 +293,27 @@ describe('App', () => {
     expect(lastFrame()).toContain('wait for sync');
 
     emit({
-      type: 'session_ready', protocol_version: 4,
+      type: 'session_ready', protocol_version: 5,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
       model: 'test/model',
       resumed: false,
       message_count: 0,
-      permission_preset: 'ask_for_approval',
     });
     emit({
       type: 'runtime_state', cache_usage: null,
       phase: 'inactive',
       turn_id: null,
       provider: 'test',
-      permission_preset: 'ask_for_approval',
       context_window: null,
       jobs: [],
-      approval: null,
       question: null,
       plan: null,
     });
     await waitForReady(lastFrame);
     stdin.write('\r');
     await waitFor(() => expect(turns()[0]).toMatchObject({ text: 'wait for sync' }));
-  });
-
-  it('opens /permissions and sends the selected preset', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, '/permissions');
-    stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Ask for approval'));
-
-    stdin.write('\u001b[B');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Workspace Access'));
-    stdin.write('\u001b[B');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Full Access'));
-    stdin.write('\r');
-
-    await waitFor(() => expect(sent).toContainEqual({
-      type: 'permission_set',
-      preset: 'full_access',
-    }));
-    expect(turns()).toHaveLength(0);
   });
 
   it('refreshes the runtime without creating a turn or restarting the bridge', async () => {
@@ -383,7 +352,7 @@ describe('App', () => {
           { id: 'second', model: 'test/second', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
         ],
         routing: { main_agent: 'test', subagent: null, roles: {} },
-        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
     });
@@ -406,7 +375,7 @@ describe('App', () => {
         revision: 'r1', config_directory: '/config', default_provider: 'test',
         providers: [{ id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } }],
         routing: { main_agent: 'test', subagent: null, roles: {} },
-        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, global_max_tokens: 2000, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
     });
@@ -419,17 +388,16 @@ describe('App', () => {
     await waitForReady(lastFrame);
 
     stdin.write('/');
-    await waitFor(() => expect(lastFrame()).toContain('❯ /permissions'));
+    await waitFor(() => expect(lastFrame()).toContain('❯ /sessions'));
 
     const frame = lastFrame() ?? '';
-    const menuLine = lineContaining(frame, '❯ /permissions');
+    const menuLine = lineContaining(frame, '❯ /sessions');
     const ruleLine = frame.split('\n').findIndex((line) => line.includes('─'));
     expect(menuLine).toBeGreaterThanOrEqual(0);
     expect(menuLine).toBeLessThan(ruleLine);
 
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Ask for approval'));
-    // The command opened the permission card instead of becoming a turn.
+    await waitFor(() => expect(sent).toContainEqual(expect.objectContaining({ type: 'list_sessions' })));
     expect(turns()).toHaveLength(0);
   });
 
@@ -547,9 +515,8 @@ describe('App', () => {
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 4, session_id: 'fresh', workspace: '/next',
+      type: 'session_ready', protocol_version: 5, session_id: 'fresh', workspace: '/next',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
-      permission_preset: 'ask_for_approval',
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
     await waitFor(() => expect(lastFrame()).not.toContain('old workspace history'));
@@ -558,8 +525,8 @@ describe('App', () => {
     expect(turns()).toHaveLength(0);
     const snapshot = {
       type: 'runtime_state' as const, phase: 'inactive' as const, turn_id: null,
-      provider: 'test', workspace: '/next', permission_preset: 'ask_for_approval' as const,
-      context_window: null, cache_usage: null, jobs: [], approval: null, question: null, plan: null,
+      provider: 'test', workspace: '/next',
+      context_window: null, cache_usage: null, jobs: [], question: null, plan: null,
     };
     emit(snapshot);
     await waitFor(() => expect(lastFrame()).not.toContain('opening session…'));
@@ -684,8 +651,8 @@ describe('App', () => {
     await waitFor(() => expect(lastFrame()).toContain('original conversation'));
     const snapshot = {
       type: 'runtime_state' as const, phase: 'idle' as const, turn_id: null,
-      provider: 'test', workspace: '/w', permission_preset: 'ask_for_approval' as const,
-      context_window: null, cache_usage: null, jobs: [], approval: null, question: null, plan: null,
+      provider: 'test', workspace: '/w',
+      context_window: null, cache_usage: null, jobs: [], question: null, plan: null,
     };
     autoReady = false;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -795,56 +762,6 @@ describe('App', () => {
     const statusLine = lineContaining(lastFrame(), 'test/model');
     expect(statusLine).toBe(inputLine + 2);
     expect((lastFrame() ?? '').split('\n')[statusLine]).toContain('esc to cancel');
-  });
-
-  it('defaults to allow and confirms with enter', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestApproval('ls -la');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
-
-    stdin.write('\r');
-    await waitFor(() =>
-      expect(approvalResponse()).toMatchObject({ request_id: 't1:1', approved: true }),
-    );
-  });
-
-  it('denies after moving the selection with an arrow key', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestApproval('rm -rf /');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
-
-    stdin.write('\u001b[C'); // right arrow
-    await waitFor(() => expect(lastFrame()).toContain('❯ Deny'));
-
-    stdin.write('\r');
-    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: false }));
-  });
-
-  it('toggles back to allow with the left arrow', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestApproval('ls -la');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
-
-    stdin.write('\u001b[C'); // right arrow
-    await waitFor(() => expect(lastFrame()).toContain('❯ Deny'));
-    stdin.write('\u001b[D'); // left arrow
-    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
-
-    stdin.write('\r');
-    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: true }));
-  });
-
-  it('denies the command when escape is pressed', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestApproval('ls -la');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Allow'));
-
-    stdin.write('\u001b');
-    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: false }));
   });
 
   it('selects and returns a question option', async () => {
@@ -982,10 +899,8 @@ describe('App', () => {
       phase: 'idle',
       turn_id: null,
       provider: 'test',
-      permission_preset: 'ask_for_approval',
       context_window: null,
       jobs: [],
-      approval: null,
       question: null,
       plan: null,
     });
@@ -997,7 +912,7 @@ describe('App', () => {
     });
   });
 
-  it('renders streamed text and the approval prompt', async () => {
+  it('renders streamed text', async () => {
     const { lastFrame } = renderApp();
     await waitForReady(lastFrame);
     emit({
@@ -1008,46 +923,8 @@ describe('App', () => {
     });
     await waitFor(() => expect(lastFrame()).toContain('partial answer'));
 
-    requestApproval('echo hi');
-    await waitFor(() => {
-      expect(lastFrame()).toContain('Shell command requires approval');
-      expect(lastFrame()).toContain('echo hi');
-    });
   });
 
-  it('renders approval above the input and model status', async () => {
-    const { lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-
-    requestApproval('echo hi');
-    await waitFor(() => expect(lastFrame()).toContain('Shell command requires approval'));
-
-    const approvalLine = lineContaining(lastFrame(), 'Shell command requires approval');
-    const inputLine = lineContaining(lastFrame(), 'steer the current turn…');
-    const modelLine = lineContaining(lastFrame(), 'test/model');
-    expect(approvalLine).toBeLessThan(inputLine);
-    expect(modelLine).toBe(inputLine + 2);
-  });
-
-
-  it('labels file approvals and sends the user decision', async () => {
-    const { lastFrame, stdin } = renderApp();
-    await waitForReady(lastFrame);
-
-    requestApproval('*** Update File: notes.txt', 'file');
-    await waitFor(() => expect(lastFrame()).toContain('File change requires approval'));
-    expect(lastFrame()).toContain('*** Update File: notes.txt');
-    stdin.write('\r');
-    await waitFor(() => expect(approvalResponse()).toMatchObject({ approved: true }));
-  });
-
-  it('labels MCP approvals distinctly', async () => {
-    const { lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-
-    requestApproval('mcp__server__tool({})', 'mcp');
-    await waitFor(() => expect(lastFrame()).toContain('MCP tool call requires approval'));
-  });
 
   it('uses one status line before and after startup', async () => {
     autoReady = false;
@@ -1060,24 +937,21 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 4,
+      type: 'session_ready', protocol_version: 5,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
       model: 'test/model',
       resumed: false,
       message_count: 0,
-      permission_preset: 'ask_for_approval',
     });
     emit({
       type: 'runtime_state', cache_usage: null,
       phase: 'inactive',
       turn_id: null,
       provider: 'test',
-      permission_preset: 'ask_for_approval',
       context_window: null,
       jobs: [],
-      approval: null,
       question: null,
       plan: null,
     });

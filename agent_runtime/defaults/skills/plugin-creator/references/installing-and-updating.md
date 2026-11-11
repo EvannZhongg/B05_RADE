@@ -39,7 +39,7 @@ An invalid Agent, MCP or Hook file skips that component. Duplicate Agent, MCP se
 keep the first declaration. If a role's MCP tool is unavailable, check its full tool name, MCP enablement,
 server status and `tools.enabled` allowlist. Other components can still load.
 
-For Hook failures, check stdout JSON, stderr, executable availability, timeout and scope;
+For Hook failures, check stdout JSON, stderr, executable availability, and timeout;
 see [the Hook contract](hooks.md).
 
 ## Disabling and removing
@@ -58,5 +58,5 @@ python3 scripts/validate_plugin.py .RADE/plugins/<plugin-name>
 ```
 
 The validator checks package files and declarations, including disabled packages. Verify MCP
-startup, tool availability, approval and Hook decisions in RADE separately. Confirm that a
+startup, tool availability and Hook decisions in RADE separately. Confirm that a
 pre-tool denial prevents the side effect; post-tool feedback cannot undo an executed operation.

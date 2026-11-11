@@ -1,5 +1,4 @@
 import json
-import subprocess
 import sys
 import tempfile
 import threading
@@ -31,7 +30,6 @@ from agent_core import (
     MemoryCandidate,
     MemoryDocument,
     MemoryStore,
-    PermissionPreset,
     PlanManager,
     PlanSnapshot,
     PlanStep,
@@ -44,10 +42,8 @@ from agent_core import (
     ToolError,
     ToolResult,
     ToolResultEvent,
-    ToolExecutionContext,
     UserSteerAppliedEvent,
     TurnControl,
-    FULL_ACCESS_AUTHORITY,
     Workspace,
 )
 from agent_core.usage import usage_to_dict
@@ -149,8 +145,8 @@ class ProtocolTest(unittest.TestCase):
     def test_initial_runtime_state_contract_and_independent_arrays(self) -> None:
         expected = {
             "type": "runtime_state", "phase": "inactive", "turn_id": None,
-            "approval": None, "question": None, "provider": None,
-            "permission_preset": "ask_for_approval", "context_window": None,
+            "question": None, "provider": None,
+            "context_window": None,
             "cache_usage": None, "jobs": [], "runtime_warnings": [], "plan": None,
         }
         first = inactive_runtime_state()
@@ -419,37 +415,35 @@ class ProtocolTest(unittest.TestCase):
                 model="test/model",
                 resumed=False,
                 message_count=0,
-                permission_preset="ask_for_approval",
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 4,
+                "protocol_version": 5,
                 "session_id": "s1",
                 "workspace": "/tmp/work",
                 "provider": "test",
                 "model": "test/model",
                 "resumed": False,
                 "message_count": 0,
-                "permission_preset": "ask_for_approval",
             },
         )
 
     def test_runtime_state_message_restores_gui_attachment_state(self) -> None:
-        approval = {
-            "type": "approval_request",
+        question = {
+            "type": "user_question",
             "turn_id": "t1",
             "request_id": "t1:1",
-            "command": "ls",
+            "question": "Cache?",
+            "options": [],
+            "allow_free_text": True,
         }
         self.assertEqual(
             runtime_state_message(
                 cache_usage=None,
-                phase="waiting_approval",
+                phase="waiting_user",
                 turn_id="t1",
-                approval=approval,
-                question=None,
+                question=question,
                 provider="second",
-                permission_preset="full_access",
                 context_window={"input_tokens": 120},
                 event_sequence=12,
                 jobs=[{"job_id": "j1", "kind": "shell", "status": "running"}],
@@ -462,12 +456,10 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "runtime_state",
-                "phase": "waiting_approval",
+                "phase": "waiting_user",
                 "turn_id": "t1",
-                "approval": approval,
-                "question": None,
+                "question": question,
                 "provider": "second",
-                "permission_preset": "full_access",
                 "context_window": {"input_tokens": 120},
                 "cache_usage": None,
                 "event_sequence": 12,
@@ -514,7 +506,6 @@ class IsolatedBridgeTest(BridgeTestCase):
         state = emitted(stdout)[-1]
         self.assertEqual(state["phase"], "failed")
         self.assertEqual(state["runtime_warnings"], ["Unavailable"])
-        self.assertEqual(state["permission_preset"], inactive_runtime_state()["permission_preset"])
 
     def test_bridges_own_distinct_configuration(self) -> None:
         first, _ = self.make_bridge([])
@@ -524,166 +515,55 @@ class IsolatedBridgeTest(BridgeTestCase):
             self.assertTrue(bridge.host.config_directory.is_dir())
 
 
-class PermissionProtocolTest(BridgeTestCase):
-    def test_file_writers_use_bridge_approval_and_preserve_denied_files(self) -> None:
+class DirectExecutionTest(BridgeTestCase):
+    def test_file_writers_execute_in_a_new_session(self) -> None:
         from tests.file_write_fixtures import write_call
 
         for name in ("apply_patch", "edit_file", "write_file"):
-            for approved in (True, False):
-                with self.subTest(tool=name, approved=approved):
-                    directory = self.enterContext(tempfile.TemporaryDirectory())
-                    root = Path(directory)
-                    target = root / "file.txt"
-                    target.write_bytes(b"old\n")
-                    bridge, stdout = self.make_bridge([
-                        json.dumps({"type": "approval_response", "request_id": "t1:1", "approved": approved}),
-                    ], root)
-                    bridge.open_session(open_session_message(root, session_id="s", agent_config={
-                        "max_same_tool_calls": 5,
-                        "output_reserve_tokens": 100,
-                        "workspace_instruction_files": [],
-                        "main_agent": {"tools": {name: True}},
-                    }))
-                    bridge.host.turns.turn_id = "t1"
-                    plane = bridge.host.planes.ensure(bridge.host.sessions)
-
-                    result = plane.agent._tools.execute(write_call(name))
-
-                    approval = next(message for message in emitted(stdout) if message["type"] == "approval_request")
-                    self.assertEqual(approval["kind"], "file")
-                    self.assertEqual(approval["tool_name"], name)
-                    self.assertIn(name, approval["command"])
-                    self.assertEqual(result.error is None, approved)
-                    self.assertEqual(target.read_bytes(), b"new\n" if approved else b"old\n")
-
-    def test_bridge_accepts_workspace_access_before_runtime_start(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, stdout = self.make_bridge([], root)
-        bridge.open_session(open_session_message(root, session_id="s"))
-
-        bridge._set_permission_preset(
-            {"type": "permission_set", "preset": "workspace_access"}
-        )
-
-        self.assertIsNone(bridge.host.planes.current)
-        assert bridge.host.sessions.session is not None
-        self.assertEqual(
-            bridge.host.sessions.session.permission_preset,
-            PermissionPreset.WORKSPACE_ACCESS,
-        )
-        self.assertEqual(
-            {key: emitted(stdout)[-1][key] for key in ("type", "preset")},
-            {"type": "permission_changed", "preset": "workspace_access"},
-        )
-
-    def test_bridge_updates_permission_before_runtime_initialization(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, stdout = self.make_bridge([], root)
-        bridge.open_session(open_session_message(root, session_id="s"))
-
-        bridge._set_permission_preset(
-            {"type": "permission_set", "preset": "full_access"}
-        )
-
-        self.assertIsNone(bridge.host.planes.current)
-        assert bridge.host.sessions.session is not None
-        self.assertEqual(
-            bridge.host.sessions.session.permission_preset,
-            PermissionPreset.FULL_ACCESS,
-        )
-        self.assertEqual(
-            JsonlSessionStore(root / "sessions").load("s").permission_preset,
-            PermissionPreset.FULL_ACCESS,
-        )
-        self.assertEqual(
-            bridge.host.sessions.session.journal[-1].event_type,
-            "permission_preset_changed",
-        )
-        self.assertEqual(
-            JsonlSessionStore(root / "sessions").list_sessions(), []
-        )
-        self.assertEqual(
-            {key: emitted(stdout)[-1][key] for key in ("type", "preset")},
-            {"type": "permission_changed", "preset": "full_access"},
-        )
-
-    def test_workspace_access_routes_shell_without_host_approval(self) -> None:
-        # A restricted token cannot traverse an administrator-only temp parent.
-        directory = self.enterContext(tempfile.TemporaryDirectory(
-            dir=Path.home() if sys.platform == "win32" else None,
-        ))
-        root = Path(directory)
-        if sys.platform == "win32":
-            user = "*" + subprocess.run(
-                ["whoami", "/user", "/fo", "csv", "/nh"],
-                capture_output=True, check=True,
-            ).stdout.split(b",")[-1].strip(b'"\r\n ').decode("ascii")
-            subprocess.run(
-                ["icacls", str(root), "/grant", f"{user}:(OI)(CI)F"],
-                capture_output=True, check=True,
-            )
-        bridge, stdout = self.make_bridge([], root)
-        bridge.open_session(
-            open_session_message(
-                root,
-                session_id="s",
-                agent_config={
+            with self.subTest(tool=name):
+                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+                target = root / "file.txt"
+                target.write_bytes(b"old\n")
+                bridge, _ = self.make_bridge([], root)
+                bridge.open_session(open_session_message(root, agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": [
-                        "CLAUDE.md",
-                        "AGENTS.md",
-                    ],
-                    "main_agent": {
-                        "tools": {
-                            name: name == "shell" for name in TOOL_NAMES
-                        }
-                    },
-                },
-            )
-        )
-        bridge._set_permission_preset(
-            {"type": "permission_set", "preset": "workspace_access"}
-        )
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        try:
-            command = (
-                "Set-Content -NoNewline -LiteralPath routed.txt "
-                "-Value workspace"
-                if sys.platform == "win32"
-                else "printf workspace > routed.txt"
-            )
-            result = plane.agent._tools.execute(
-                ToolCall(
-                    "call-workspace",
-                    "shell",
-                    {"command": command},
-                )
-            )
-        finally:
-            bridge.host.planes.close()
+                    "workspace_instruction_files": [],
+                    "main_agent": {"tools": {name: True}},
+                }))
+                plane = bridge.host.planes.ensure(bridge.host.sessions)
 
-        if (
-            result.error is not None
-            and result.error.type == "RuntimeError"
-            and "Operation not permitted" in result.error.message
-        ):
-            self.skipTest("the test runner already forbids nested Seatbelt")
+                result = plane.agent._tools.execute(write_call(name))
+
+                self.assertIsNone(result.error)
+                self.assertEqual(target.read_bytes(), b"new\n")
+
+    def test_shell_uses_the_workspace_as_cwd_and_can_write_outside_it(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        workspace = root / "workspace"
+        workspace.mkdir()
+        bridge, _ = self.make_bridge([], root)
+        bridge.open_session({**open_session_message(root, agent_config={
+            "max_same_tool_calls": 5,
+            "output_reserve_tokens": 100,
+            "workspace_instruction_files": [],
+            "main_agent": {"tools": {"shell": True}},
+        }), "workspace": str(workspace)})
+        plane = bridge.host.planes.ensure(bridge.host.sessions)
+        command = (
+            "Set-Content -NoNewline -LiteralPath ../outside.txt -Value host"
+            if sys.platform == "win32"
+            else "printf host > ../outside.txt"
+        )
+
+        result = plane.agent._tools.execute(ToolCall("host", "shell", {"command": command}))
+
         self.assertIsNone(result.error)
         self.assertEqual(result.output["exit_code"], 0, result.output)
-        self.assertEqual(
-            (root / "routed.txt").read_text(encoding="utf-8"),
-            "workspace",
-        )
-        self.assertFalse(
-            any(
-                message["type"] == "approval_request"
-                for message in emitted(stdout)
-            )
-        )
+        self.assertEqual((root / "outside.txt").read_text(encoding="utf-8"), "host")
 
+
+class BridgeConfigurationTest(BridgeTestCase):
     def test_bridge_changes_session_configuration_without_initializing_runtime(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
@@ -696,9 +576,6 @@ class PermissionProtocolTest(BridgeTestCase):
         bridge._set_workspace(
             {"type": "workspace_set", "workspace": str(next_workspace)}
         )
-        bridge._set_permission_preset(
-            {"type": "permission_set", "preset": "full_access"}
-        )
 
         self.assertIsNone(bridge.host.planes.current)
         self.assertEqual(
@@ -710,17 +587,12 @@ class PermissionProtocolTest(BridgeTestCase):
             next_workspace.resolve(),
         )
         self.assertEqual(
-            JsonlSessionStore(root / "sessions").load("s").permission_preset,
-            PermissionPreset.FULL_ACCESS,
-        )
-        self.assertEqual(
-            [message["type"] for message in emitted(stdout)[-5:]],
+            [message["type"] for message in emitted(stdout)[-4:]],
             [
                 "provider_changed",
                 "runtime_state",
                 "workspace_changed",
                 "runtime_state",
-                "permission_changed",
             ],
         )
 
@@ -742,11 +614,6 @@ class PermissionProtocolTest(BridgeTestCase):
                 "close",
                 wraps=plane.mcp.close,
             ) as close_mcp,
-            patch.object(
-                plane.execution_router,
-                "close",
-                wraps=plane.execution_router.close,
-            ) as close_execution_router,
         ):
             bridge._set_provider(
                 {"type": "provider_set", "provider": "second"}
@@ -755,7 +622,6 @@ class PermissionProtocolTest(BridgeTestCase):
         self.assertIsNone(bridge.host.planes.current)
         close_jobs.assert_called_once_with()
         close_mcp.assert_called_once_with()
-        close_execution_router.assert_called_once_with()
 
     def test_workspace_change_closes_the_execution_plane_once(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -777,11 +643,6 @@ class PermissionProtocolTest(BridgeTestCase):
                 "close",
                 wraps=plane.mcp.close,
             ) as close_mcp,
-            patch.object(
-                plane.execution_router,
-                "close",
-                wraps=plane.execution_router.close,
-            ) as close_execution_router,
         ):
             bridge._set_workspace(
                 {
@@ -793,14 +654,13 @@ class PermissionProtocolTest(BridgeTestCase):
         self.assertIsNone(bridge.host.planes.current)
         close_jobs.assert_called_once_with()
         close_mcp.assert_called_once_with()
-        close_execution_router.assert_called_once_with()
 
 
 class _SlowStdin:
     """A stdin whose readline yields the GIL mid-call.
 
     A real pipe blocks in readline while other threads run, which is what
-    lets two unsynchronized approvals interleave. StringIO returns without
+    lets two unsynchronized questions interleave. StringIO returns without
     ever yielding and would hide the race.
     """
 
@@ -825,7 +685,7 @@ class _BlockingAfterLines:
             return ""
 
 
-class BridgeApprovalTest(BridgeTestCase):
+class BridgeInteractionTest(BridgeTestCase):
     def test_runtime_state_contains_only_the_jobs_that_are_running(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         bridge, stdout = self.make_bridge([], Path(directory))
@@ -845,58 +705,16 @@ class BridgeApprovalTest(BridgeTestCase):
             [{"job_id": "j1", "kind": "shell", "status": "running", "details": {"command": "npm test"}}],
         )
 
-    def test_runtime_state_contains_the_pending_approval(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        bridge, stdout = self.make_bridge(
-            ['{"type": "approval_response", "request_id": "t1:1",'
-             ' "approved": true}'],
-            Path(directory),
-        )
-        bridge.open_session(
-            open_session_message(Path(directory), session_id="s")
-        )
-        bridge.host.turns.turn_id = "t1"
-
-        self.assertTrue(bridge.request_permission("ls"))
-
-        states = [
-            message for message in emitted(stdout)
-            if message["type"] == "runtime_state"
-        ]
-        self.assertEqual(states[-2]["phase"], "waiting_approval")
-        self.assertEqual(states[-2]["approval"]["command"], "ls")
-        self.assertIsNone(states[-2]["question"])
-        self.assertIsNone(states[-1]["approval"])
-        self.assertEqual(states[-1]["phase"], "running")
-
-    def test_approves_matching_request(self) -> None:
-        bridge, stdout = self.make_bridge(
-            ['{"type": "approval_response", "request_id": "None:1",'
-             ' "approved": true}']
-        )
-        self.assertTrue(bridge.request_permission("ls"))
-        self.assertEqual(
-            next(message for message in emitted(stdout) if message["type"] == "approval_request")["command"],
-            "ls",
-        )
-
-    def test_denies_when_response_is_false(self) -> None:
-        bridge, _ = self.make_bridge(
-            ['{"type": "approval_response", "request_id": "None:1",'
-             ' "approved": false}']
-        )
-        self.assertFalse(bridge.request_permission("rm -rf /"))
-
     def test_buffers_interleaved_messages_and_replays_them(self) -> None:
         """A typed-ahead turn must not be consumed as the answer."""
         bridge, _ = self.make_bridge(
             [
                 '{"type": "user_turn", "turn_id": "t2", "text": "later"}',
-                '{"type": "approval_response", "request_id": "None:1",'
-                ' "approved": true}',
+                '{"type": "user_question_response", "request_id": "None:1",'
+                ' "text": "yes"}',
             ]
         )
-        self.assertTrue(bridge.request_permission("ls"))
+        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "yes")
 
         deferred = bridge.read_message()
         assert deferred is not None
@@ -907,74 +725,74 @@ class BridgeApprovalTest(BridgeTestCase):
     def test_ignores_stale_request_id(self) -> None:
         bridge, _ = self.make_bridge(
             [
-                '{"type": "approval_response", "request_id": "stale",'
-                ' "approved": true}',
-                '{"type": "approval_response", "request_id": "None:1",'
-                ' "approved": false}',
+                '{"type": "user_question_response", "request_id": "stale",'
+                ' "text": "yes"}',
+                '{"type": "user_question_response", "request_id": "None:1",'
+                ' "text": "no"}',
             ]
         )
-        self.assertFalse(bridge.request_permission("ls"))
+        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "no")
 
     def test_cancels_when_input_ends(self) -> None:
         bridge, _ = self.make_bridge([])
         with self.assertRaises(Cancelled):
-            bridge.request_permission("ls")
+            bridge.request_user_choice("List?", [], True)
 
     def test_cancels_on_shutdown(self) -> None:
         bridge, _ = self.make_bridge(['{"type": "shutdown"}'])
         with self.assertRaises(Cancelled):
-            bridge.request_permission("ls")
+            bridge.request_user_choice("List?", [], True)
 
-    def test_serializes_approvals_from_parallel_tool_calls(self) -> None:
+    def test_serializes_questions_from_parallel_tool_calls(self) -> None:
         """Concurrent sub-agents share one protocol channel.
 
         Without serialization two threads interleave their read-modify-write
         on stdin: each can consume the other's response, so a request never
         sees its answer and both wait forever.
         """
-        approvals = 4
+        questions = 4
         responses = [
-            '{"type": "approval_response", "request_id": "None:%d",'
-            ' "approved": true}' % index
-            for index in range(1, approvals + 1)
+            '{"type": "user_question_response", "request_id": "None:%d",'
+            ' "text": "yes"}' % index
+            for index in range(1, questions + 1)
         ]
         bridge, stdout = self.make_bridge(_SlowStdin(responses))
-        results: list[bool] = []
+        results: list[str] = []
         lock = threading.Lock()
-        barrier = threading.Barrier(approvals, timeout=5)
+        barrier = threading.Barrier(questions, timeout=5)
 
-        def approve(index: int) -> None:
+        def ask(index: int) -> None:
             barrier.wait()
-            approved = bridge.request_permission(f"command {index}")
+            answer = bridge.request_user_choice(f"Question {index}?", [], True)
             with lock:
-                results.append(approved)
+                results.append(answer["text"])
 
         threads = [
-            threading.Thread(target=approve, args=(index,), daemon=True)
-            for index in range(approvals)
+            threading.Thread(target=ask, args=(index,), daemon=True)
+            for index in range(questions)
         ]
         for thread in threads:
             thread.start()
         for thread in threads:
             # An answer consumed by the wrong thread would hang here.
             thread.join(timeout=10)
-            self.assertFalse(thread.is_alive(), "an approval never returned")
+            self.assertFalse(thread.is_alive(), "a question never returned")
 
-        self.assertEqual(results, [True] * approvals)
+        self.assertEqual(results, ["yes"] * questions)
         # Each request got its own id, and each was answered exactly once.
         request_ids = [
             message["request_id"]
             for message in emitted(stdout)
-            if message["type"] == "approval_request"
+            if message["type"] == "user_question"
         ]
-        self.assertEqual(len(request_ids), approvals)
-        self.assertEqual(len(set(request_ids)), approvals)
+        self.assertEqual(len(request_ids), questions)
+        self.assertEqual(len(set(request_ids)), questions)
 
-    def test_routes_steering_while_waiting_for_approval(self) -> None:
+    def test_routes_steering_while_waiting_for_a_question(self) -> None:
         stdin = _BlockingAfterLines(
             [
                 '{"type": "user_steer", "turn_id": "t1", "steer_id": "s1", "text": "check tests"}',
-                '{"type": "approval_response", "request_id": "t1:1", "approved": true}',
+                '{"type": "user_question_response", "request_id": "t1:1", "text": "yes"}',
             ]
         )
         bridge, stdout = self.make_bridge(stdin)
@@ -983,7 +801,7 @@ class BridgeApprovalTest(BridgeTestCase):
         bridge.host.turns.turn_id = "t1"
         bridge.host.turns.control = control
 
-        self.assertTrue(bridge.request_permission("ls"))
+        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "yes")
         self.assertEqual(control.drain_steering()[0].text, "check tests")
         self.assertIn(
             "user_steer_received",
@@ -995,7 +813,7 @@ class BridgeApprovalTest(BridgeTestCase):
     def test_ignores_a_stale_response_that_arrived_before_its_waiter(self) -> None:
         bridge, _ = self.make_bridge(
             [
-                '{"type": "approval_response", "request_id": "None:1", "approved": true}',
+                '{"type": "user_question_response", "request_id": "None:1", "text": "yes"}',
             ]
         )
         bridge._start_reader()
@@ -1003,7 +821,7 @@ class BridgeApprovalTest(BridgeTestCase):
         self.assertFalse(bridge._reader.is_alive())
 
         with self.assertRaises(Cancelled):
-            bridge.request_permission("ls")
+            bridge.request_user_choice("List?", [], True)
 
     def test_routes_cancel_for_a_turn_queued_before_run_turn(self) -> None:
         bridge, stdout = self.make_bridge(
@@ -1030,45 +848,42 @@ class BridgeApprovalTest(BridgeTestCase):
 
 class BridgeCancellationTest(BridgeTestCase):
     def test_input_cancels_interactions_in_a_worker_turn(self) -> None:
-        for interaction in ("approval", "question"):
-            for command in ('{"type":"cancel","turn_id":"t1"}',
-                            '{"type":"shutdown"}', None):
-                with self.subTest(interaction=interaction, command=command):
-                    bridge, _ = self.make_bridge([command] if command is not None else [])
-                    results = []
-                    errors = []
+        for command in ('{"type":"cancel","turn_id":"t1"}',
+                        '{"type":"shutdown"}', None):
+            with self.subTest(command=command):
+                bridge, _ = self.make_bridge([command] if command is not None else [])
+                results = []
+                errors = []
 
-                    class WaitingAgent:
-                        def run(self, *args, **kwargs):
-                            if interaction == "approval":
-                                bridge.request_permission("command")
-                            else:
-                                bridge.request_user_choice("Question?", [], True)
-                            raise AssertionError("cancelled interaction returned an answer")
+                class WaitingAgent:
+                    def run(self, *args, **kwargs):
+                        bridge.request_user_choice("Question?", [], True)
+                        raise AssertionError("cancelled interaction returned an answer")
 
-                    def run():
-                        try:
-                            results.append(bridge.host.turns.run_turn(
-                                "t1", "work",
-                                lambda: SimpleNamespace(
-                                    agent=WaitingAgent(), memory=None, computer=None, runtime_warnings=(),
-                                ),
-                                lambda: (),
-                            ))
-                        except BaseException as error:
-                            errors.append(error)
-
-                    thread = threading.Thread(target=run, daemon=True)
-                    thread.start()
+                def run():
                     try:
-                        thread.join(3)
-                        self.assertFalse(thread.is_alive())
-                        self.assertEqual(errors, [])
-                        self.assertEqual([result.status for result in results], ["cancelled"])
-                        self.assertEqual(bridge._waiters, {})
-                    finally:
-                        bridge.close()
-                        thread.join(3)
+                        results.append(bridge.host.turns.run_turn(
+                            "t1", "work",
+                            lambda: SimpleNamespace(
+                                agent=WaitingAgent(), memory=None, computer=None, runtime_warnings=(),
+                            ),
+                            lambda: (),
+                        ))
+                    except BaseException as error:
+                        errors.append(error)
+
+                thread = threading.Thread(target=run, daemon=True)
+                thread.start()
+                try:
+                    thread.join(3)
+                    self.assertFalse(thread.is_alive())
+                    self.assertEqual(errors, [])
+                    self.assertEqual([result.status for result in results], ["cancelled"])
+                    self.assertEqual(bridge._waiters, {})
+                finally:
+                    bridge.close()
+                    thread.join(3)
+
 
     def test_cancel_is_scoped_to_its_turn_and_bridge(self) -> None:
         first, _ = self.make_bridge([])
@@ -1093,9 +908,9 @@ class BridgeCancellationTest(BridgeTestCase):
                 late = first._register_interaction("t1:2", "t1")
                 self.assertIsInstance(late.get_nowait(), Cancelled)
                 second.submit({
-                    "type": "approval_response", "request_id": "t1:1", "approved": True,
+                    "type": "user_question_response", "request_id": "t1:1", "text": "yes",
                 })
-                self.assertTrue(second._wait_for_interaction(other_session)["approved"])
+                self.assertEqual(second._wait_for_interaction(other_session)["text"], "yes")
         finally:
             first.close()
             second.close()
@@ -1127,7 +942,6 @@ class BridgeUserQuestionTest(BridgeTestCase):
         ]
         self.assertEqual(states[-2]["phase"], "waiting_user")
         self.assertEqual(states[-2]["question"]["question"], "Cache?")
-        self.assertIsNone(states[-2]["approval"])
         self.assertIsNone(states[-1]["question"])
         self.assertEqual(states[-1]["phase"], "running")
 
@@ -1295,32 +1109,6 @@ class BridgeServeTest(BridgeTestCase):
             listed["sessions"],
             [{"session_id": "saved", "title": "hello there"}],
         )
-
-    def test_applies_a_permission_queued_immediately_after_open_session(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, stdout = self.make_bridge(
-            [
-                json.dumps(open_session_message(root, session_id="empty")),
-                '{"type": "permission_set", "preset": "full_access"}',
-                '{"type": "shutdown"}',
-            ],
-            root,
-        )
-
-        bridge.serve()
-
-        self.assertEqual(
-            [message["type"] for message in emitted(stdout)],
-            ["session_ready", "runtime_state", "permission_changed"],
-        )
-        self.assertEqual(
-            JsonlSessionStore(root / "sessions").load(
-                "empty"
-            ).permission_preset,
-            PermissionPreset.FULL_ACCESS,
-        )
-        self.assertIsNone(bridge.host.planes.current)
 
     def test_answers_settings_requests_without_starting_runtime(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -1864,12 +1652,11 @@ class BridgeSessionOpenTest(BridgeTestCase):
         tui.open_session({**opening, "session_id": "tui-session"})
         original = tui.host.sessions.session
         original.add_item("user", "TUI history")
-        tui.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         tui.host.sessions.plan.update("original plan", (PlanStep("1", "first step", "pending"),))
         plane = tui.host.planes.ensure(tui.host.sessions)
         plane.agent = SuccessfulAgent(original)
         tui._emit_runtime_state("idle")
-        permissions, plan = tui.host.sessions.permissions, tui.host.sessions.plan
+        plan = tui.host.sessions.plan
         with patch.object(plane.jobs, "close", wraps=plane.jobs.close) as close_jobs:
             with patch.object(tui, "read_message", side_effect=[
                 opening, {"type": "load_session"},
@@ -1879,10 +1666,8 @@ class BridgeSessionOpenTest(BridgeTestCase):
             close_jobs.assert_not_called()
         failed = next(message for message in emitted(output) if message["type"] == "session_open_failed")
         self.assertEqual(failed["runtime"]["phase"], "idle")
-        self.assertEqual(failed["runtime"]["permission_preset"], "full_access")
         self.assertEqual(failed["runtime"]["plan"]["goal"], "original plan")
         self.assertIs(tui.host.sessions.session, original)
-        self.assertIs(tui.host.sessions.permissions, permissions)
         self.assertIs(tui.host.sessions.plan, plan)
         self.assertIs(tui.host.planes.current, plane)
         self.assertEqual(emitted(output)[-1]["type"], "turn_completed")
@@ -1901,12 +1686,11 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge.open_session(opening)
         original = bridge.host.sessions.session
         original.add_item("user", "original history")
-        permissions, plan = bridge.host.sessions.permissions, bridge.host.sessions.plan
+        plan = bridge.host.sessions.plan
         for change in ({"workspace": str(root / "missing")}, {"provider": "unknown"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 bridge.open_session({**opening, "session_id": "target", **change})
             self.assertIs(bridge.host.sessions.session, original)
-            self.assertIs(bridge.host.sessions.permissions, permissions)
             self.assertIs(bridge.host.sessions.plan, plan)
         with patch.object(JsonlSessionStore, "load", side_effect=ValueError("invalid target journal")):
             with self.assertRaisesRegex(ValueError, "invalid target journal"):
@@ -1931,13 +1715,11 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge.open_session(opening)
         original = bridge.host.sessions.session
         original.add_item("user", "original history")
-        bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         bridge.host.sessions.plan.update("original plan", (PlanStep("1", "original step", "pending"),))
         bridge.open_session({**opening, "workspace": str(other)})
         fresh = bridge.host.sessions.session
         self.assertNotEqual(fresh.session_id, original.session_id)
         self.assertEqual(fresh.items, [])
-        self.assertEqual(fresh.permission_preset, PermissionPreset.ASK_FOR_APPROVAL)
         self.assertIsNone(bridge.host.sessions.plan.snapshot)
         self.assertEqual(bridge.host.sessions.store.workspace_for(original.session_id), str(root.resolve()))
 
@@ -1956,7 +1738,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge.open_session({**opening, "workspace": str(other), "session_id": original.session_id})
         self.assertEqual(bridge.host.sessions.workspace.path, root.resolve())
         self.assertEqual(bridge.host.sessions.session.items[0].content, "original history")
-        self.assertEqual(bridge.host.sessions.session.permission_preset, PermissionPreset.FULL_ACCESS)
         self.assertEqual(bridge.host.sessions.plan.snapshot.goal, "original plan")
 
     def test_switching_sessions_reuses_resources_and_rebinds_all_session_state(self) -> None:
@@ -1966,7 +1747,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge.open_session(opening)
         first_session = bridge.host.sessions.session
         first_session.add_item("user", "first conversation")
-        bridge.host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         bridge.host.sessions.plan.update("first plan", (PlanStep("1", "first step", "pending"),))
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         first_agent, first_jobs = plane.agent, plane.jobs
@@ -1986,9 +1766,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             self.assertIs(context.session, bridge.host.sessions.session)
             self.assertEqual(context.session.items, [])
             self.assertIsNone(context.plan.snapshot)
-            self.assertIs(rebound.agent._tools._policy, bridge.host.sessions.permissions)
-            self.assertEqual(context.execution_router.authority, bridge.host.sessions.permissions.authority)
-            self.assertNotEqual(context.execution_router.authority, FULL_ACCESS_AUTHORITY)
+            self.assertIs(context.command_executor, plane.command_executor)
             close_jobs.assert_called_once()
             start_mcp.assert_not_called()
             close_mcp.assert_not_called()
@@ -1998,7 +1776,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertIs(restored, plane)
         self.assertEqual(restored.agent._execution_context.session.items[0].content, "first conversation")
         self.assertEqual(restored.agent._execution_context.plan.snapshot.goal, "first plan")
-        self.assertEqual(restored.execution_router.authority, FULL_ACCESS_AUTHORITY)
+        self.assertIs(restored.agent._execution_context.command_executor, plane.command_executor)
 
     def test_switching_sessions_rebuilds_resources_for_a_different_workspace_or_provider(self) -> None:
         for change in ("workspace", "provider"):
@@ -2091,7 +1869,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         with self.assertRaises(SessionInUseError):
             contender.open_session(opening)
         self.assertIsNone(contender.host.sessions.session)
-        self.assertIsNone(contender.host.sessions.permissions)
         self.assertIsNone(contender.host.sessions.plan)
         owner.close()
         contender.open_session(opening)
@@ -2225,7 +2002,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             ),
         ):
             plane.agent._context.archive(plane.agent._context.build_request(plane.agent._tools.definitions))
-        plane.memory.remember(MemoryCandidate("fact", "global", "A fact."))
+        plane.memory.remember(MemoryCandidate("fact", "A fact."))
         with patch.object(
             plane.fast_provider, "stream",
             return_value=LLMResponse(
@@ -2241,7 +2018,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertEqual([(event.event_type, r["scope"], r["model"], r["status"])
                           for event, r in zip(calls, records)], [
             ("compression_completed", None, "openai/first", "completed"),
-            ("memory_completed", "global", "openai/second", "completed"),
+            ("memory_completed", "workspace", "openai/second", "completed"),
         ])
         self.assertEqual(records[0]["usage"], {
             "input_tokens": 50, "output_tokens": 8, "total_tokens": 58,
@@ -2321,7 +2098,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         responses = [
             LLMResponse(content=None, tool_calls=(
                 ToolCall("child-call", "remember", {
-                    "kind": "fact", "scope": "global", "content": "A durable fact.",
+                    "kind": "fact", "content": "A durable fact.",
                 }),
             )),
             LLMResponse(content="- [durable] Inspected the directory.",
@@ -2365,14 +2142,14 @@ class BridgeSessionOpenTest(BridgeTestCase):
         )
         self.assertEqual(
             (calls[1].event_type, records[1]["scope"], records[1]["model"], records[1]["status"]),
-            ("memory_completed", "global", "openai/first", "completed"),
+            ("memory_completed", "workspace", "openai/first", "completed"),
         )
         self.assertFalse(any(event.event_type in {"compression_completed", "memory_completed"}
                              for event in parent_session.journal))
         self.assertEqual(child.cache_usage, CacheUsage(600, 500))
         self.assertIsNone(parent_session.cache_usage)
         self.assertEqual(
-            plane.memory.store.load(root).global_memory.facts,
+            plane.memory.store.load(root).facts,
             ("A durable fact.",),
         )
 
@@ -2464,37 +2241,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
             "MISSING_RADE_TEST_KEY",
         ):
             bridge.host.planes.ensure(bridge.host.sessions)
-
-    def test_restores_the_session_permission_preset(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        store = JsonlSessionStore(root / "sessions")
-        session = Session("saved")
-        session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-        store.bind_workspace(session.session_id, root)
-        store.set_permission_preset(
-            session.session_id,
-            PermissionPreset.FULL_ACCESS,
-            root,
-        )
-        store.append_events(session.session_id, session.journal, workspace=root)
-        bridge, stdout = self.make_bridge([], root)
-
-        bridge.open_session(open_session_message(root, session_id=session.session_id))
-
-        ready = emitted(stdout)[0]
-        self.assertEqual(ready["permission_preset"], "full_access")
-        assert bridge.host.sessions.permissions is not None
-        bridge.host.sessions.permissions.authorize(
-            TOOL_CALL,
-            ToolExecutionContext(
-                workspace=Workspace(Path(__file__).parent),
-                session=bridge.host.sessions.permissions._session,
-            ),
-        )
-        self.assertFalse(
-            any(message["type"] == "approval_request" for message in emitted(stdout))
-        )
 
     def test_restores_the_session_plan_in_runtime_state(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -2669,7 +2415,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                         ],
                         "tools": {
                             "enabled": ["echo"],
-                            "approval": "never",
                         },
                     }
                 }
@@ -2910,15 +2655,14 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge, _ = self.make_bridge([], root)
         bridge.open_session(open_session_message(root))
         first_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        store = MemoryStore(
-            root / "MEMORY.md",
-            root / "sessions",
-        )
-        store.write_updates(
+        store = MemoryStore(root / "sessions")
+        store.write(
             root,
-            global_memory=MemoryDocument(
-                preferences=("Prefer concise responses.",)
-            ),
+            MemoryDocument(preferences=("Prefer concise responses.",)),
+        )
+        (root / "MEMORY.md").write_text(
+            "# RADE Global Memory\n\n## Facts\n- Legacy shared fact.\n",
+            encoding="utf-8",
         )
 
         second_plane = bridge.host.planes.ensure(bridge.host.sessions)
@@ -2937,6 +2681,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertNotIn("Prefer concise responses.", request.system_prompt)
         runtime_context = request.messages[0].content
         self.assertIn("Prefer concise responses.", runtime_context)
+        self.assertNotIn("Legacy shared fact.", runtime_context)
         self.assertIn("current request has highest priority", runtime_context)
 
     def test_rebuilds_runtime_when_the_configured_instruction_list_changes(self) -> None:
@@ -3159,7 +2904,6 @@ class RuntimeRefreshTest(BridgeTestCase):
 
     def test_refresh_rebuilds_unchanged_resources_and_preserves_session_state(self) -> None:
         host = self.bridge.host
-        host.set_permission_preset(PermissionPreset.FULL_ACCESS)
         session = host.sessions.session
         session.add_item("user", "Keep this conversation")
         plan = host.sessions.plan
@@ -3175,7 +2919,6 @@ class RuntimeRefreshTest(BridgeTestCase):
         self.assertIs(host.sessions.session, session)
         self.assertIs(host.sessions.plan, plan)
         self.assertEqual(tuple(session.journal), journal)
-        self.assertEqual(session.permission_preset, PermissionPreset.FULL_ACCESS)
         self.assertIs(second.agent._session, session)
         result = emitted(self.stdout)[-1]
         self.assertEqual(result["type"], "runtime_refreshed")
@@ -3216,7 +2959,6 @@ class RuntimeRefreshTest(BridgeTestCase):
         config["mcp"] = {"enabled": True, "servers": {"fake": {
             "transport": "stdio", "command": sys.executable,
             "args": [str(Path(__file__).with_name("fake_mcp_server.py"))],
-            "tools": {"enabled": ["echo"], "approval": "never"},
         }}}
         config_path.write_text(json.dumps(config), encoding="utf-8")
         host = self.bridge.host

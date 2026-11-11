@@ -39,7 +39,7 @@ See [the component contract](references/plugin-json-spec.md) for supported field
 python3 scripts/validate_plugin.py <plugin-path>
 ```
 
-Then verify the plugin in RADE. Static validation cannot confirm MCP tool availability or approval.
+Then verify the plugin in RADE. Static validation cannot confirm MCP tool availability.
 
 For Hooks, read [the authoring contract](references/hooks.md). `--with-hooks` creates an empty
 declaration; add scripts and verify matching and non-matching cases in RADE.

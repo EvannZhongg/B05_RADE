@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 3
+# Public Bridge protocol, major 5
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -15,9 +15,9 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 ## Stability and scope
 
-Protocol 4 defines Shell, file and MCP approvals, observation-only `tool_media` events, and provider routing for the main agent, fast model and subagent roles.
+Protocol 5 removes permission presets and Tool approval exchanges. Shell and command Hooks run directly with the host user's permissions. The `ask_user` Tool still exchanges structured questions and answers.
 
-Every `session_ready` advertises `protocol_version: 4`. Clients must check this
+Every `session_ready` advertises `protocol_version: 5`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -30,7 +30,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":4}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":5}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -48,7 +48,7 @@ events are returned as:
 
 The event above is abbreviated; actual snapshots carry all fields defined by
 `Incoming`. Each channel owns an independent RuntimeHost, command queue, event
-sequence, approvals, cancellation, Journal writer, execution plane and MCP clients.
+sequence, question handling, cancellation, Journal writer, execution plane and MCP clients.
 Channels execute concurrently. Request and turn IDs need only be unique within
 their channel; one channel waiting on HTTP, MCP or user input does not block others.
 GUI, TUI and SDK hosts use this same server and lifecycle. The TUI retains a
@@ -108,7 +108,7 @@ configuration ID, not an arbitrary model name or credential.
 Successful open emits, in order:
 
 1. `session_ready`: protocol major, actual `session_id`, `workspace`, `provider`,
-   `model`, `resumed`, `message_count`, and `permission_preset`. Its `transcript`
+   `model`, `resumed`, and `message_count`. Its `transcript`
    contains the restored conversation.
 2. `runtime_state`: the initial authoritative snapshot, initially `inactive`.
 
@@ -145,7 +145,7 @@ After opening and synchronizing an idle session, send:
 
 This forces a new execution plane even when configuration is unchanged. It
 reloads configuration, prompts, Skills and Plugin Agents, reconnects MCP and
-discovers tools again. The same Session, journal, permission preset and plan
+discovers tools again. The same Session, journal and plan
 remain bound. No model request or conversation turn is created.
 
 Clients must disable refresh during an active turn; ordinary commands are
@@ -168,12 +168,11 @@ Normal turns still check configuration changes automatically before executing.
 | `starting` | Runtime assembly in progress. |
 | `idle` | No active turn. |
 | `running` | Executing a turn. |
-| `waiting_approval` | Waiting for permission response. |
 | `waiting_user` | Waiting for structured user response. |
 | `failed` | Execution plane startup failed, or a fatal process error occurred. |
 
-The snapshot also includes `turn_id`, `provider`, `permission_preset`,
-`context_window`, `cache_usage`, `jobs`, `approval`, `question`, `plan`, optional
+The snapshot also includes `turn_id`, `provider`,
+`context_window`, `cache_usage`, `jobs`, `question`, `plan`, optional
 `workspace` and `runtime_warnings`. A standalone `runtime_state` or embedded
 `runtime` replaces the prior snapshot. Embedded snapshots are complete, not
 patches. Render state from these snapshots; do not infer it from model text,
@@ -188,9 +187,7 @@ turn: it is emitted before the terminal event. The process may have queued input
 | `user_turn` | `turn_id`, `text`, optional `attachments`; receipt and execution events below. |
 | `user_steer` | Target `turn_id`, `steer_id`, `text`; received/rejected then applied if consumed. |
 | `cancel` | Target `turn_id`; matching queued/active turn is cancelled cooperatively. No immediate acknowledgment. |
-| `approval_response` | Outstanding `request_id`, boolean `approved`. |
 | `user_question_response` | Outstanding `request_id`, `option_id` or free-form `text`. |
-| `permission_set` | `preset`; `permission_changed` with complete `runtime`. Can run during a turn. |
 | `provider_set` | Configured `provider`; `provider_changed` with `provider`, `model`, `runtime`. |
 | `workspace_set` | `workspace`; `workspace_changed` with actual path and `runtime`. |
 | `list_sessions` | `sessions_listed.sessions`: current workspace session summaries. |
@@ -198,10 +195,9 @@ turn: it is emitted before the terminal event. The process may have queued input
 | `load_session` | `session_items.items`: currently bound conversation. |
 | `session_snapshot` | `session_ready` then `runtime_state` for the existing Runtime; preserves its execution plane, Jobs, MCP and Journal writer. |
 
-Permission presets are `ask_for_approval`, `workspace_access`, `full_access`.
 Responses confirm the Runtime's actual changes. Changing provider/workspace may
 also emit `runtime_state: inactive`. Send these changes while idle. Commands other
-than steer/cancel/interactions/permission are serialized behind an active
+than steering, cancellation and question responses are serialized behind an active
 turn within that channel. There is no generic RPC or universal request ID. Serialize listing/history requests if matching responses matters.
 Use the opening checkpoint to display initial history; `load_session` is an
 explicit refresh, not a stream replay or cursor acknowledgment.
@@ -221,7 +217,7 @@ persisted title.
 
 Attachments are local descriptors `{type: "image" | "file", path, filename,
 mime_type, size_bytes}`. Paths reference files readable by the Runtime under its
-existing workspace/permission rules; there is no binary upload transport. Runtime
+Workspace and Session path rules; there is no binary upload transport. Runtime
 validates actual files and normalizes media metadata. Tool media events reference
 local images by the same convention.
 
@@ -231,8 +227,8 @@ local images by the same convention.
 client → user_turn(turn_id)
        ← user_turn_received(turn_id)
        ← runtime_state(starting/running), context/model/tool/... events
-       ← [runtime_state(waiting_approval), approval_request(request_id)]
-client → [approval_response(request_id, approved)]
+       ← [runtime_state(waiting_user), user_question(request_id)]
+client → [user_question_response(request_id, option_id or text)]
        ← [runtime_state(running)]
        ← runtime_state(idle or failed)
        ← turn_completed | turn_cancelled | turn_failed  + transcript
@@ -246,24 +242,14 @@ only `user_steer_applied` means Core consumed it. Accepted steering can remain
 unapplied when the turn ends. Stale cancellation/interaction IDs have no effect.
 Do not resubmit after an ambiguous disconnect as though IDs made it idempotent.
 
-Approval requests include `request_id`, `turn_id`, human-readable `command`, and
-optional `kind` (`shell`, `file`, `mcp`), `server` and `tool_name` (some optional
-values may be `null`). Display the request and submit the user's boolean decision.
-The same request is in `runtime.approval`; avoid rendering it twice. Questions
-include `question`, `options: [{id, label, description?, recommended?}]` and
+Questions carry `request_id`, `turn_id`, `question`, `options: [{id, label, description?, recommended?}]` and
 `allow_free_text`. Submit a listed `option_id`, or nonblank `text` only when
 allowed. An invalid answer leaves the question outstanding; there is no validation
 error response. Interactions are serialized within each channel. Cancellation and shutdown
 unblock them through existing Runtime cancellation.
 
-Workspace file writes (`apply_patch`, `edit_file`, `write_file`) request approval
-under `ask_for_approval`; `workspace_access` and `full_access` allow them without
-a prompt. File tools stay confined to the current workspace under every preset.
-File approval descriptions are limited to 2048 characters: paths, byte/line counts,
-and a preview of at most three lines per text field (120 characters per line).
-Patch summaries list at most eight file operations and report the omitted count.
-Approval responses record the same summary in history; full arguments remain in
-the original Tool Call instead of being duplicated in the user interaction.
+Workspace file writes (`apply_patch`, `edit_file`, `write_file`) execute directly
+and resolve paths within the current Workspace.
 Tool errors can include optional structured `details`. An `apply_patch` commit
 failure reports `completed`, `failed`, `pending`, and `cause` there; completed
 operations remain applied. The same details are retained in Session tool results.
@@ -350,9 +336,9 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 4
+receive bridge_ready; check protocol_version == 5
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 4; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 5; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
 receive/render events; answer interactions by request_id

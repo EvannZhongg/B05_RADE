@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from agent_core.memory import MemoryContext, MemoryDocument
+from agent_core.memory import MemoryDocument
 from agent_core.mcp.manager import McpServerInstructions
 from agent_core.plan import PlanSnapshot, PlanStep
 from agent_core.prompting import render_system_prompt
@@ -243,9 +243,7 @@ class AgentTest(unittest.TestCase):
                     context = ContextManager(
                         provider, session, system_prompt, CONSOLIDATOR_PROMPT,
                         AGENT_CONFIG,
-                        memory_context=MemoryContext(
-                            MemoryDocument(facts=("A remembered fact.",)), MemoryDocument(),
-                        ),
+                        memory_context=MemoryDocument(facts=("A remembered fact.",)),
                     )
                     request = context.build_request(tool_set(EchoTool(), session=session).definitions)
                     self.assertTrue(request.messages)
@@ -511,9 +509,7 @@ class AgentTest(unittest.TestCase):
             provider, session, system_prompt, CONSOLIDATOR_PROMPT,
             replace(AGENT_CONFIG, context=ContextCompressionConfig(keep_recent_units=2)),
             media_root=TEST_WORKSPACE.path,
-            memory_context=MemoryContext(
-                MemoryDocument(facts=("Persistent memory fact.",)), MemoryDocument(),
-            ),
+            memory_context=MemoryDocument(facts=("Persistent memory fact.",)),
         )
         tools = (
             ToolDefinition("echo", "Echo text", {"type": "object"}),

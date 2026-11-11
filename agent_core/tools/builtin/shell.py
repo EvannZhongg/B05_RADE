@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from ...execution.authority import ExecutionScope
 from ...execution.process import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     MAX_COMMAND_TIMEOUT_SECONDS,
@@ -11,7 +10,6 @@ from ...execution.process import (
     CommandOutputSpool,
     TextExcerpt,
 )
-from ...execution.sandbox.base import FilesystemAccess, NetworkAccess
 from ..base import JSONValue, Tool, ToolDefinition, ToolOutput
 from ..budget import escaped_length, output_fits
 from ..context import ToolExecutionContext
@@ -27,8 +25,7 @@ MAX_BACKGROUND_SHELL_TIMEOUT_SECONDS = MAX_COMMAND_TIMEOUT_SECONDS
 
 
 WINDOWS_SHELL_NOTE = (
-    "On Windows, every scope runs through PowerShell 7. Shell dialect is "
-    "independent of execution scope. Use PowerShell syntax for commands; "
+    "On Windows, commands run through PowerShell 7. Use PowerShell syntax; "
     "running POSIX .sh scripts is outside the Windows shell contract. "
     "The shell starts with ErrorActionPreference=Stop, strict mode, and "
     "PSNativeCommandUseErrorActionPreference=true. Preserve fail-fast behavior "
@@ -53,7 +50,7 @@ class ShellTool(Tool):
     name = "shell"
 
     def available(self, context: ToolExecutionContext) -> bool:
-        return context.execution_router is not None
+        return context.command_executor is not None
 
     def definition(self, context: ToolExecutionContext) -> ToolDefinition:
         supports_background = context.jobs is not None
@@ -85,43 +82,9 @@ class ShellTool(Tool):
             f"{DEFAULT_SHELL_TIMEOUT_SECONDS} seconds, with a maximum of "
             f"{MAX_FOREGROUND_SHELL_TIMEOUT_SECONDS}."
         )
-        router = context.execution_router
-        if router is None:
-            raise RuntimeError("shell execution router is unavailable")
-        workspace_policy = router.workspace_policy
-        authority = router.authority
-        default_scope = authority.default_scope
-        filesystem_description = (
-            "Workspace scope primarily grants writes to the workspace and "
-            "private temporary directory; host files remain readable. On "
-            "Windows, the restricted token is a best-effort write boundary: "
-            "locations already writable by Everyone are an exception. "
-            if getattr(workspace_policy, "host_filesystem", None)
-            is FilesystemAccess.WRITE_RESTRICTED
-            else "Workspace scope is confined to the workspace. "
-        )
-        network_description = (
-            "Network access remains available. "
-            if getattr(workspace_policy, "network", None)
-            is NetworkAccess.ALLOW
-            else "Network access is disabled. "
-        )
-        workspace_description = filesystem_description + network_description
-        scope_guidance = (
-            "Use explicit workspace scope to run with reduced authority. "
-            if default_scope is ExecutionScope.HOST
-            else (
-                "Request host scope only when the command must cross that "
-                "boundary. "
-                if authority.allows(ExecutionScope.HOST)
-                else "Host scope is not available to this Agent. "
-            )
-        )
         description = (
-            "Execute a shell command with the workspace as the current "
-            f"directory. {default_scope.value.title()} scope is the default. "
-            f"{workspace_description}"
-            f"{scope_guidance}"
+            "Execute a shell command with the current user's host permissions "
+            "and the workspace as the current directory. "
             f"{shell_note} Every call starts a fresh shell, so directory and "
             "environment changes do not persist. The command is killed after "
             f"{DEFAULT_SHELL_TIMEOUT_SECONDS} seconds by default. "
@@ -140,16 +103,6 @@ class ShellTool(Tool):
                 "minimum": 1,
                 "maximum": maximum_timeout,
                 "description": timeout_description,
-            },
-            "scope": {
-                "type": "string",
-                "enum": [scope.value for scope in authority.scopes],
-                "description": (
-                    "Execution boundary. 'workspace' uses the platform's "
-                    "workspace sandbox; 'host' runs with the current "
-                    "user's host access and may require approval."
-                ),
-                "default": default_scope.value,
             },
         }
         if supports_background:
@@ -207,16 +160,13 @@ class ShellTool(Tool):
             "command",
             "timeout_seconds",
             "background",
-            "scope",
         }:
             raise ValueError(
-                "shell accepts only 'command', 'timeout_seconds', "
-                "'background' and 'scope'"
+                "shell accepts only 'command', 'timeout_seconds' and 'background'"
             )
-        route = context.execution
-        if route is None or route.scope is None or route.executor is None:
-            raise RuntimeError("shell execution was not resolved")
-        executor = route.executor
+        executor = context.command_executor
+        if executor is None:
+            raise RuntimeError("shell command executor is unavailable")
         if background:
             from ...jobs import JobContext, JobResult
 

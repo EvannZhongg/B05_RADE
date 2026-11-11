@@ -8,7 +8,6 @@ from unittest.mock import Mock, patch
 
 from agent_core import (
     CommandExecutionResult,
-    ExecutionRouter,
     JobManager,
     Session,
     ShellTool,
@@ -328,7 +327,7 @@ class ShellArtifactTest(unittest.TestCase):
             jobs.set_result_normalizer(self.normalizer)
         context = ToolExecutionContext(
             workspace=self.workspace, session=session, sessions_directory=self.sessions,
-            execution_router=ExecutionRouter(executor, executor), jobs=jobs,
+            command_executor=executor, jobs=jobs,
         )
         tools = ToolCatalog((ShellTool(),)).select(("shell",), context)
         result = tools.execute(ToolCall(

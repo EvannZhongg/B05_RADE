@@ -4,7 +4,6 @@ import subprocess
 import threading
 import unittest
 import tempfile
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -17,11 +16,7 @@ from agent_core import (
     AskUserTool,
     CommandExecutionResult,
     EditFileTool,
-    ExecutionRouter,
-    FilesystemAccess,
-    FULL_ACCESS_AUTHORITY,
     ListDirectoryTool,
-    NetworkAccess,
     ReadFileTool,
     SearchFilesTool,
     Session,
@@ -66,14 +61,7 @@ class _Bound:
         return self._tool.definition(self._context)
 
     def execute(self, arguments):
-        context = self._context
-        if context.execution_router is not None:
-            call = ToolCall("test-call", self._tool.name, arguments)
-            context = replace(
-                context,
-                execution=context.execution_router.resolve(call),
-            )
-        return self._tool.execute(arguments, context)
+        return self._tool.execute(arguments, self._context)
 
 
 def context_for(workspace, **fields):
@@ -102,7 +90,7 @@ class NeedsExecutorTool(Tool):
     name = "needs_executor"
 
     def available(self, context) -> bool:
-        return context.execution_router is not None
+        return context.command_executor is not None
 
     def definition(self, context) -> ToolDefinition:
         return ToolDefinition(
@@ -160,9 +148,7 @@ class ToolCatalogTest(unittest.TestCase):
                 ("needs_executor",),
                 context_for(
                     workspace,
-                    execution_router=ExecutionRouter(
-                        UnusedExecutor(), UnusedExecutor()
-                    ),
+                    command_executor=UnusedExecutor(),
                 ),
             )
 
@@ -197,12 +183,12 @@ class ToolCatalogTest(unittest.TestCase):
 
 
 class ToolSetTest(unittest.TestCase):
-    def test_invalid_arguments_skip_routing_approval_and_execution(self):
-        router, policy = Mock(), Mock()
+    def test_invalid_arguments_skip_policy_and_execution(self):
+        policy = Mock()
         tool = FailingTool()
         tool.execute = Mock()
         tools = ToolCatalog((tool,)).select(
-            (tool.name,), context_for(_TMP_WORKSPACE, execution_router=router), policy=policy,
+            (tool.name,), context_for(_TMP_WORKSPACE), policy=policy,
         )
 
         for raw in ('{"value" "broken"}', '[]', 'null', '"text"'):
@@ -213,7 +199,6 @@ class ToolSetTest(unittest.TestCase):
                 self.assertEqual(result.name, call.name)
                 self.assertEqual(result.error, call.argument_error)
                 self.assertEqual(json.loads(result.to_content())["error"]["type"], "invalid_tool_arguments")
-        router.resolve.assert_not_called()
         policy.authorize.assert_not_called()
         tool.execute.assert_not_called()
 
@@ -2171,37 +2156,6 @@ class SearchFilesToolTest(unittest.TestCase):
 
 
 class ShellToolTest(unittest.TestCase):
-    def test_description_uses_the_policy_for_write_and_network_restrictions(self) -> None:
-        for access, restricted in (
-            (FilesystemAccess.WRITE_RESTRICTED, True),
-            (FilesystemAccess.DENIED, False),
-        ):
-            for network, available in (
-                (NetworkAccess.ALLOW, True),
-                (NetworkAccess.DENY, False),
-            ):
-                with self.subTest(host_filesystem=access, network=network):
-                    executor = SimpleNamespace(
-                        policy=SimpleNamespace(
-                            host_filesystem=access, network=network,
-                        ),
-                    )
-                    tool = _Bound(
-                        ShellTool(), _TMP_WORKSPACE,
-                        execution_router=ExecutionRouter(executor, UnusedExecutor()),
-                    )
-                    description = tool.definition.description
-                    self.assertEqual(
-                        "best-effort write boundary" in description, restricted
-                    )
-                    self.assertEqual("writable by Everyone" in description, restricted)
-                    self.assertEqual(
-                        "Network access remains available" in description, available
-                    )
-                    self.assertEqual(
-                        "Network access is disabled" in description, not available
-                    )
-
     def test_delegates_command_to_executor(self) -> None:
         class RecordingExecutor:
             def __init__(self) -> None:
@@ -2221,7 +2175,7 @@ class ShellToolTest(unittest.TestCase):
         tool = _Bound(
             ShellTool(),
             _TMP_WORKSPACE,
-            execution_router=ExecutionRouter(executor, UnusedExecutor()),
+            command_executor=executor,
         )
 
         result = tool.execute({"command": "example command"})
@@ -2238,79 +2192,6 @@ class ShellToolTest(unittest.TestCase):
                 "timeout_seconds": 60,
             },
         )
-
-    def test_routes_each_call_by_execution_scope(self) -> None:
-        class RecordingExecutor:
-            def __init__(self, name):
-                self.name = name
-                self.commands = []
-
-            def execute(self, command, timeout_seconds=60):
-                self.commands.append(command)
-                return CommandExecutionResult(
-                    command=command,
-                    exit_code=0,
-                    stdout=self.name,
-                    stderr="",
-                    timeout_seconds=timeout_seconds,
-                )
-
-        workspace_executor = RecordingExecutor("workspace")
-        host_executor = RecordingExecutor("host")
-        tool = _Bound(
-            ShellTool(),
-            _TMP_WORKSPACE,
-            execution_router=ExecutionRouter(
-                workspace_executor, host_executor
-            ),
-        )
-
-        workspace_result = tool.execute({"command": "pwd"})
-        host_result = tool.execute({"command": "pwd", "scope": "host"})
-
-        self.assertEqual(workspace_result["stdout"], "workspace")
-        self.assertEqual(host_result["stdout"], "host")
-        self.assertEqual(workspace_executor.commands, ["pwd"])
-        self.assertEqual(host_executor.commands, ["pwd"])
-
-    def test_full_access_defaults_to_host_and_allows_workspace_downgrade(self) -> None:
-        class RecordingExecutor:
-            def __init__(self, name):
-                self.name = name
-                self.commands = []
-
-            def execute(self, command, timeout_seconds=60):
-                self.commands.append(command)
-                return CommandExecutionResult(command, 0, self.name, "")
-
-        workspace_executor = RecordingExecutor("workspace")
-        host_executor = RecordingExecutor("host")
-        context = context_for(_TMP_WORKSPACE)
-        context = replace(
-            context,
-            execution_router=ExecutionRouter(
-                workspace_executor,
-                host_executor,
-                authority=FULL_ACCESS_AUTHORITY,
-            ),
-        )
-        tools = ToolCatalog((ShellTool(),)).select(("shell",), context)
-
-        default_result = tools.execute(
-            ToolCall("default", "shell", {"command": "pwd"})
-        )
-        downgraded_result = tools.execute(
-            ToolCall(
-                "workspace",
-                "shell",
-                {"command": "pwd", "scope": "workspace"},
-            )
-        )
-
-        self.assertEqual(default_result.output["stdout"], "host")
-        self.assertEqual(downgraded_result.output["stdout"], "workspace")
-        self.assertEqual(host_executor.commands, ["pwd"])
-        self.assertEqual(workspace_executor.commands, ["pwd"])
 
     def test_passes_explicit_timeouts_below_and_above_default(self) -> None:
         class RecordingExecutor:
@@ -2331,7 +2212,7 @@ class ShellToolTest(unittest.TestCase):
         tool = _Bound(
             ShellTool(),
             _TMP_WORKSPACE,
-            execution_router=ExecutionRouter(executor, UnusedExecutor()),
+            command_executor=executor,
         )
 
         for timeout in (10, 61, 900):
@@ -2348,12 +2229,11 @@ class ShellToolTest(unittest.TestCase):
         tool = _Bound(
             ShellTool(),
             _TMP_WORKSPACE,
-            execution_router=ExecutionRouter(
-                UnusedExecutor(), UnusedExecutor()
-            ),
+            command_executor=UnusedExecutor(),
         )
 
         definition = tool.definition
+        self.assertNotIn("scope", definition.parameters["properties"])
         timeout_schema = definition.parameters["properties"][
             "timeout_seconds"
         ]
@@ -2385,9 +2265,7 @@ class ShellToolTest(unittest.TestCase):
         context = context_for(
             _TMP_WORKSPACE,
             session=session,
-            execution_router=ExecutionRouter(
-                UnusedExecutor(), UnusedExecutor()
-            ),
+            command_executor=UnusedExecutor(),
             jobs=jobs,
         )
 
@@ -2412,17 +2290,15 @@ class ShellToolTest(unittest.TestCase):
         tool = _Bound(
             ShellTool(),
             _TMP_WORKSPACE,
-            execution_router=ExecutionRouter(
-                UnusedExecutor(), UnusedExecutor()
-            ),
+            command_executor=UnusedExecutor(),
         )
 
         with self.assertRaisesRegex(ValueError, "non-empty string"):
             tool.execute({})
         with self.assertRaisesRegex(ValueError, "accepts only"):
             tool.execute({"command": "pwd", "extra": True})
-        with self.assertRaisesRegex(ValueError, "execution scope"):
-            tool.execute({"command": "pwd", "scope": "container"})
+        with self.assertRaisesRegex(ValueError, "accepts only"):
+            tool.execute({"command": "pwd", "scope": "workspace"})
         with self.assertRaisesRegex(ValueError, "'background'.*boolean"):
             tool.execute(
                 {

@@ -3,7 +3,7 @@ import { LoaderCircle, Square } from "lucide-react";
 import type { PlanSnapshot, RuntimePhase, UserQuestion } from "@rade/protocol";
 import { BackgroundJobs } from "./BackgroundJobs";
 import { PlanStatus } from "./PlanStatus";
-import { updateRuntimeIndicatorOrder, type Approval, type BackgroundJob, type RuntimeIndicator } from "../runtimeState";
+import { updateRuntimeIndicatorOrder, type BackgroundJob, type RuntimeIndicator } from "../runtimeState";
 
 export { ContextWindowIndicator } from "./ContextWindow";
 
@@ -13,7 +13,6 @@ export function RuntimeIndicators({
   reconnecting,
   runtimePhase,
   pendingSteers,
-  approval,
   question,
   plan,
   jobs,
@@ -24,13 +23,12 @@ export function RuntimeIndicators({
   reconnecting: boolean;
   runtimePhase: RuntimePhase;
   pendingSteers: number;
-  approval: Approval | null;
   question: UserQuestion | null;
   plan: PlanSnapshot | null;
   jobs: BackgroundJob[];
   onStop: () => void;
 }) {
-  const interactionActive = approval !== null || question !== null;
+  const interactionActive = question !== null;
   const [popover, setPopover] = useState<RuntimeIndicator | null>(null);
   const [order, setOrder] = useState<RuntimeIndicator[]>(() => plan ? ["plan"] : []);
   const hasJobs = jobs.length > 0;
@@ -60,13 +58,11 @@ export function RuntimeIndicators({
           ? "连接中断，任务仍在后台运行，正在重新连接…"
           : runtimePhase === "starting"
             ? "正在启动 Agent…"
-            : approval
-              ? "等待你的确认"
-              : question
-                ? "等待你的选择"
-                : pendingSteers
-                  ? `RADE 正在处理… ${pendingSteers} 条引导待应用`
-                  : "RADE 正在处理…"
+            : question
+              ? "等待你的选择"
+              : pendingSteers
+                ? `RADE 正在处理… ${pendingSteers} 条引导待应用`
+                : "RADE 正在处理…"
       : "Plan 尚未完成"}</span>
     <div className="activity-controls">
       {order.map((item) => item === "plan"

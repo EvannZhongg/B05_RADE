@@ -165,7 +165,7 @@ class BridgeProcess:
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
 
-    def until(self, wanted, *, approved=True):
+    def until(self, wanted):
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             message = self.queue.get(timeout=max(0.01, deadline - time.monotonic()))
@@ -173,17 +173,15 @@ class BridgeProcess:
                 self.log.seek(0)
                 raise AssertionError(self.log.read().decode("utf-8", errors="replace"))
             self.messages.append(message)
-            if message["type"] == "approval_request":
-                self.send(type="approval_response", request_id=message["request_id"], approved=approved)
             if message["type"] == wanted:
                 return message
             if message["type"] in ("fatal", "turn_failed", "turn_cancelled"):
                 raise AssertionError(message)
         raise AssertionError(f"Timed out waiting for {wanted}")
 
-    def turn(self, *, approved=True, text="Review sample.py using the code-review Skill."):
+    def turn(self, *, text="Review sample.py using the code-review Skill."):
         self.send(type="user_turn", turn_id="review", text=text)
-        return self.until("turn_completed", approved=approved)
+        return self.until("turn_completed")
 
     def close(self):
         try:
@@ -287,13 +285,6 @@ class BridgeIntegrationTest(unittest.TestCase):
             for entry in entries:
                 entry["command"] = sys.executable
         self.json_file(hooks, document)
-        # Temporary homes can be owned by the elevated runner; the restricted
-        # command token needs read access to the installed Plugin code.
-        user = "*" + subprocess.run(
-            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, check=True,
-        ).stdout.split(b",")[-1].strip(b'"\r\n ').decode("ascii")
-        subprocess.run(["icacls", str(self.plugin), "/grant", f"{user}:(OI)(CI)RX"], capture_output=True, check=True)
-        subprocess.run(["icacls", str(self.workspace), "/grant", f"{user}:(OI)(CI)F"], capture_output=True, check=True)
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), LocalProvider)
         self.http.requests = []
         self.http.scripts = {
@@ -324,7 +315,7 @@ class BridgeIntegrationTest(unittest.TestCase):
         for name, content in {
             "Soul.md": "Review sources in {{workspace}}.",
             "SubAgent.md": "Role {{role}}: {{role_description}} in {{workspace}}.",
-            "Consolidator.md": "Consolidate.", "GlobalMemory.md": "Global memory.", "WorkspaceMemory.md": "Workspace memory.",
+            "Consolidator.md": "Consolidate.", "WorkspaceMemory.md": "Workspace memory.",
         }.items():
             (prompts / name).write_text(content, encoding="utf-8")
 
@@ -335,8 +326,6 @@ class BridgeIntegrationTest(unittest.TestCase):
     def bridge(self):
         bridge = BridgeProcess(self.project, self.workspace)
         self.addCleanup(bridge.close)
-        bridge.send(type="permission_set", preset="workspace_access")
-        bridge.until("permission_changed")
         return bridge
 
     def install_rule(self, filename):
@@ -344,7 +333,7 @@ class BridgeIntegrationTest(unittest.TestCase):
         directory.mkdir(exist_ok=True)
         shutil.copyfile(self.plugin / "examples" / filename, directory / f"hookify.{Path(filename).stem}.json")
 
-    def test_skill_reviewer_mcp_hooks_and_approval(self):
+    def test_skill_reviewer_mcp_and_hooks(self):
         bridge = self.bridge()
         bridge.send(type="settings_get", request_id="components")
         snapshot = bridge.until("settings_snapshot")["settings"]
@@ -357,9 +346,6 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.assertEqual([Path(path) for path in plugin["components"]["hooks"]], [self.plugin / "hooks" / "hooks.json"])
         bridge.turn()
         self.assertTrue(any(message["type"] == "mcp_server_status" and message["server"] == "repo-review-kit:analyzer" and message["status"] == "ready" for message in bridge.messages))
-        approvals = [message for message in bridge.messages if message["type"] == "approval_request"]
-        self.assertEqual(len(approvals), 1)
-        self.assertEqual(approvals[0]["tool_name"], "analyze_code")
         hooks = [message for message in bridge.messages if message["type"] == "hook_completed"]
         self.assertEqual({message["event"] for message in hooks}, {"InputSubmitted", "PreToolUse", "PostToolUse", "Stop"})
         self.assertEqual(len({message["session_id"] for message in hooks}), 2)
@@ -373,13 +359,6 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.assertNotIn("mcp__repo-review-kit_analyzer__internal_probe", names)
         self.assertNotIn("mcp__repo-review-kit_analyzer__fail_review", names)
         self.assertIn('"count": 1', str(child[-1]["messages"]))
-
-    def test_denied_child_call_is_returned_to_reviewer(self):
-        bridge = self.bridge()
-        bridge.turn(approved=False)
-        child = [request for request in self.http.requests if request["model"] == "gpt-3.5-turbo"]
-        self.assertIn("PermissionError", str(child[-1]["messages"]))
-        self.assertNotIn('"count": 1', str(child[-1]["messages"]))
 
     def test_disabled_plugin_contributes_no_components(self):
         manifest = self.plugin / "plugin.json"

@@ -8,7 +8,7 @@
 
 ```text
 RuntimeHost
-├── SessionRuntimeController   Session、Workspace、Provider、权限与计划
+├── SessionRuntimeController   Session、Workspace、Provider 与计划
 ├── ExecutionPlaneManager     Agent、Tool、MCP 连接、Memory、Job 等原子装配
 └── TurnRunner                turn、steer、cancel 与结束结果
 ```
@@ -29,15 +29,15 @@ RuntimeHost
 
 `ExecutionPlaneManager.ensure()` 在首个 `user_turn` 到来时延迟装配。复用条件是 Workspace、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
 
-空闲时可调用 `RuntimeHost.refresh_runtime()` 显式强制重新装配，即使上述输入未变化也会重建执行面，重新读取 Prompt、Skill、Plugin Agent，并重连 MCP、重新发现工具。该操作保留当前 Session、Journal、权限和 Plan，不调用模型、不创建 Turn；结果通过 `starting → idle/failed` 反馈。装配失败不会发布半成品，可修正后再次刷新；旧执行面关闭后的失败不恢复旧资源。正常 Turn 仍沿用原有变更检测。
+空闲时可调用 `RuntimeHost.refresh_runtime()` 显式强制重新装配，即使上述输入未变化也会重建执行面，重新读取 Prompt、Skill、Plugin Agent，并重连 MCP、重新发现工具。该操作保留当前 Session、Journal 和 Plan，不调用模型、不创建 Turn；结果通过 `starting → idle/failed` 反馈。装配失败不会发布半成品，可修正后再次刷新；旧执行面关闭后的失败不恢复旧资源。正常 Turn 仍沿用原有变更检测。
 
 装配阶段负责：
 
 - 创建主 Provider、`fast_model` 对应的辅助模型 Provider
 - 使用 OpenAI SDK 按配置装配 Chat Completions 或 Responses
-- 建立宿主与平台沙箱执行器，并按 Session 的权限 preset 决定执行路由授权
+- 为执行面建立一个以当前 Workspace 为工作目录的宿主命令执行器
 - 从内置 Catalog 按主 Agent 和子 Agent 角色选择 Tool
-- 注入 Session、Plan、Memory、权限、图片和用户交互能力
+- 注入 Session、Plan、Memory、命令执行器、图片和用户交互能力
 - 加载 standalone Skill、Plugin Skill、Plugin Agent 与 MCP Server
 - 构造子 Agent 角色注册表和后台 Job Manager
 - 启动 MCP Server 并汇总非致命 Runtime warning
@@ -48,7 +48,7 @@ RuntimeHost
 
 Manager 在后台线程中并发连接 Server，装配其他依赖后通过 `wait_ready()` 获取经过 allowlist 过滤的 `McpTool`。启动超时或失败仅将对应 Server 标记为 unavailable；工具名冲突仅拒绝冲突 Server 的整组工具，不留下部分注册结果。
 
-主 Agent 与子 Agent 通过同一执行面的 Tool Catalog 和上下文调用 MCP，审批与取消仍走既有 ToolPolicy 和 Turn 控制。相同装配输入下切换 Session 可复用执行面；Provider、Workspace、配置、Instructions 或有效 MCP 配置变化时，旧执行面连同 MCP 连接一起关闭，随后重新启动和发现工具。
+主 Agent 与子 Agent 通过同一执行面的 Tool Catalog 和上下文调用 MCP，取消走共享的 Turn 控制。相同装配输入下切换 Session 可复用执行面；Provider、Workspace、配置、Instructions 或有效 MCP 配置变化时，旧执行面连同 MCP 连接一起关闭，随后重新启动和发现工具。
 
 Server 初始化返回的 `instructions` 由 Manager 在成功注册时保存为执行面内的固定快照。主 Agent 与子 Agent 按实际选出的 MCP ToolSet 取得相关 Server 的完整说明，在创建 Agent 时追加到 system prompt 的 Workspace Instructions 与 Skill 目录之后、Memory 和压缩摘要之前。说明保留 Server 身份及原文，不另行列举工具名，不覆盖执行、授权或任务约束；无可见工具、无说明或注册失败的 Server 不注入。说明顺序不受连接完成顺序影响，不随 Turn、计划或 Jobs 更新，也不由历史压缩摘要替代。
 
@@ -83,11 +83,11 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 - 创建或恢复 Session，并绑定 Workspace
 - 选择显式、Session 已保存或默认的 Provider
 - 连接 append-only Journal sink
-- 恢复计划和权限 preset
+- 恢复计划
 
 此时不会创建 Provider、MCP、Tool 或 Agent。真正的执行面由首个 Turn 延迟创建。
 
-切换 Session 时先准备目标会话并取得 Journal 写入权，再由 `RuntimeHost` 释放原执行面的会话资源并提交新绑定。目标准备失败不会释放原会话的 Journal、权限、计划或执行状态；重新选择当前 Session 则复用已持有的 Journal 写者。
+切换 Session 时先准备目标会话并取得 Journal 写入权，再由 `RuntimeHost` 释放原执行面的会话资源并提交新绑定。目标准备失败不会释放原会话的 Journal、计划或执行状态；重新选择当前 Session 则复用已持有的 Journal 写者。
 
 `TurnRunner` 保证一个 Host 同时只有一个活动 Turn，并统一处理：
 
@@ -108,11 +108,10 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 | `provider_config.json` | Provider 定义与主 Agent、辅助调用、子 Agent 角色路由 |
 | `agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Instructions 与 scratch Workspace |
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
-| `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`GlobalMemory.md`、`WorkspaceMemory.md` |
+| `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`WorkspaceMemory.md` |
 | `skills/` | standalone Skill |
 | `plugins/` | Plugin 安装目录 |
 | `AGENTS.md` | 项目级 Workspace Instruction |
-| `MEMORY.md` | 全局长期记忆 |
 
 初始化时从仓库内的 [`defaults/`](defaults) 补齐缺失的配置、Prompt 和 Skill，并创建用于手动安装插件的 `plugins/` 目录。
 
@@ -199,7 +198,7 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `services.py` | 进程内共享的配置服务、环境重载与 Settings |
 | `execution_plane.py` | 一次原子装配的资源容器 |
 | `plane_manager.py` | Execution Plane 创建、复用、失效与关闭 |
-| `session_controller.py` | Session、Workspace、Provider、权限与计划绑定 |
+| `session_controller.py` | Session、Workspace、Provider 与计划绑定 |
 | `turn_runner.py` | Turn、steer、cancel 和结果 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
 | `session_title.py` | 执行面持有的 Session 命名任务 |
@@ -212,4 +211,4 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 
 ## Plugin Hooks
 
-`components.hooks` 声明版本化的 command Hook 文件。Runtime 解析与装配，Core 在输入、工具执行前后和正常结束前应用决策，复用现有 Tool、权限和进程执行链。声明变更通过 `/refresh` 生效。公开契约和测试边界见 [Plugin Hooks](../docs/plugin-hooks.md)。
+`components.hooks` 声明版本化的 command Hook 文件。Runtime 解析与装配，Core 在输入、工具执行前后和正常结束前应用决策，复用现有 Tool 和宿主进程执行链。声明变更通过 `/refresh` 生效。公开契约和测试边界见 [Plugin Hooks](../docs/plugin-hooks.md)。

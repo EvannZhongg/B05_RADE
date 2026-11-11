@@ -35,8 +35,6 @@ RELAYED_MESSAGE_TYPES = frozenset(
     {
         "user_turn",
         "user_steer",
-        "approval_response",
-        "permission_set",
         "provider_set",
         "workspace_set",
         "runtime_refresh",
@@ -170,7 +168,6 @@ def create_sessions_router(
                     ],
                     "workspace": session.workspace,
                     "provider": store.provider_for(session.session_id),
-                    "permission_preset": session.permission_preset.value,
                     "context_window": None,
                     "cache_usage": cache_usage_to_dict(session.cache_usage),
                     "event_sequence": 0,
@@ -213,7 +210,6 @@ def create_sessions_router(
                     ],
                     "workspace": forked.workspace,
                     "provider": store.provider_for(forked.session_id),
-                    "permission_preset": forked.permission_preset.value,
                     "context_window": None,
                     "event_sequence": 0,
                     "plan": (

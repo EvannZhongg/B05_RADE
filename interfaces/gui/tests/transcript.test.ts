@@ -17,15 +17,6 @@ describe("process folding", () => {
     expect(messages.map((message) => [message.id, message.metadata?.custom?.itemIndexes]))
       .toEqual([["0", [0]], ["1", [1, 4]], ["5", [5]]]);
   });
-  it("preserves the file approval kind and tool identity", () => {
-    const approval = {
-      type: "approval_request" as const, turn_id: "t1", request_id: "t1:1",
-      command: "*** Update File: notes.txt", kind: "file" as const, tool_name: "apply_patch",
-    };
-    const direct = applyMessage([], approval);
-    expect(direct.approval).toMatchObject({ kind: "file", toolName: "apply_patch" });
-  });
-
   it("keeps hook feedback out of human message bubbles", () => {
     const items: TranscriptItem[] = [
       { role: "user", content: "work" },
@@ -41,8 +32,8 @@ describe("process folding", () => {
   it("restores Session totals from a runtime snapshot", () => {
     const applied = applyMessage([], {
       type: "runtime_state", phase: "inactive", turn_id: null,
-      provider: "test", permission_preset: "ask_for_approval", context_window: null,
-      jobs: [], approval: null, question: null, plan: null,
+      provider: "test", context_window: null,
+      jobs: [], question: null, plan: null,
       cache_usage: { input_tokens: 1000, cache_read_tokens: 170 },
     });
     expect(applied.cacheUsage).toEqual({ input_tokens: 1000, cache_read_tokens: 170 });
@@ -64,7 +55,6 @@ describe("process folding", () => {
       expect(applyMessage(items, message).cacheUsage).toEqual(applied.cacheUsage);
       expect(applied.items).toBe(items);
       expect(applied.finished).toBeUndefined();
-      expect(applied.approval).toBeUndefined();
       expect(applied.question).toBeUndefined();
       expect(isTurnActivity(message)).toBe(true);
     }
@@ -106,7 +96,6 @@ describe("process folding", () => {
     expect(applyMessage(items, { ...message, replayed: true }).cacheUsage).toEqual(applied.cacheUsage);
     expect(applied.items).toBe(items);
     expect(applied.finished).toBeUndefined();
-    expect(applied.approval).toBeUndefined();
     expect(applied.question).toBeUndefined();
     expect(isTurnActivity(message)).toBe(true);
   });
@@ -254,8 +243,6 @@ function fold(messages: Incoming[], initial: TranscriptItem[] = []) {
       return {
         items: applied.items,
         feedback: applied.feedback ?? state.feedback,
-        approval:
-          applied.approval !== undefined ? applied.approval : state.approval,
         question:
           applied.question !== undefined ? applied.question : state.question,
         finished: applied.finished ?? state.finished,
@@ -264,10 +251,9 @@ function fold(messages: Incoming[], initial: TranscriptItem[] = []) {
     {
       items: initial,
       feedback: undefined,
-      approval: null,
       question: null,
       finished: false,
-    } as ReturnType<typeof applyMessage> & { approval: unknown },
+    } as ReturnType<typeof applyMessage>,
   );
 }
 
@@ -356,32 +342,6 @@ describe("applyMessage", () => {
     ]);
   });
 
-  it("reports permission state from session readiness and later changes", () => {
-    const ready = applyMessage([], {
-      type: "session_ready", protocol_version: 4,
-      session_id: "s1",
-      workspace: "/tmp/work",
-      provider: "test",
-      model: "test/model",
-      resumed: false,
-      message_count: 0,
-      permission_preset: "ask_for_approval",
-    });
-    expect(ready.permissionPreset).toBe("ask_for_approval");
-
-    const changed = applyMessage([], {
-      type: "permission_changed",
-      preset: "full_access",
-    });
-    expect(changed.permissionPreset).toBe("full_access");
-
-    const workspaceChanged = applyMessage([], {
-      type: "permission_changed",
-      preset: "workspace_access",
-    });
-    expect(workspaceChanged.permissionPreset).toBe("workspace_access");
-  });
-
   it("appends steering only when the runtime applies it", () => {
     const applied = applyMessage([], {
       type: "user_steer_applied",
@@ -405,8 +365,6 @@ describe("applyMessage", () => {
       phase: "running",
       turn_id: "t1",
       provider: "test",
-      permission_preset: "ask_for_approval",
-      approval: null,
       question: null,
       jobs: [],
       context_window: {
@@ -640,30 +598,6 @@ describe("applyMessage", () => {
     });
   });
 
-  it("raises and then clears an approval request", () => {
-    const requested = fold([
-      {
-        type: "approval_request",
-        turn_id: "t1",
-        request_id: "t1:1",
-        command: "rm -rf build",
-      },
-    ]);
-    expect(requested.approval).toEqual({
-      requestId: "t1:1",
-      command: "rm -rf build",
-    });
-    expect(requested.question).toBeNull();
-
-    const completed = applyMessage(requested.items, {
-      type: "turn_completed",
-      turn_id: "t1",
-      usage: null,
-    });
-    expect(completed.approval).toBeNull();
-    expect(completed.finished).toBe(true);
-  });
-
   it("raises and then clears a user question", () => {
     const question = {
       type: "user_question" as const,
@@ -675,7 +609,6 @@ describe("applyMessage", () => {
     };
     const requested = applyMessage([], question);
     expect(requested.question).toEqual(question);
-    expect(requested.approval).toBeNull();
 
     const completed = applyMessage([], {
       type: "turn_completed",
@@ -768,14 +701,13 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 4 as const,
+        protocol_version: 5 as const,
         session_id: "s1",
         workspace: "/tmp",
         provider: "test",
         model: "m",
         resumed: false,
         message_count: 0,
-        permission_preset: "ask_for_approval" as const,
       },
       {
         type: "tool_call" as const,

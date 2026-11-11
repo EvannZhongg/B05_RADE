@@ -4,7 +4,7 @@
   <b>English</b> &middot; <a href="README.zh-CN.md">简体中文</a>
 </div>
 
-RADE is an open-source, lightweight personal agent application. It provides local workspace operations, human approval, session persistence, context management, long-term memory, plans, subagents, and Skill / Plugin / MCP extensibility, with a TUI and a GUI.
+RADE is an open-source, lightweight personal agent application. It provides local workspace operations, session persistence, context management, long-term memory, plans, subagents, and Skill / Plugin / MCP extensibility, with a TUI and a GUI.
 
 ```text
 TUI ───────────────────────── Bridge ── agent_runtime ── agent_core
@@ -20,10 +20,10 @@ RADE-server
 
 ## Key capabilities
 
-- **Controlled local execution**: A session supports three permission presets — `Ask for approval`, `Workspace Access`, and `Full Access`. Shell enters the workspace sandbox or the host environment according to scope, while file tools are always confined to the current workspace.
+- **Direct local execution**: Shell and command Hooks run with the current user's host permissions and the Workspace as their working directory. Built-in file tools resolve paths within the Workspace.
 - **A complete agent loop**: streaming responses, tool batches, context compaction, steer, cancel, plans, and background jobs.
 - **Resumable sessions**: conversation and execution events are written to an append-only JSONL journal, and the TUI and GUI can read the same kind of session.
-- **Memory** stores long-term context globally and per workspace.
+- **Memory** stores long-term context for each workspace.
 - **Models and media** use Chat Completions or Responses through the OpenAI SDK. The main agent, auxiliary calls, and each subagent role can use different providers. Models with image input can inspect workspace images.
 - **Extension system**: standalone skills, skills / agents / MCP / [command hooks](docs/plugin-hooks.md) provided by plugins, and standalone MCP servers.
 - **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, attachments, a file tree, settings, and memory.
@@ -93,7 +93,7 @@ Runtime layers:
 
 | Document | Scope |
 | --- | --- |
-| [`agent_core`](agent_core/README.md) | Agent loop, context, session, tools, execution, permissions, memory, plans, jobs, providers, skills, and MCP mechanisms |
+| [`agent_core`](agent_core/README.md) | Agent loop, context, session, tools, execution, memory, plans, jobs, providers, skills, and MCP mechanisms |
 | [`agent_runtime`](agent_runtime/README.md) | Configuration, prompts, plugin discovery, runtime assembly, execution plane, session binding, and turn entry |
 
 Frontends and SDK:
@@ -120,7 +120,6 @@ Frontends and SDK:
 | `.RADE/skills/` | Standalone skills |
 | `.RADE/plugins/` | Plugin capability packages |
 | `.RADE/AGENTS.md` | Project-wide workspace instruction |
-| `.RADE/MEMORY.md` | Global long-term memory |
 | `.RADE/sessions/` | Session journals, workspace memory, artifacts, subagent records, and per-session auxiliary usage logs |
 | `<workspace>/.RADE/attachments/` | Uploaded attachments |
 
@@ -139,7 +138,7 @@ python -m pytest --durations=20
 
 On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
 
-Pytest distributes test classes across four isolated worker processes. Use `-n 0` for a serial run or `-n 2` on smaller machines. The full suite includes package installation and real local MCP/sandbox processes; `--ignore=tests/test_bridge_client.py` omits the package installation check during iteration. The standalone plugin testkit has its own command in [docs/plugin-interop.md](docs/plugin-interop.md).
+Pytest distributes test classes across four isolated worker processes. Use `-n 0` for a serial run or `-n 2` on smaller machines. The full suite includes package installation and real local MCP and shell processes; `--ignore=tests/test_bridge_client.py` omits the package installation check during iteration. The standalone plugin testkit has its own command in [docs/plugin-interop.md](docs/plugin-interop.md).
 
 The server extra includes FastAPI, Uvicorn, the WebSocket backend, and multipart support; Windows, macOS, and Linux use the same installation. The TUI runs with the base installation.
 
@@ -151,7 +150,6 @@ npm run typecheck
 npm test
 ```
 
-The Linux sandbox integration tests require a working bubblewrap and user namespaces; when the runtime conditions are not met, the tests explicitly skip.
 
 On Windows the shell tool uses PowerShell 7, so PowerShell 7 has to be installed separately.
 

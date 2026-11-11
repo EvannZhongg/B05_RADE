@@ -38,9 +38,9 @@ Read the requested source, analyze it, and report concrete findings.
 Provider 路由先对声明角色校验，因 MCP 暂不可用而跳过的角色不会被误报为配置中的未知角色。
 真正不存在的配置角色仍保留原有报错行为。
 
-调用沿用 `SubagentTool → SubagentRuntime → catalog.select → ToolSet.execute → ToolPolicy → McpTool`。
-子 Agent 使用同一 Catalog、权限控制器及 MCP Manager，不获得 Runtime 内部对象，也不能再次委派。
-声明工具仅选择可见能力，不能绕过 MCP allowlist、审批或执行权限。
+调用沿用 `SubagentTool → SubagentRuntime → catalog.select → ToolSet.execute → McpTool`。
+子 Agent 使用同一 Catalog、宿主命令执行器及 MCP Manager，不获得 Runtime 内部对象，也不能再次委派。
+MCP allowlist 先过滤工具，角色再从可用工具中选择。
 
 ## 契约与错误隔离
 
@@ -48,10 +48,11 @@ Provider 路由先对声明角色校验，因 MCP 暂不可用而跳过的角色
 Loader 的包级错误跳过整个包；组件加载错误保留其他组件。重复 Agent、MCP Server 或 Hook
 保留第一项并列出冲突来源。规范化后 MCP 工具名冲突通过既有 `mcp_server_status`
 报告，仅使冲突 Server 的工具视图不可用；一次 Server 工具注册失败不会留下部分工具。
-MCP 调用、服务断开和拒绝审批继续沿用现有 ToolResult 与服务生命周期处理。
+MCP 调用与服务断开沿用现有 ToolResult 与服务生命周期处理。
 
 Creator 的脚手架生成相同 manifest。独立校验器不 import RADE：它检查静态结构、
-组件文件、Agent 工具语法、MCP transport/字段/类型/allowlist/approval 和重复注册。
+组件文件、Agent 工具语法、MCP transport/字段/类型/allowlist 和重复注册。
+升级 MCP 配置时，移除 `tools.approval`，工具筛选使用 `tools.enabled`。
 它不启动 MCP、不解析凭据、不判断动态工具是否存在；这些由 Runtime 完成。
 契约矩阵测试将其接受结果与 Loader/Manager 对照，防止两份静态校验漂移。
 
@@ -70,8 +71,8 @@ Plane 持有独立的 MCP Manager；关闭或重新装配时关闭其连接与 s
 
 `tests/test_plugin_contract.py` 检查独立校验器与 Runtime 契约；
 `tests/test_plugin_interop.py` 复用 unittest、MockProvider、Fake MCP Server 与 Bridge，
-覆盖 Skill → Reviewer → MCP、子 Agent 工具选择与审批、禁用/过滤/启动失败、冲突隔离和重新装配。
-`tests/test_hooks.py` 与 `tests/test_hook_interop.py` 覆盖 Hook 决策、审批、取消、Journal、
+覆盖 Skill → Reviewer → MCP、子 Agent 工具选择、禁用/过滤/启动失败、冲突隔离和重新装配。
+`tests/test_hooks.py` 与 `tests/test_hook_interop.py` 覆盖 Hook 决策、取消、Journal、
 子 Agent 和重新装配。
 第三方示例包位于 `tests/RADE-plugin-testkit/`，统一验证 Skill、Agent、MCP 与 Hook，
 不导入 RADE 内部模块，也不作为默认插件安装。

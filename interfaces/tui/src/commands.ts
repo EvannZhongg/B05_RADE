@@ -11,10 +11,6 @@ export type Command = {
  */
 export const COMMANDS: Command[] = [
   {
-    name: '/permissions',
-    description: 'Choose the current permission mode',
-  },
-  {
     name: '/sessions',
     description: 'Switch to another conversation in this workspace',
   },

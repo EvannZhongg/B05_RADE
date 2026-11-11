@@ -1,24 +1,20 @@
 """Core hook semantics using the shared native Plugin Testkit."""
 
 import json
-import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from dataclasses import replace
-from unittest.mock import patch
 from unittest.mock import Mock
 
 from agent_core import (
-    Agent, AgentCancelled, ExecutionRouter, FULL_ACCESS_AUTHORITY, HostCommandExecutor,
-    JsonlSessionStore, LLMResponse, PermissionController, PermissionPreset, Session,
-    ShellApprovalPolicy, ToolCall, ToolCatalog, ToolExecutionContext, TurnControl, Workspace,
-    WORKSPACE_ONLY_AUTHORITY, ExecutionScope, SandboxedCommandExecutor, WindowsSandboxBackend,
+    Agent, AgentCancelled, HostCommandExecutor,
+    JsonlSessionStore, LLMResponse, Session,
+    ToolCall, ToolCatalog, ToolExecutionContext, TurnControl, Workspace,
     JobManager,
 )
 from agent_core.hooks import HookExecutionError, HookRejectedError, HookRunner
@@ -47,21 +43,13 @@ class HookTest(unittest.TestCase):
         self.assertEqual(warnings, ())
         self.hooks = HookRunner(hooks)
         self.session = Session()
-        self.session.permission_preset = PermissionPreset.FULL_ACCESS
-        self.approvals = []
-        self.policy = PermissionController(self.session, ShellApprovalPolicy(self.approve))
         executor = HostCommandExecutor(self.workspace)
-        self.router = ExecutionRouter(executor, executor, authority=lambda: self.policy.authority)
         self.events = []
         self.context = ToolExecutionContext(
             Workspace(self.workspace), self.session, sessions_directory=self.root / "sessions",
-            hooks=self.hooks, execution_router=self.router, on_hook_event=self.events.append,
+            hooks=self.hooks, command_executor=executor, on_hook_event=self.events.append,
         )
         self.catalog = ToolCatalog((ReadFileTool(), WriteFileTool(), ShellTool()))
-
-    def approve(self, command):
-        self.approvals.append(command)
-        return True
 
     def rule(self, event, *, action="block", conditions=None, tools=None, name="test"):
         directory = self.workspace / ".RADE"
@@ -76,7 +64,7 @@ class HookTest(unittest.TestCase):
         context = context or self.context
         provider = MockProvider(responses)
         agent = Agent(provider, context.session, "System", "Compress", AGENT_CONFIG,
-                      self.catalog.select(self.catalog.names, context, policy=self.policy), context)
+                      self.catalog.select(self.catalog.names, context), context)
         return agent, provider
 
     def test_pre_deny_prevents_side_effect_and_preserves_tool_pair(self):
@@ -120,7 +108,7 @@ class HookTest(unittest.TestCase):
         self.rule("PreToolUse", tools=[tool.name], conditions=[
             {"field": "tool_call.name", "operator": "equals", "value": tool.name},
         ])
-        result = ToolCatalog((tool,)).select((tool.name,), context, policy=self.policy).execute(ToolCall("mcp", tool.name, {}))
+        result = ToolCatalog((tool,)).select((tool.name,), context).execute(ToolCall("mcp", tool.name, {}))
         self.assertEqual(result.error.type, "HookDenied")
         self.assertEqual(manager.mock_calls, [])
 
@@ -235,38 +223,6 @@ class HookTest(unittest.TestCase):
         self.assertEqual(agent.run("work", turn_control=control).content, "finished")
         self.assertEqual(len(provider.requests), 2)
 
-    def test_hook_and_original_command_have_separate_approvals(self):
-        self.session.set_permission_preset(PermissionPreset.ASK_FOR_APPROVAL)
-        self.hooks = HookRunner(tuple(hook for hook in self.hooks.definitions if hook.event == "PreToolUse"))
-        context = replace(self.context, hooks=self.hooks)
-        tools = self.catalog.select(("shell",), context, policy=self.policy)
-        result = tools.execute(ToolCall("shell", "shell", {"command": "echo hello"}))
-        self.assertIsNone(result.error)
-        self.assertEqual(len(self.approvals), 2)
-        self.assertTrue(self.approvals[0].startswith("[Hook] "))
-        self.assertEqual(self.approvals[1], "echo hello")
-        self.assertEqual(len(self.events), 1)
-
-    def test_cancel_during_hook_approval_prevents_process_launch(self):
-        self.session.set_permission_preset(PermissionPreset.ASK_FOR_APPROVAL)
-        control = TurnControl()
-        policy = PermissionController(self.session, ShellApprovalPolicy(lambda _: control.cancel() or True))
-        tools = self.catalog.select(("write_file",), self.context, policy=policy)
-        with patch("agent_core.execution.process.subprocess.Popen") as launch:
-            with self.assertRaises(AgentCancelled):
-                tools.execute(ToolCall("write", "write_file", {"path": "x", "content": "x"}), turn_control=control)
-        launch.assert_not_called()
-        self.assertFalse((self.workspace / "x").exists())
-
-    def test_host_hook_cannot_exceed_runtime_authority(self):
-        definition = replace(self.hooks.definitions[0], scope=ExecutionScope.HOST)
-        router = ExecutionRouter(HostCommandExecutor(self.workspace), HostCommandExecutor(self.workspace), authority=WORKSPACE_ONLY_AUTHORITY)
-        context = replace(self.context, hooks=HookRunner((definition,)), execution_router=router)
-        agent, provider = self.agent([], context)
-        with self.assertRaisesRegex(HookExecutionError, "exceeds authority"):
-            agent.run("work")
-        self.assertEqual(provider.requests, [])
-
     def test_failures_preserve_diagnostics_and_do_not_execute_original_tool(self):
         for script, pattern in (
             ("print('invalid')", "Expecting value"),
@@ -278,7 +234,7 @@ class HookTest(unittest.TestCase):
             with self.subTest(script=script):
                 definition = replace(self.hooks.definitions[1], command=sys.executable, args=("-c", script), timeout_seconds=1)
                 context = replace(self.context, hooks=HookRunner((definition,)))
-                tools = self.catalog.select(("write_file",), context, policy=self.policy)
+                tools = self.catalog.select(("write_file",), context)
                 with self.assertRaisesRegex(HookExecutionError, pattern):
                     tools.execute(ToolCall("write", "write_file", {"path": "x", "content": "x"}))
                 self.assertFalse((self.workspace / "x").exists())
@@ -313,16 +269,7 @@ class HookTest(unittest.TestCase):
         self.assertTrue(any(item.origin == "hook_feedback" and not item.is_user_authored for item in restored.items))
         self.assertEqual(len(restored.user_anchors), 1)
 
-    @unittest.skipUnless(os.name == "nt", "Windows restricted stdin integration")
-    def test_windows_workspace_hook_reads_json_stdin(self):
-        user = "*" + subprocess.run(
-            ["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, check=True,
-        ).stdout.split(b",")[-1].strip(b'"\r\n ').decode("ascii")
-        subprocess.run(["icacls", str(self.plugin), "/grant", f"{user}:(OI)(CI)RX"], capture_output=True, check=True)
-        executor = SandboxedCommandExecutor(self.workspace, WindowsSandboxBackend())
-        self.addCleanup(executor.close)
-        router = ExecutionRouter(executor, HostCommandExecutor(self.workspace), authority=FULL_ACCESS_AUTHORITY)
-        context = replace(self.context, execution_router=router)
-        agent, _ = self.agent(["done"], context)
+    def test_host_hook_reads_json_stdin(self):
+        agent, _ = self.agent(["done"])
         self.assertEqual(agent.run("中文输入").content, "done")
         self.assertEqual([event.event for event in self.events], ["InputSubmitted", "Stop"])

@@ -71,7 +71,7 @@ class PluginInteropTest(BridgeTestCase):
             "command": sys.executable,
             "args": [str(Path(__file__).with_name("fake_mcp_server.py"))],
             "env": {"TEST_MCP_INSTRUCTIONS": "Use analyzer echo for code review."},
-            "tools": {"enabled": ["echo"], "approval": "never"},
+            "tools": {"enabled": ["echo"]},
         }
         self.write_mcp()
         self.main = MockProvider([])
@@ -106,7 +106,7 @@ class PluginInteropTest(BridgeTestCase):
         }))
         return bridge, stdout
 
-    def test_skill_to_reviewer_to_mcp_uses_shared_catalog_and_policy(self) -> None:
+    def test_skill_to_reviewer_to_mcp_uses_shared_catalog(self) -> None:
         self.main = MockProvider([
             calls(ToolCall("skill", "read_skill", {"name": "review-kit:code-review"})),
             calls(ToolCall("delegate", "subagent", {"role": "review-kit:reviewer", "task": "Review sample.py"})),
@@ -138,7 +138,6 @@ class PluginInteropTest(BridgeTestCase):
         plane = bridge.host.planes.current
         runtime = plane.agent._tools._context.subagents
         self.assertIs(runtime._catalog, plane.catalog)
-        self.assertIs(runtime._tool_policy, bridge.host.sessions.permissions)
         self.assertTrue(any("subagents" in path.parts for path in self.root.rglob("*.jsonl")))
 
     def test_mcp_instructions_follow_each_agents_actual_tool_selection(self) -> None:
@@ -179,27 +178,6 @@ class PluginInteropTest(BridgeTestCase):
         self.assertIsNone(result.error)
         self.assertIn("tool_not_found", str(self.child.requests[1].messages))
         self.assertIn("still works", str(self.child.requests[2].messages))
-
-    def test_child_mcp_approval_denial_and_approval_use_bridge(self) -> None:
-        self.server_config["tools"]["approval"] = "always"
-        self.write_mcp()
-        for approved in (False, True):
-            with self.subTest(approved=approved):
-                self.child = MockProvider([calls(ToolCall("analyze", TOOL, {"text": "review"})), "done"])
-                bridge, stdout = self.open([json.dumps({
-                    "type": "approval_response", "request_id": "None:1", "approved": approved,
-                })])
-                plane = bridge.host.planes.ensure(bridge.host.sessions)
-                result = plane.agent._tools.execute(ToolCall("review", "subagent", {"role": "review-kit:reviewer", "task": "Review"}))
-                self.assertIsNone(result.error)
-                approvals = [message for message in emitted(stdout) if message["type"] == "approval_request"]
-                self.assertEqual(len(approvals), 1)
-                self.assertEqual(approvals[0]["kind"], "mcp")
-                self.assertEqual(approvals[0]["server"], "review-kit:analyzer")
-                self.assertEqual(approvals[0]["tool_name"], "echo")
-                result_messages = str(self.child.requests[-1].messages)
-                self.assertEqual("PermissionError" in result_messages, not approved)
-                bridge.close()
 
     def test_missing_dynamic_tools_skip_only_affected_role(self) -> None:
         manifest = self.plugin / "plugin.json"

@@ -1,9 +1,9 @@
-"""Session binding, provider selection and persisted permission state."""
+"""Session binding and provider selection."""
 
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator
-from agent_core import JsonlSessionStore, Session, Workspace, PlanManager, PermissionController, CompositeToolPolicy
+from agent_core import JsonlSessionStore, Session, Workspace, PlanManager
 from .config import load_model_options
 from .settings import EnvironmentReloader
 from .callbacks import RuntimeCallbacks
@@ -11,16 +11,14 @@ from .callbacks import RuntimeCallbacks
 
 class SessionRuntimeController:
     def __init__(self, config_directory: Path, environment: EnvironmentReloader,
-                 callbacks: RuntimeCallbacks, approval_policy: CompositeToolPolicy) -> None:
+                 callbacks: RuntimeCallbacks) -> None:
         self._config_path = config_directory / "provider_config.json"
         self._environment = environment
         self.callbacks = callbacks
-        self.approval_policy = approval_policy
         self.session: Session | None = None
         self.store: JsonlSessionStore | None = None
         self.workspace: Workspace | None = None
         self.provider_name: str | None = None
-        self.permissions: PermissionController | None = None
         self.plan: PlanManager | None = None
         self.sessions_directory = config_directory / "sessions"
         self._journal = ExitStack()
@@ -91,10 +89,6 @@ class SessionRuntimeController:
         )
 
         self.provider_name = main_provider_name
-        self.permissions = PermissionController(
-            self.session,
-            self.approval_policy,
-        )
 
     def change_provider(self, provider: str) -> None:
         assert self.session is not None and self.store is not None and self.workspace is not None

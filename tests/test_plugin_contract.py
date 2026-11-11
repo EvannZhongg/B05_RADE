@@ -21,23 +21,23 @@ class PluginContractTest(unittest.TestCase):
         manifest = write_manifest(self.root, "rules", components={"hooks": ["hooks.json"]})
         entry = {"name": "check", "command": "python", "args": ["", "same", "same"]}
         for document, valid in (
-            ({"schema_version": 1, "hooks": {}}, True),
-            ({"schema_version": 1, "hooks": {"PreToolUse": [entry]}}, True),
+            ({"schema_version": 2, "hooks": {}}, True),
+            ({"schema_version": 2, "hooks": {"PreToolUse": [entry]}}, True),
             ({"schema_version": True, "hooks": {}}, False),
-            ({"schema_version": 2, "hooks": {}}, False),
-            ({"schema_version": 1, "hooks": {"Unknown": []}}, False),
-            ({"schema_version": 1, "hooks": {"Stop": {}}}, False),
-            ({"schema_version": 1, "hooks": {"Stop": [entry, entry]}}, False),
-            *[( {"schema_version": 1, "hooks": {"PreToolUse": [{**entry, **fields}]}}, accepted)
+            ({"schema_version": 1, "hooks": {}}, False),
+            ({"schema_version": 2, "hooks": {"Unknown": []}}, False),
+            ({"schema_version": 2, "hooks": {"Stop": {}}}, False),
+            ({"schema_version": 2, "hooks": {"Stop": [entry, entry]}}, False),
+            *[( {"schema_version": 2, "hooks": {"PreToolUse": [{**entry, **fields}]}}, accepted)
               for fields, accepted in (
                   ({"tools": []}, True), ({"tools": ["shell", "shell"]}, False),
                   ({"tools": None}, False), ({"args": None}, False), ({"args": [1]}, False),
                   ({"command": None}, False), ({"name": "bad:name"}, False),
-                  ({"scope": "host"}, True), ({"scope": []}, False),
+                  ({"scope": "host"}, False), ({"scope": []}, False),
                   ({"timeout_seconds": 86400}, True), ({"timeout_seconds": 86401}, False),
                   ({"timeout_seconds": True}, False), ({"extra": True}, False),
               )],
-            ({"schema_version": 1, "hooks": {"Stop": [{**entry, "tools": ["shell"]}]}}, False),
+            ({"schema_version": 2, "hooks": {"Stop": [{**entry, "tools": ["shell"]}]}}, False),
         ):
             with self.subTest(document=document):
                 (manifest.parent / "hooks.json").write_text(json.dumps(document), encoding="utf-8")
@@ -99,8 +99,8 @@ class PluginContractTest(unittest.TestCase):
             ({"url": "http://localhost/mcp", "type": "http", "headers": {"X-Key": "${KEY}"}}, True),
             ({"url": "http://localhost/mcp", "transport": "streamable_http"}, True),
             ({"command": "python", "type": None}, True),
-            ({"command": "python", "tools": {"enabled": ["one"], "approval": {"always": ["one"]}}}, True),
-            ({"command": "python", "tools": {"enabled": [], "approval": "never"}}, True),
+            ({"command": "python", "tools": {"enabled": ["one"]}}, True),
+            ({"command": "python", "tools": {"enabled": []}}, True),
             ({"command": "python", "enabled": False}, True),
             ({"command": "python", "startup_timeout_seconds": True}, False),
             ({"command": "python", "call_timeout_seconds": 0}, False),

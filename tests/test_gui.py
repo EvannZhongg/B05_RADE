@@ -65,8 +65,8 @@ class FakeBridge:
         self._stream = EventStream()
         self.state = bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="inactive", approval=None, question=None, provider=None,
-            permission_preset="ask_for_approval", context_window=None, jobs=[],
+            phase="inactive", question=None, provider=None,
+            context_window=None, jobs=[],
         )
         self.items = []
 
@@ -96,16 +96,12 @@ class FakeBridge:
             if kind == "runtime_state":
                 self.state.update(message)
                 message = dict(self.state)
-            elif kind == "permission_changed":
-                self.state["permission_preset"] = message["preset"]
             elif kind == "provider_changed":
                 self.state["provider"] = message["provider"]
             elif kind == "workspace_changed":
                 self.state["workspace"] = message["workspace"]
             elif kind == "plan_updated":
                 self.state["plan"] = message["plan"]
-            elif kind == "approval_request":
-                self.state.update(phase="waiting_approval", approval=message)
             elif kind == "user_question":
                 self.state.update(phase="waiting_user", question=message)
             elif kind == "assistant_message":
@@ -189,14 +185,14 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runtime.running)
         self.assertEqual(runtime.state["phase"], "inactive")
         bridge.emit(bridge_protocol.runtime_state_message(
-            phase="starting", provider="first", permission_preset="full_access",
-            approval=None, question=None, context_window=None, cache_usage=None, jobs=[],
+            phase="starting", provider="first",
+            question=None, context_window=None, cache_usage=None, jobs=[],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 1)
         self.assertTrue(runtime.running)
         bridge.emit(bridge_protocol.runtime_state_message(
-            phase="idle", provider="first", permission_preset="full_access",
-            approval=None, question=None, context_window=None, cache_usage=None, jobs=[],
+            phase="idle", provider="first",
+            question=None, context_window=None, cache_usage=None, jobs=[],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 2)
         self.assertTrue(runtime.running)
@@ -212,8 +208,8 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         bridge._messages.put_nowait({
             **bridge_protocol.runtime_state_message(
                 cache_usage=None,
-                phase="running", turn_id="t2", approval=None, question=None,
-                provider="first", permission_preset="full_access", context_window=None, jobs=[],
+                phase="running", turn_id="t2", question=None,
+                provider="first", context_window=None, jobs=[],
             ),
             "event_sequence": 75, "resume_after": 74,
             "transcript": {"items": items, "event_sequence": 63},
@@ -264,28 +260,26 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         bridge = FakeBridge()
         runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
         self.addAsyncCleanup(runtime.close)
-        approval = {
-            "type": "approval_request",
+        question = {
+            "type": "user_question",
             "turn_id": "t1",
             "request_id": "t1:1",
-            "command": "ls",
+            "question": "List files?",
+            "options": [],
+            "allow_free_text": True,
         }
         bridge.emit(bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="waiting_approval",
+            phase="waiting_user",
             turn_id="t1",
-            approval=approval,
-            question=None,
+            question=question,
             provider="first",
-            permission_preset="full_access",
             context_window={"input_tokens": 1},
             jobs=[{"job_id": "j1", "kind": "shell", "status": "running"}],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 1)
 
-        self.assertEqual(runtime.state["approval"], approval)
-        self.assertIsNone(runtime.state["question"])
-        self.assertEqual(runtime.state["permission_preset"], "full_access")
+        self.assertEqual(runtime.state["question"], question)
         self.assertEqual([job["job_id"] for job in runtime.state["jobs"]], ["j1"])
         self.assertEqual(runtime.state["context_window"], {"input_tokens": 1})
 
@@ -299,10 +293,8 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
             cache_usage=None,
             phase="running",
             turn_id="t1",
-            approval=None,
             question=None,
             provider="first",
-            permission_preset="ask_for_approval",
             context_window=None,
             jobs=[],
             plan=first,
@@ -357,10 +349,8 @@ class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
                 cache_usage=None,
                 phase="running",
                 turn_id="t1",
-                approval=None,
                 question=None,
                 provider="first",
-                permission_preset="ask_for_approval",
                 context_window=None,
                 jobs=[],
                 runtime_warnings=("warning",),
@@ -371,10 +361,8 @@ class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
                 cache_usage=None,
                 phase="idle",
                 turn_id=None,
-                approval=None,
                 question=None,
                 provider="first",
-                permission_preset="ask_for_approval",
                 context_window=None,
                 jobs=[],
             )
@@ -1031,117 +1019,6 @@ class GuiTest(unittest.TestCase):
                     self.assertEqual(response.json(), {"released": False})
                     self.assertFalse(bridge.closed)
 
-    def test_relays_permission_changes_and_restores_runtime_state(self) -> None:
-        bridge = FakeBridge(
-            replies={
-                "open_session": [
-                    {
-                        "type": "session_ready",
-                        "session_id": "s1",
-                        "permission_preset": "ask_for_approval",
-                    }
-                ],
-                "permission_set": [
-                    {"type": "permission_changed", "preset": "full_access"}
-                ],
-            }
-        )
-        with self.client(bridge) as client:
-            with client.websocket_connect("/api/session") as first:
-                first.send_json(
-                    {
-                        "type": "open_session",
-                        "session_id": "s1",
-                        "attachment_id": "page-1",
-                    }
-                )
-                self.assertEqual(first.receive_json()["type"], "session_ready")
-                first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "work"}
-                )
-                first.send_json(
-                    {"type": "permission_set", "preset": "full_access"}
-                )
-                self.assertEqual(first.receive_json()["phase"], "starting")
-                changed = first.receive_json()
-                self.assertEqual(
-                    {key: changed[key] for key in ("type", "preset", "event_sequence")},
-                    {
-                        "type": "permission_changed",
-                        "preset": "full_access",
-                        "event_sequence": 3,
-                    },
-                )
-
-            with client.websocket_connect("/api/session") as second:
-                second.send_json(
-                    {
-                        "type": "open_session",
-                        "session_id": "s1",
-                        "attachment_id": "page-1",
-                        "attach_only": True,
-                        "after_event": 3,
-                    }
-                )
-                self.assertEqual(
-                    second.receive_json()["permission_preset"],
-                    "full_access",
-                )
-                second.send_json({"type": "cancel", "turn_id": "t1"})
-
-        self.assertEqual(bridge.sent[-2]["type"], "permission_set")
-
-    def test_changes_permission_before_any_turn_without_starting_execution(self) -> None:
-        bridge = FakeBridge(
-            replies={
-                "open_session": [
-                    {
-                        "type": "session_ready",
-                        "session_id": "empty",
-                        "permission_preset": "ask_for_approval",
-                    },
-                    {
-                        "type": "runtime_state",
-                        "phase": "inactive",
-                        "turn_id": None,
-                        "approval": None,
-                        "question": None,
-                        "provider": "first",
-                        "permission_preset": "ask_for_approval",
-                        "context_window": None,
-                        "jobs": [],
-                    },
-                ],
-                "permission_set": [
-                    {"type": "permission_changed", "preset": "full_access"}
-                ],
-            }
-        )
-        with self.client(bridge) as client:
-            with client.websocket_connect("/api/session") as socket:
-                socket.send_json(
-                    {
-                        "type": "open_session",
-                        "session_id": "empty",
-                        "attachment_id": "page-1",
-                    }
-                )
-                self.assertEqual(socket.receive_json()["type"], "session_ready")
-                self.assertEqual(socket.receive_json()["phase"], "inactive")
-
-                socket.send_json(
-                    {"type": "permission_set", "preset": "full_access"}
-                )
-                self.assertEqual(
-                    socket.receive_json()["type"],
-                    "permission_changed",
-                )
-
-        self.assertEqual(
-            [message["type"] for message in bridge.sent],
-            ["open_session", "permission_set"],
-        )
-
     def test_relays_session_configuration_without_a_user_turn(self) -> None:
         bridge = FakeBridge(
             replies={
@@ -1436,19 +1313,21 @@ class GuiTest(unittest.TestCase):
             ["open_session", "user_turn", "cancel"],
         )
 
-    def test_reconnects_to_the_same_runtime_and_restores_approval(self) -> None:
+    def test_reconnects_to_the_same_runtime_and_restores_question(self) -> None:
         bridge = FakeBridge(
             replies={
                 "open_session": [{"type": "session_ready", "session_id": "shared"}],
                 "user_turn": [
                     {
-                        "type": "approval_request",
+                        "type": "user_question",
                         "turn_id": "t1",
                         "request_id": "t1:1",
-                        "command": "ls",
+                        "question": "List files?",
+                        "options": [],
+                        "allow_free_text": True,
                     }
                 ],
-                "approval_response": [
+                "user_question_response": [
                     {"type": "turn_completed", "turn_id": "t1", "usage": None},
                     None,
                 ],
@@ -1462,7 +1341,7 @@ class GuiTest(unittest.TestCase):
                     {"type": "user_turn", "turn_id": "t1", "text": "list"}
                 )
                 self.assertEqual(
-                    first.receive_json()["type"], "approval_request"
+                    first.receive_json()["type"], "user_question"
                 )
 
             self.assertFalse(bridge.closed)
@@ -1477,13 +1356,13 @@ class GuiTest(unittest.TestCase):
                     }
                 )
                 state = second.receive_json()
-                self.assertEqual(state["phase"], "waiting_approval")
-                self.assertEqual(state["approval"]["request_id"], "t1:1")
+                self.assertEqual(state["phase"], "waiting_user")
+                self.assertEqual(state["question"]["request_id"], "t1:1")
                 second.send_json(
                     {
-                        "type": "approval_response",
+                        "type": "user_question_response",
                         "request_id": "t1:1",
-                        "approved": True,
+                        "text": "yes",
                     }
                 )
                 self.assertEqual(
@@ -1492,9 +1371,9 @@ class GuiTest(unittest.TestCase):
 
         self.assertEqual(
             [message["type"] for message in bridge.sent],
-            ["open_session", "user_turn", "approval_response"],
+            ["open_session", "user_turn", "user_question_response"],
         )
-        self.assertTrue(bridge.sent[-1]["approved"])
+        self.assertEqual(bridge.sent[-1]["text"], "yes")
 
     def test_idle_view_detach_reuses_bridge_for_the_next_turn(self) -> None:
         bridge = FakeBridge(replies={
@@ -1521,7 +1400,7 @@ class GuiTest(unittest.TestCase):
     def test_opening_a_page_with_another_provider_preserves_the_idle_owner(self) -> None:
         bridge = FakeBridge(replies={
             "open_session": [{"type": "session_ready", "session_id": "shared"}],
-            "permission_set": [{"type": "permission_changed", "preset": "full_access"}],
+            "provider_set": [{"type": "provider_changed", "provider": "second", "model": "second/model"}],
         })
         with self.client(bridge) as client:
             with client.websocket_connect("/api/session") as first:
@@ -1545,8 +1424,8 @@ class GuiTest(unittest.TestCase):
                 self.assertFalse(bridge.closed)
                 self.assertEqual(len(bridge.sent), 1)
                 self.assertEqual(client.get("/api/active-sessions").json()[0]["provider"], "first")
-                first.send_json({"type": "permission_set", "preset": "full_access"})
-                self.assertEqual(first.receive_json()["type"], "permission_changed")
+                first.send_json({"type": "provider_set", "provider": "second"})
+                self.assertEqual(first.receive_json()["type"], "provider_changed")
 
     def test_background_reconnect_does_not_replace_another_page(self) -> None:
         bridge = FakeBridge(
@@ -1700,8 +1579,8 @@ class GuiTest(unittest.TestCase):
     def test_reconnecting_marks_old_snapshots_as_replay_before_current_state(self) -> None:
         snapshot = bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="inactive", turn_id=None, approval=None, question=None,
-            provider="first", permission_preset="ask_for_approval",
+            phase="inactive", turn_id=None, question=None,
+            provider="first",
             context_window=None, jobs=[],
         )
         bridge = FakeBridge(replies={"open_session": [snapshot]})
@@ -1934,15 +1813,11 @@ class GuiTest(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(body))
         self.assertIn("RADE_THIRD_API_KEY=secret", (self.config / ".env").read_text())
 
-    def test_memory_api_returns_global_and_workspace_documents(self) -> None:
-        memory = MemoryStore(
-            self.config / "MEMORY.md",
-            self.config / "sessions",
-        )
-        memory.write_updates(
+    def test_memory_api_returns_workspace_documents(self) -> None:
+        memory = MemoryStore(self.config / "sessions")
+        memory.write(
             self.root,
-            global_memory=MemoryDocument(preferences=("Use Chinese.",)),
-            workspace_memory=MemoryDocument(
+            MemoryDocument(
                 facts=("This workspace uses FastAPI.",),
                 decisions=("Keep Bridge as the runtime boundary.",),
             ),
@@ -1953,11 +1828,6 @@ class GuiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "global": {
-                "preferences": ["Use Chinese."],
-                "facts": [],
-                "decisions": [],
-            },
             "workspaces": [{
                 "workspace": str(self.root.resolve()),
                 "memory": {
@@ -2051,7 +1921,6 @@ class GuiTest(unittest.TestCase):
                 self.assertEqual(load.call_count, 1)
 
         self.assertEqual(data["items"][0]["content"], "TUI 对话")
-        self.assertEqual(data["permission_preset"], "ask_for_approval")
         self.assertEqual(data["cache_usage"], {"input_tokens": 1500, "cache_read_tokens": 1200})
         self.assertNotIn("provider_data", data["items"][1])
         self.assertNotIn("native-state", json.dumps(data))

@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Collection, Protocol
+from typing import Protocol
 
 from . import process as command_process
 from .process import (
@@ -9,7 +9,6 @@ from .process import (
     CommandExecutionResult,
     ShellLauncher,
 )
-from .sandbox.base import SandboxBackend, SandboxPolicy
 
 
 class CommandExecutor(Protocol):
@@ -20,19 +19,12 @@ class CommandExecutor(Protocol):
         cancellation: CancellationSignal | None = None,
         *,
         stdin: bytes | None = None,
-        read_only_paths: tuple[Path, ...] = (),
     ) -> CommandExecutionResult:
         raise NotImplementedError
 
-    def close(self) -> None: ...
-
 
 class HostCommandExecutor:
-    """Run commands directly with the current host user's permissions.
-
-    This executor provides no filesystem, network, temporary-directory, or
-    process confinement.  Its working directory is only the command's cwd.
-    """
+    """Run commands with the current user's permissions in the configured directory."""
 
     def __init__(
         self,
@@ -51,15 +43,19 @@ class HostCommandExecutor:
         cancellation: CancellationSignal | None = None,
         *,
         stdin: bytes | None = None,
-        read_only_paths: tuple[Path, ...] = (),
     ) -> CommandExecutionResult:
         environment = None
         if os.name == "nt":
             environment = command_process._windows_shell_environment(
                 os.environ.copy()
             )
+        argv = (
+            list(command)
+            if isinstance(command, tuple)
+            else self._shell_launcher(command, self._working_directory)
+        )
         return command_process._execute_process(
-            list(command) if isinstance(command, tuple) else self._shell_launcher(command, self._working_directory),
+            argv,
             command=command_process.command_display(command),
             working_directory=self._working_directory,
             timeout_seconds=timeout_seconds,
@@ -67,51 +63,3 @@ class HostCommandExecutor:
             environment=environment,
             stdin=stdin,
         )
-
-    def close(self) -> None:
-        pass
-
-
-class SandboxedCommandExecutor:
-    """Run commands through a backend that enforces SandboxPolicy."""
-
-    def __init__(
-        self,
-        working_directory: Path,
-        backend: SandboxBackend,
-        policy: SandboxPolicy | None = None,
-        excluded_environment_names: Collection[str] = (),
-    ) -> None:
-        self._working_directory = working_directory
-        self._backend = backend
-        self._policy = policy or backend.default_policy
-        self._excluded_environment_names = frozenset(
-            excluded_environment_names
-        )
-
-    @property
-    def policy(self) -> SandboxPolicy:
-        return self._policy
-
-    def execute(
-        self,
-        command: str | tuple[str, ...],
-        timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
-        cancellation: CancellationSignal | None = None,
-        *,
-        stdin: bytes | None = None,
-        read_only_paths: tuple[Path, ...] = (),
-    ) -> CommandExecutionResult:
-        return self._backend.execute(
-            command,
-            working_directory=self._working_directory,
-            policy=self._policy,
-            timeout_seconds=timeout_seconds,
-            cancellation=cancellation,
-            excluded_environment_names=self._excluded_environment_names,
-            stdin=stdin,
-            read_only_paths=read_only_paths,
-        )
-
-    def close(self) -> None:
-        self._backend.close()

@@ -31,7 +31,7 @@ class SubagentMcpTest(BridgeTestCase):
                 "command": sys.executable,
                 "args": [str(Path(__file__).with_name("fake_mcp_server.py"))],
                 "env": {"TEST_MCP_INSTRUCTIONS": "Use docs for research."},
-                "tools": {"enabled": ["echo", "identity"], "approval": "never"},
+                "tools": {"enabled": ["echo", "identity"]},
             }}},
         }))
         return bridge
@@ -64,7 +64,6 @@ class SubagentMcpTest(BridgeTestCase):
         self.assertIn("Use docs for research.", request.system_prompt)
         self.assertIn("research", str(self.provider.requests[-1].messages))
         self.assertIs(runtime._catalog, plane.catalog)
-        self.assertIs(runtime._tool_policy, bridge.host.sessions.permissions)
 
     def test_rebuild_refreshes_blacklist_but_not_whitelist(self):
         bridge = self.open({

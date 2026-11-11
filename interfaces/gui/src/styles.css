@@ -245,13 +245,6 @@ pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-famil
 .model-selector select:focus-visible { outline: 2px solid #a7b5d2; }
 .model-selector select:disabled { opacity: .55; cursor: default; }
 .model-selector > svg { position: absolute; right: 5px; pointer-events: none; }
-.permission-selector { display: flex; align-items: center; position: relative; color: #74829b; }
-.permission-selector > svg:first-child { flex: none; margin-left: 4px; }
-.permission-selector select { appearance: none; border: 0; border-radius: 5px; background: transparent; padding: 6px 20px 6px 5px; color: inherit; font-size: 11px; cursor: pointer; }
-.permission-selector select:hover { background: #f3f5f9; }
-.permission-selector select:focus-visible { outline: 2px solid #a7b5d2; }
-.permission-selector select:disabled { opacity: .55; cursor: default; }
-.permission-selector > svg:last-child { position: absolute; right: 5px; pointer-events: none; }
 .composer-actions { display: flex; align-items: center; gap: 3px; margin-left: auto; }
 .context-window { position: relative; animation: context-window-in .25s ease-out; }
 .context-window-trigger { display: flex; align-items: center; gap: 4px; height: 28px; border: 0; border-radius: 5px; padding: 0 5px; background: transparent; color: #74829b; font-size: 11px; }
@@ -285,12 +278,6 @@ pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-famil
 .stop-button:hover { border-color: #c9a3a3; color: #a45151; }
 .spin { animation: spin 1.4s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.approval-card { background: #fffdf8; border: 1px solid #eadfc8; border-radius: 9px; padding: 15px; margin-bottom: 15px; }
-.approval-title { display: flex; gap: 8px; align-items: center; color: #7d6944; font-size: 12px; }
-.approval-card pre { max-height: 140px; }
-.approval-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.approval-actions button { border: 1px solid #ded8c9; border-radius: 5px; background: #fff; font-size: 11px; padding: 7px 12px; }
-.approval-actions .approve-button { background: #806b47; border-color: #806b47; color: white; }
 .question-card { margin-bottom: 14px; padding: 4px 2px 3px; }
 .question-title { display: flex; align-items: flex-start; gap: 8px; color: #465269; font-size: 13px; font-weight: 600; line-height: 1.5; }
 .question-title svg { margin-top: 1px; color: #8190aa; }

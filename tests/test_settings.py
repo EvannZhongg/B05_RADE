@@ -57,7 +57,6 @@ class SettingsStoreTest(unittest.TestCase):
         })
         self.assertEqual(snapshot["agent"]["memory"], {
             "enabled": True,
-            "global_max_tokens": 2000,
             "workspace_max_tokens": 3000,
         })
 
@@ -332,14 +331,12 @@ class EnvironmentReloaderTest(unittest.TestCase):
             reloader = EnvironmentReloader(path)
             reloader.reload()
             self.assertEqual(os.environ["TOKEN"], "first")
-            self.assertEqual(reloader.loaded_names, frozenset({"TOKEN"}))
             path.write_text("TOKEN=second\n", encoding="utf-8")
             reloader.reload()
             self.assertEqual(os.environ["TOKEN"], "second")
             path.write_text("", encoding="utf-8")
             reloader.reload()
             self.assertNotIn("TOKEN", os.environ)
-            self.assertEqual(reloader.loaded_names, frozenset())
 
 
 if __name__ == "__main__":

@@ -83,14 +83,6 @@ class McpClientManager:
         """Qualified names of every discovered tool, for catalog selection."""
         return tuple(tool.name for tool in self._tools)
 
-    def requires_approval(self, qualified_name: str) -> bool:
-        origin = self._tool_origins.get(qualified_name)
-        if origin is None:
-            return False
-        server, remote_name = origin
-        required = self._servers[server].tools.require_approval
-        return required is None or remote_name in required
-
     def tool_identity(
         self,
         qualified_name: str,

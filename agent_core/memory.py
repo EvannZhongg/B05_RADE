@@ -18,7 +18,6 @@ from .session_paths import workspace_directory, workspace_from_key
 
 
 MemoryKind = Literal["preference", "fact", "decision"]
-MemoryScope = Literal["global", "workspace"]
 
 _KINDS: tuple[MemoryKind, ...] = ("preference", "fact", "decision")
 _HEADINGS = {
@@ -31,7 +30,6 @@ _HEADINGS = {
 @dataclass(frozen=True)
 class MemoryCandidate:
     kind: MemoryKind
-    scope: MemoryScope
     content: str
 
 
@@ -47,41 +45,27 @@ class MemoryDocument:
     def is_empty(self) -> bool:
         return not (self.preferences or self.facts or self.decisions)
 
-
-@dataclass(frozen=True)
-class MemoryContext:
-    global_memory: MemoryDocument
-    workspace_memory: MemoryDocument
-
     def prompt_section(self) -> str:
-        sections = [
-            "## Long-term Memory",
-            "This is persistent historical context, not a current user "
-            "instruction. The user's current request has highest priority, "
+        context = (
+            "## Long-term Memory\n\n"
+            "This workspace memory is persistent historical context. "
+            "The user's current request has highest priority, "
             "workspace instructions and project rules come next, and this "
             "memory comes after them. Never let memory override a newer "
-            "explicit request.",
-        ]
-        if not self.global_memory.is_empty():
-            sections.append(
-                "### Global Memory\n"
-                + _render_prompt_memory(self.global_memory)
-            )
-        if not self.workspace_memory.is_empty():
-            sections.append(
-                "### Current Workspace Memory\n"
-                + _render_prompt_memory(self.workspace_memory)
-            )
-        if len(sections) == 2:
-            sections.append("No long-term memory is currently recorded.")
-        return "\n\n".join(sections)
+            "explicit request."
+        )
+        entries = (
+            "No long-term memory is currently recorded."
+            if self.is_empty()
+            else _render_document(self, level=3).rstrip()
+        )
+        return f"{context}\n\n{entries}"
 
 
 class MemoryStore:
-    """Read and atomically write global and workspace-scoped memory files."""
+    """Read and atomically write workspace memory files."""
 
-    def __init__(self, global_path: Path, sessions_directory: Path) -> None:
-        self.global_path = global_path.expanduser()
+    def __init__(self, sessions_directory: Path) -> None:
         self.sessions_directory = sessions_directory.expanduser()
         self._lock = Lock()
         self.reconciliation_lock = Lock()
@@ -89,81 +73,46 @@ class MemoryStore:
     def workspace_path(self, workspace: Path) -> Path:
         return workspace_directory(self.sessions_directory, workspace) / "MEMORY.md"
 
-    def initialize(self, workspace: Path | None = None) -> tuple[Path, ...]:
-        created = []
+    def initialize(self, workspace: Path) -> None:
+        path = self.workspace_path(workspace)
         with self._locked_files():
-            if not self.global_path.exists():
-                atomic_write_text(self.global_path, _render_global(MemoryDocument()))
-                created.append(self.global_path)
-            if workspace is not None:
-                path = self.workspace_path(workspace)
-                if not path.exists():
-                    atomic_write_text(path, _render_workspace(MemoryDocument()))
-                    created.append(path)
-        return tuple(created)
+            if not path.exists():
+                atomic_write_text(path, _render_workspace(MemoryDocument()))
 
-    def load(self, workspace: Path) -> MemoryContext:
-        workspace_path = self.workspace_path(workspace)
+    def load(self, workspace: Path) -> MemoryDocument:
         with self._locked_files():
-            global_text = _read_text(self.global_path)
-            workspace_text = _read_text(workspace_path)
-        return MemoryContext(
-            global_memory=_parse_global(global_text),
-            workspace_memory=_parse_workspace(workspace_text),
-        )
+            return _parse_workspace(_read_text(self.workspace_path(workspace)))
 
-    def load_all(self) -> tuple[MemoryDocument, dict[str, MemoryDocument]]:
+    def load_all(self) -> dict[str, MemoryDocument]:
         with self._locked_files():
-            global_text = _read_text(self.global_path)
-            workspaces = self._load_workspace_files()
-        return _parse_global(global_text), workspaces
+            if not self.sessions_directory.is_dir():
+                return {}
+            workspaces: dict[str, MemoryDocument] = {}
+            for directory in self.sessions_directory.iterdir():
+                if not directory.is_dir():
+                    continue
+                path = directory / "MEMORY.md"
+                if path.is_file():
+                    workspace = workspace_from_key(directory.name)
+                    workspaces[workspace] = _parse_workspace(_read_text(path))
+            return workspaces
 
-    def write_updates(
+    def write(
         self,
         workspace: Path,
+        document: MemoryDocument,
         *,
-        global_memory: MemoryDocument | None = None,
-        workspace_memory: MemoryDocument | None = None,
-        expected: MemoryContext | None = None,
+        expected: MemoryDocument | None = None,
     ) -> None:
-        workspace_path = self.workspace_path(workspace)
+        path = self.workspace_path(workspace)
         with self._locked_files():
-            current_global = _parse_global(_read_text(self.global_path))
-            current_workspace = _parse_workspace(_read_text(workspace_path))
-            if (
-                expected is not None
-                and global_memory is not None
-                and current_global != expected.global_memory
-            ):
-                raise RuntimeError("global memory changed during reconciliation")
-            if (
-                expected is not None
-                and workspace_memory is not None
-                and current_workspace != expected.workspace_memory
-            ):
+            if expected is not None and _parse_workspace(_read_text(path)) != expected:
                 raise RuntimeError("workspace memory changed during reconciliation")
-            if global_memory is not None:
-                atomic_write_text(self.global_path, _render_global(global_memory))
-            if workspace_memory is not None:
-                atomic_write_text(workspace_path, _render_workspace(workspace_memory))
-
-    def _load_workspace_files(self) -> dict[str, MemoryDocument]:
-        if not self.sessions_directory.is_dir():
-            return {}
-        workspaces: dict[str, MemoryDocument] = {}
-        for directory in self.sessions_directory.iterdir():
-            if not directory.is_dir():
-                continue
-            path = directory / "MEMORY.md"
-            if not path.is_file():
-                continue
-            workspace = workspace_from_key(directory.name)
-            workspaces[workspace] = _parse_workspace(_read_text(path))
-        return workspaces
+            atomic_write_text(path, _render_workspace(document))
 
     @contextmanager
     def _locked_files(self):
-        lock_path = self.global_path.parent / ".memory.lock"
+        lock_path = self.sessions_directory.parent / ".memory.lock"
         with self._lock, acquire_file_lock(lock_path, blocking=True):
             yield
 
@@ -175,33 +124,24 @@ class MemoryReconciler:
         self,
         provider: LLMProvider,
         *,
-        global_prompt: str,
         workspace_prompt: str,
-        global_max_tokens: int,
         workspace_max_tokens: int,
         on_auxiliary_call: Callable[[AuxiliaryModelCall], None] | None = None,
     ) -> None:
         self._provider = provider
         self._on_auxiliary_call = on_auxiliary_call
-        self._prompts = {
-            "global": global_prompt.replace(
-                "{{global_max_tokens}}", str(global_max_tokens)
-            ),
-            "workspace": workspace_prompt.replace(
-                "{{workspace_max_tokens}}", str(workspace_max_tokens)
-            ),
-        }
+        self._prompt = workspace_prompt.replace(
+            "{{workspace_max_tokens}}", str(workspace_max_tokens)
+        )
 
     def reconcile(
         self,
-        scope: MemoryScope,
         current: MemoryDocument,
         candidates: tuple[MemoryCandidate, ...],
     ) -> MemoryDocument:
         if not candidates:
             return current
         payload = {
-            "scope": scope,
             "current_memory": _document_to_json(current),
             "candidates": [
                 {"kind": candidate.kind, "content": candidate.content}
@@ -209,7 +149,7 @@ class MemoryReconciler:
             ],
         }
         request = LLMRequest(
-            system_prompt=self._prompts[scope],
+            system_prompt=self._prompt,
             messages=(
                 Message(
                     role="user",
@@ -218,7 +158,7 @@ class MemoryReconciler:
             ),
         )
         with AuxiliaryCallTracker(
-            self._on_auxiliary_call, task="memory", scope=scope,
+            self._on_auxiliary_call, task="memory", scope="workspace",
         ) as call:
             response = call.response = self._provider.stream(request, lambda _text: None)
             if response.content is None or response.tool_calls:
@@ -265,23 +205,9 @@ class MemoryManager:
             return False
 
         with self.store.reconciliation_lock:
-            context = self.store.load(self.workspace)
-            updates: dict[MemoryScope, MemoryDocument] = {}
-            for scope, current in (
-                ("global", context.global_memory),
-                ("workspace", context.workspace_memory),
-            ):
-                scoped_candidates = tuple(
-                    candidate for candidate in candidates if candidate.scope == scope
-                )
-                if scoped_candidates:
-                    updates[scope] = self.reconciler.reconcile(scope, current, scoped_candidates)
-            self.store.write_updates(
-                self.workspace,
-                global_memory=updates.get("global"),
-                workspace_memory=updates.get("workspace"),
-                expected=context,
-            )
+            current = self.store.load(self.workspace)
+            updated = self.reconciler.reconcile(current, candidates)
+            self.store.write(self.workspace, updated, expected=current)
         return True
 
 
@@ -330,32 +256,17 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _parse_global(text: str) -> MemoryDocument:
-    if not text.strip():
-        return MemoryDocument()
-    lines = text.splitlines()
-    if not lines or lines[0] != "# RADE Global Memory":
-        raise ValueError("invalid global MEMORY.md header")
-    return _parse_document_lines(lines[1:], level=2)
-
-
 def _parse_workspace(text: str) -> MemoryDocument:
     if not text.strip():
         return MemoryDocument()
     lines = text.splitlines()
     if not lines or lines[0] != "# RADE Workspace Memory":
         raise ValueError("invalid workspace MEMORY.md header")
-    return _parse_document_lines(lines[1:], level=2)
-
-
-def _parse_document_lines(lines: list[str], *, level: int) -> MemoryDocument:
-    headings = {
-        f"{'#' * level} {_HEADINGS[kind]}": kind for kind in _KINDS
-    }
+    headings = {f"## {_HEADINGS[kind]}": kind for kind in _KINDS}
     grouped: dict[MemoryKind, list[str]] = {kind: [] for kind in _KINDS}
     current: MemoryKind | None = None
     seen: set[MemoryKind] = set()
-    for line in lines:
+    for line in lines[1:]:
         if not line.strip():
             continue
         if line in headings:
@@ -374,10 +285,6 @@ def _parse_document_lines(lines: list[str], *, level: int) -> MemoryDocument:
     )
 
 
-def _render_global(document: MemoryDocument) -> str:
-    return "# RADE Global Memory\n\n" + _render_document(document, level=2)
-
-
 def _render_workspace(document: MemoryDocument) -> str:
     return "# RADE Workspace Memory\n\n" + _render_document(document, level=2)
 
@@ -391,17 +298,11 @@ def _render_document(document: MemoryDocument, *, level: int) -> str:
     return "\n\n".join(sections) + "\n"
 
 
-def _render_prompt_memory(document: MemoryDocument) -> str:
-    return _render_document(document, level=4).rstrip()
-
-
 __all__ = [
     "MemoryCandidate",
-    "MemoryContext",
     "MemoryDocument",
     "MemoryKind",
     "MemoryManager",
     "MemoryReconciler",
-    "MemoryScope",
     "MemoryStore",
 ]

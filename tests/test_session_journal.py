@@ -9,7 +9,6 @@ from agent_core import (
     ImagePart,
     JsonlSessionStore,
     Message,
-    PermissionPreset,
     RuntimeErrorInfo,
     Session,
     ToolCall,
@@ -254,19 +253,6 @@ class SessionJournalTest(unittest.TestCase):
             replayed.journal.append(event)
             replayed.apply_event(event)
         self.assertEqual(replayed.turns["turn-1"].error, error)
-
-    def test_permission_preset_is_journaled_and_replayed(self):
-        session = Session("s")
-
-        session.set_permission_preset(PermissionPreset.FULL_ACCESS)
-
-        replayed = Session("s")
-        for event in session.journal:
-            replayed.journal.append(event)
-            replayed.apply_event(event)
-        self.assertEqual(replayed.permission_preset, PermissionPreset.FULL_ACCESS)
-        self.assertEqual(session.journal[-1].event_type, "permission_preset_changed")
-        self.assertEqual(session.journal[-1].payload, {"preset": "full_access"})
 
     def test_context_unit_keeps_parallel_tool_results_and_media_together(self):
         calls = (

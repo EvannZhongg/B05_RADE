@@ -31,11 +31,10 @@ def create_settings_router(settings: SettingsStore) -> APIRouter:
     @router.get("/api/memory")
     def get_memory() -> dict[str, object]:
         try:
-            global_memory, workspaces = memory_store(settings.directory).load_all()
+            workspaces = memory_store(settings.directory).load_all()
         except (OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {
-            "global": _memory_document_to_dict(global_memory),
             "workspaces": [
                 {
                     "workspace": workspace_path,

@@ -9,7 +9,6 @@ from .shell import ShellTool
 from .subagent import SubagentTool
 from .job_control import JobControlTool
 from .write_file import WriteFileTool
-from .ask_user import AskUserTool
 from .update_plan import UpdatePlanTool
 from .remember import RememberTool
 
@@ -36,7 +35,6 @@ def builtin_catalog():
             ReadSkillTool(),
             SubagentTool(),
             JobControlTool(),
-            AskUserTool(),
             UpdatePlanTool(),
             RememberTool(),
         )
@@ -45,7 +43,6 @@ def builtin_catalog():
 
 __all__ = [
     "ApplyPatchTool",
-    "AskUserTool",
     "EditFileTool",
     "ListDirectoryTool",
     "ReadFileTool",

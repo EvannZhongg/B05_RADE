@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ComponentPropsWithoutRef } from "react";
 import type { FileMessagePartProps, ImageMessagePartProps } from "@assistant-ui/react";
-import { FileText, X } from "lucide-react";
+import { FileText } from "lucide-react";
 import { createSignedImageUrl } from "../../api";
 
 export const SessionIdContext = createContext<string | undefined>(undefined);
@@ -54,29 +54,4 @@ export function MarkdownImage({ node: _node, src, alt, ...props }: ComponentProp
   if (!src) return null;
   if (isRemoteMarkdownImage(src)) return <img {...props} src={src} alt={alt ?? ""} />;
   return <WorkspaceImage {...props} path={src} sessionId={sessionId} alt={alt ?? "图片"} />;
-}
-
-export function PendingAttachment({ file, onRemove }: { file: File; onRemove: () => void }) {
-  const [url, setUrl] = useState("");
-  const image = file.type.startsWith("image/");
-
-  useEffect(() => {
-    if (!image) return;
-    const next = URL.createObjectURL(file);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [file, image]);
-
-  return <span className={`attachment-chip ${image ? "image" : "file"}`}>
-    {image
-      ? <img src={url} alt={file.name} />
-      : <><FileText size={20} /><span><strong>{file.name}</strong><small>{formatFileSize(file.size)}</small></span></>}
-    <button type="button" aria-label={`移除 ${file.name}`} onClick={onRemove}><X size={12} /></button>
-  </span>;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

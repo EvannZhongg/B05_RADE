@@ -16,7 +16,7 @@ RADE --temporary
 
 ## 交互模型
 
-TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runtime_state` 后才允许提交命令。普通消息通过 `user_turn` 发送；Turn 执行中提交的新输入转为 `user_steer`。
+TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runtime_state` 后才允许提交命令。输入任意本地 JSON 文件路径并按 Enter 开始运行。支持相对当前工作区的路径和绝对路径，文件名可以包含空格。
 
 一个 TUI 持有一个常驻 Bridge 进程。每个已打开的 Session 分配独立通道与 Runtime，切换界面不会关闭其他会话的执行面或 MCP。切回已打开会话时使用 `session_snapshot` 取得原 Runtime 的权威快照，不重绑 Session 或重建 Agent；仅把当前通道的事件渲染到界面。关闭 TUI 时统一关闭进程及所有 Runtime。
 
@@ -26,7 +26,6 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 - Tool 调用、结果和错误
 - Context Window 占用、token 用量、缓存命中率、计划及后台 Job
 - Provider 和 Runtime phase
-- 授权请求与结构化用户提问
 - 历史 Session 列表和恢复结果
 
 主要命令：
@@ -34,7 +33,7 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 | 命令 | 作用 |
 | --- | --- |
 | `/sessions` | 列出并切换当前 Workspace 的历史 Session |
-| `/workspaces` | 列出有历史会话的 Workspace，选择后在目标工作区新建 Session，可直接开始对话 |
+| `/workspaces` | 列出有历史会话的 Workspace，选择后在目标工作区新建 Session，可直接选择 JSON 文件 |
 | `/model` | 切换当前 Session 的 Provider |
 | `/provider` | 查看 Provider、Skill、Plugin 与 MCP 配置概览 |
 | `/refresh` | 空闲时重新加载当前会话的配置、Prompt、Skill、Plugin 与 MCP 连接，保留对话和计划 |
@@ -49,7 +48,7 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 | `Ctrl+J` | 输入换行 |
 | `Shift+Enter` | 支持 kitty keyboard protocol 时输入换行 |
 | `↑` / `↓` | 在候选列表中上下选择（输入光标用 `←` / `→` 移动） |
-| `Esc` | 关闭列表、拒绝授权或取消当前 Turn |
+| `Esc` | 关闭列表或取消当前 Turn |
 | `Ctrl+C` | 取消当前 Turn；空闲时清空草稿，空输入时退出 |
 | `Ctrl+D` | 空输入且空闲时退出 |
 

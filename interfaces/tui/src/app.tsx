@@ -1,8 +1,11 @@
+import { readFile, stat } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import type { Incoming, Outgoing } from '@rade/protocol/internal';
 import { BridgeClient } from '@rade/client';
 import { COMMANDS, parseCommand } from './commands.js';
+import { readJsonInput } from '../../jsonInput.js';
 import { Prompt } from './input.js';
 import {
   PlanView,
@@ -11,7 +14,6 @@ import {
   NavigationPicker,
   StatusBar,
   Transcript,
-  UserQuestionPrompt,
 } from './renderer.js';
 import { initialState, reducer, type State } from './state.js';
 
@@ -36,7 +38,9 @@ export function App(props: AppProps): React.ReactElement {
   const { rows } = useWindowSize();
   const [state, dispatch] = useReducer(reducer, initialState);
   const [draft, setDraft] = useState('');
-  const [questionDraft, setQuestionDraft] = useState('');
+  const [jsonError, setJsonError] = useState('');
+  const [readingJson, setReadingJson] = useState(false);
+  const readingJsonRef = useRef(false);
   const [selection, setSelection] = useState<SessionSelection>({ workspace: props.workspace, sessionId: null, channelId: 'session-1' });
   const [settingsMode, setSettingsMode] = useState<'model' | 'provider' | null>(null);
   const [modelChoice, setModelChoice] = useState(0);
@@ -49,7 +53,6 @@ export function App(props: AppProps): React.ReactElement {
   const currentState = useRef(state);
   currentState.current = state;
   const turnCounter = useRef(0);
-  const steerCounter = useRef(0);
   const startedAt = useRef<number | null>(null);
 
   /**
@@ -153,61 +156,11 @@ export function App(props: AppProps): React.ReactElement {
     return () => clearInterval(timer);
   }, [busy]);
 
-  const answerQuestion = (answer: { option_id: string } | { text: string }): void => {
-    if (!state.question) return;
-    send({
-      type: 'user_question_response',
-      request_id: state.question.requestId,
-      ...answer,
-    });
-    setQuestionDraft('');
-    dispatch({ type: 'question_resolved' });
-  };
-
-  const questionChoiceCount = state.question
-    ? state.question.options.length + (state.question.allowFreeText ? 1 : 0)
-    : 0;
-  const freeTextSelected = Boolean(
-    state.question?.allowFreeText
-      && state.question.selectedIndex === state.question.options.length,
-  );
-
   useEffect(() => {
     if (settingsMode !== 'model' || !state.settings) return;
     const index = state.settings.providers.findIndex((provider) => provider.id === state.provider);
     setModelChoice(index >= 0 ? index : 0);
   }, [settingsMode, state.provider, state.settings]);
-
-  useInput(
-    (_input, key) => {
-      if (!state.question) return;
-      if ((key.ctrl && _input === 'c') || key.escape) {
-        if (state.turnId) bridgeRef.current?.cancel(state.turnId, activeChannel.current);
-        dispatch({ type: 'cancelling' });
-        return;
-      }
-      if (key.upArrow || (key.tab && key.shift)) {
-        dispatch({
-          type: 'question_choice',
-          selectedIndex:
-            (state.question.selectedIndex - 1 + questionChoiceCount) % questionChoiceCount,
-        });
-        return;
-      }
-      if (key.downArrow || key.tab) {
-        dispatch({
-          type: 'question_choice',
-          selectedIndex: (state.question.selectedIndex + 1) % questionChoiceCount,
-        });
-        return;
-      }
-      if (key.return && !freeTextSelected) {
-        const option = state.question.options[state.question.selectedIndex];
-        if (option) answerQuestion({ option_id: option.id });
-      }
-    },
-    { isActive: state.question !== null },
-  );
 
   const openSession = (workspace: string, sessionId: string | null): void => {
     const current = currentState.current;
@@ -287,6 +240,7 @@ export function App(props: AppProps): React.ReactElement {
   // Global keys. Ink delivers Ctrl+C as input, so cancelling is explicit.
   useInput(
     (input, key) => {
+      if (readingJsonRef.current) return;
       if (key.ctrl && input === 'c') {
         if (busy) {
           if (state.turnId) bridgeRef.current?.cancel(state.turnId, activeChannel.current);
@@ -312,15 +266,13 @@ export function App(props: AppProps): React.ReactElement {
       if (key.ctrl && input === 'd' && !busy && draft === '') exit();
     },
     {
-      isActive:
-        state.question === null
-        && state.picker === null && settingsMode === null,
+      isActive: state.picker === null && settingsMode === null,
     },
   );
 
-  const submit = (value: string): void => {
+  const submit = async (value: string): Promise<void> => {
     const text = value.trim();
-    if (text === '') return;
+    if (text === '' || readingJsonRef.current) return;
     // runtime_state is the synchronization barrier. Keep the draft editable
     // while the Session opens, but do not let a command overtake its initial
     // execution snapshot and then get reset back to idle by that snapshot.
@@ -329,10 +281,9 @@ export function App(props: AppProps): React.ReactElement {
     const parsed = parseCommand(text);
     if ((parsed?.command.name === '/sessions' || parsed?.command.name === '/workspaces') && inputBusy) return;
     if (parsed?.command.name === '/refresh' && inputBusy) return;
-    if (!parsed && busy && state.turnId === null) return;
-    setDraft('');
-    // Commands are answered by the TUI, so the agent never sees them.
     if (parsed) {
+      setDraft('');
+      setJsonError('');
       if (parsed.command.name === '/sessions') {
         send({ type: 'list_sessions' });
         dispatch({ type: 'picker_opened', kind: 'sessions' });
@@ -353,25 +304,26 @@ export function App(props: AppProps): React.ReactElement {
       }
       return;
     }
-    if (busy && state.turnId !== null) {
-      steerCounter.current += 1;
-      dispatch({ type: 'steer_submitted' });
-      send({
-        type: 'user_steer',
-        turn_id: state.turnId,
-        steer_id: `steer-${steerCounter.current}`,
-        text,
+    if (inputBusy) return;
+    const path = resolve(state.workspace || selection.workspace, text.replace(/^"(.*)"$/, '$1'));
+    setJsonError('');
+    readingJsonRef.current = true;
+    setReadingJson(true);
+    try {
+      const jsonInput = await readJsonInput(basename(path), async () => {
+        if (!(await stat(path)).isFile()) throw new Error('Expected a JSON file.');
+        return readFile(path);
       });
-      return;
+      const turnId = 'turn-' + ++turnCounter.current;
+      send({ type: 'user_turn', turn_id: turnId, json_input: jsonInput });
+      dispatch({ type: 'submit', turnId, text: jsonInput.filename });
+      setDraft((current) => current === value ? '' : current);
+    } catch (error) {
+      setJsonError(error instanceof Error ? error.message : String(error));
+    } finally {
+      readingJsonRef.current = false;
+      setReadingJson(false);
     }
-    sendTurn(text);
-  };
-
-  const sendTurn = (text: string): void => {
-    turnCounter.current += 1;
-    const turnId = `turn-${turnCounter.current}`;
-    dispatch({ type: 'submit', turnId, text });
-    send({ type: 'user_turn', turn_id: turnId, text });
   };
 
   return (
@@ -387,11 +339,6 @@ export function App(props: AppProps): React.ReactElement {
 
         {state.plan ? <PlanView plan={state.plan} /> : null}
 
-        {state.question ? (
-          <Box flexShrink={0}>
-            <UserQuestionPrompt question={state.question} />
-          </Box>
-        ) : null}
         {state.picker ? (
           <Box flexShrink={0}>
             <NavigationPicker picker={state.picker} />
@@ -406,32 +353,21 @@ export function App(props: AppProps): React.ReactElement {
         <Box flexShrink={0} marginTop={1}>
           <Text dimColor>Press Ctrl+C to exit.</Text>
         </Box>
-      ) : state.picker || settingsMode ? null : state.question && freeTextSelected ? (
-        <Prompt
-          value={questionDraft}
-          onChange={setQuestionDraft}
-          onSubmit={(value) => {
-            const text = value.trim();
-            if (text) answerQuestion({ text });
-          }}
-          focus
-          busy={false}
-          docked
-          placeholder="输入自定义答案…"
-        />
-      ) : state.question ? null : (
+      ) : state.picker || settingsMode ? null : (
         <Prompt
           value={draft}
-          onChange={setDraft}
-          onSubmit={submit}
-          focus={state.picker === null && settingsMode === null}
-          busy={inputBusy}
+          onChange={(value) => { setDraft(value); setJsonError(''); }}
+          onSubmit={(value) => void submit(value)}
+          focus
+          busy={inputBusy || readingJson}
           docked
           commands={state.status === 'session_unavailable' ? COMMANDS.filter((command) => command.name === '/sessions' || command.name === '/workspaces') : COMMANDS}
-          placeholder={inputBusy ? 'steer the current turn…' : undefined}
+          placeholder={inputBusy ? 'Enter / for commands' : 'JSON file path · Enter to run · / for commands'}
         />
       )}
 
+      {readingJson && <Text dimColor>Reading JSON…</Text>}
+      {jsonError && <Text color="red" wrap="truncate-end">{jsonError}</Text>}
       <StatusBar state={state} elapsed={elapsed} />
     </Box>
   );

@@ -45,9 +45,6 @@ class ToolExecutionContext:
     cancellation: "CancellationSignal | None" = None
     skills: "SkillRegistry | None" = None
     plan: "PlanManager | None" = None
-    ask_user: (
-        Callable[[str, list[dict[str, JSONValue]], bool], JSONValue] | None
-    ) = None
     memory: "MemoryManager | None" = None
     hooks: "HookRunner | None" = None
     hook_invocation: "HookInvocation | None" = None

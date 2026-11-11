@@ -73,7 +73,7 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 - 等待首个 `runtime_state` 同步屏障
 - 回放 Journal 并把协议事件投影为 assistant-ui 消息
 - 管理流式文本、reasoning、Tool、计划、Job 和 Context Window
-- 处理授权、用户提问、停止、steer、Provider 与 Workspace 修改
+- 选择并预览本地 JSON 文件，提交后可停止运行。支持修改 Provider 和 Workspace
 - 上传附件并提交文本或 attachment-only Turn
 - 在重连期间合并待应用的本地选择与服务端权威状态
 
@@ -86,7 +86,6 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 | `src/Chat.tsx` | 单 Session 对话容器 |
 | `src/chat/useSessionRuntime.ts` | 协议连接与 assistant-ui Runtime 适配 |
 | `src/chat/runtimeState.ts` | Job 与计划的运行状态投影 |
-| `src/chat/composerState.ts` | 输入框的提交与附件提交判定 |
 | `src/transcript.ts` | 协议事件到 transcript 的纯状态投影 |
 | `src/chat/Transcript.tsx` | transcript 视口与滚动 |
 | `src/chat/TurnNavigation.tsx` | 按 Turn 跳转的导航条 |

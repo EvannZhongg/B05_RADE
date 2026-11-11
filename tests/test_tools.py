@@ -13,7 +13,6 @@ from tests.filesystem_fixtures import symlinks_available
 
 from agent_core import (
     ApplyPatchTool,
-    AskUserTool,
     CommandExecutionResult,
     EditFileTool,
     ListDirectoryTool,
@@ -292,99 +291,6 @@ class ToolSetTest(unittest.TestCase):
         self.assertTrue(tools.is_concurrent("concurrent"))
         self.assertFalse(tools.is_concurrent("failing"))
         self.assertFalse(tools.is_concurrent("unknown"))
-
-
-class AskUserToolTest(unittest.TestCase):
-    def test_returns_the_runtime_answer(self) -> None:
-        requests = []
-        session = Session("s")
-        session.begin_turn("turn-1")
-        tool = _Bound(
-            AskUserTool(),
-            _TMP_WORKSPACE,
-            session=session,
-            ask_user=lambda question, options, allow_free_text: (
-                requests.append((question, options, allow_free_text))
-                or {"type": "option", "id": "sqlite", "label": "SQLite"}
-            ),
-        )
-
-        result = tool.execute(
-            {
-                "question": "Which cache?",
-                "options": [
-                    {"id": "memory", "label": "Memory"},
-                    {
-                        "id": "sqlite",
-                        "label": "SQLite",
-                        "description": "Persistent",
-                        "recommended": True,
-                    },
-                ],
-                "allow_free_text": True,
-            }
-        )
-
-        self.assertEqual(
-            result,
-            {"type": "option", "id": "sqlite", "label": "SQLite"},
-        )
-        self.assertEqual(requests[0][0], "Which cache?")
-        self.assertTrue(requests[0][2])
-        anchor = session.user_anchors[-1]
-        self.assertEqual(anchor.source, "question_response")
-        self.assertEqual(anchor.item_index, len(session.items) - 1)
-        self.assertEqual(session.items[-1].origin, "user_interaction")
-        self.assertIn("sqlite (SQLite)", anchor.content)
-
-    def test_requires_unique_option_ids(self) -> None:
-        tool = _Bound(
-            AskUserTool(),
-            _TMP_WORKSPACE,
-            ask_user=lambda *_args: None,
-        )
-
-        with self.assertRaisesRegex(ValueError, "duplicate option id"):
-            tool.execute(
-                {
-                    "question": "Which?",
-                    "options": [
-                        {"id": "same", "label": "First"},
-                        {"id": "same", "label": "Second"},
-                    ],
-                }
-            )
-
-    def test_records_free_text_as_a_user_anchor(self) -> None:
-        session = Session("s")
-        session.begin_turn("turn-1")
-        tool = _Bound(
-            AskUserTool(),
-            _TMP_WORKSPACE,
-            session=session,
-            ask_user=lambda *_args: {"type": "text", "text": "Redis"},
-        )
-
-        tool.execute(
-            {
-                "question": "Which cache?",
-                "options": [{"id": "sqlite", "label": "SQLite"}],
-                "allow_free_text": True,
-            }
-        )
-
-        anchor = session.user_anchors[-1]
-        self.assertEqual(anchor.source, "question_response")
-        self.assertEqual(anchor.item_index, len(session.items) - 1)
-        self.assertEqual(session.items[-1].origin, "user_interaction")
-        self.assertIn("User answer: Redis", anchor.content)
-
-    def test_is_unavailable_without_an_interaction_callback(self) -> None:
-        tools = builtin_catalog().select(
-            ("ask_user",), context_for(_TMP_WORKSPACE)
-        )
-
-        self.assertEqual(tools.definitions, ())
 
 
 class ToolStatelessnessTest(unittest.TestCase):

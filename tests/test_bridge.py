@@ -51,7 +51,6 @@ from agent_core.session_paths import session_directory
 from agent_core.projection import project_context_units
 from agent_core.providers import ModelProvider
 from agent_core.tools.config import ROLE_TOOL_NAMES, TOOL_NAMES
-from interfaces.bridge.bridge import Cancelled
 from agent_runtime.attachments import parse_attachments as _parse_attachments
 from agent_runtime.host import RuntimeHost
 from agent_runtime.execution_plane import ExecutionPlane
@@ -145,7 +144,7 @@ class ProtocolTest(unittest.TestCase):
     def test_initial_runtime_state_contract_and_independent_arrays(self) -> None:
         expected = {
             "type": "runtime_state", "phase": "inactive", "turn_id": None,
-            "question": None, "provider": None,
+            "provider": None,
             "context_window": None,
             "cache_usage": None, "jobs": [], "runtime_warnings": [], "plan": None,
         }
@@ -418,7 +417,7 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 5,
+                "protocol_version": 6,
                 "session_id": "s1",
                 "workspace": "/tmp/work",
                 "provider": "test",
@@ -429,20 +428,11 @@ class ProtocolTest(unittest.TestCase):
         )
 
     def test_runtime_state_message_restores_gui_attachment_state(self) -> None:
-        question = {
-            "type": "user_question",
-            "turn_id": "t1",
-            "request_id": "t1:1",
-            "question": "Cache?",
-            "options": [],
-            "allow_free_text": True,
-        }
         self.assertEqual(
             runtime_state_message(
                 cache_usage=None,
-                phase="waiting_user",
+                phase="running",
                 turn_id="t1",
-                question=question,
                 provider="second",
                 context_window={"input_tokens": 120},
                 event_sequence=12,
@@ -456,9 +446,8 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "runtime_state",
-                "phase": "waiting_user",
+                "phase": "running",
                 "turn_id": "t1",
-                "question": question,
                 "provider": "second",
                 "context_window": {"input_tokens": 120},
                 "cache_usage": None,
@@ -656,35 +645,6 @@ class BridgeConfigurationTest(BridgeTestCase):
         close_mcp.assert_called_once_with()
 
 
-class _SlowStdin:
-    """A stdin whose readline yields the GIL mid-call.
-
-    A real pipe blocks in readline while other threads run, which is what
-    lets two unsynchronized questions interleave. StringIO returns without
-    ever yielding and would hide the race.
-    """
-
-    def __init__(self, lines: list[str]) -> None:
-        self._lines = iter(f"{line}\n" for line in lines)
-
-    def readline(self) -> str:
-        time.sleep(0.01)
-        return next(self._lines, "")
-
-
-class _BlockingAfterLines:
-    def __init__(self, lines: list[str]) -> None:
-        self._lines = iter(f"{line}\n" for line in lines)
-        self.release = threading.Event()
-
-    def readline(self) -> str:
-        try:
-            return next(self._lines)
-        except StopIteration:
-            self.release.wait(5)
-            return ""
-
-
 class BridgeInteractionTest(BridgeTestCase):
     def test_runtime_state_contains_only_the_jobs_that_are_running(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -705,123 +665,6 @@ class BridgeInteractionTest(BridgeTestCase):
             [{"job_id": "j1", "kind": "shell", "status": "running", "details": {"command": "npm test"}}],
         )
 
-    def test_buffers_interleaved_messages_and_replays_them(self) -> None:
-        """A typed-ahead turn must not be consumed as the answer."""
-        bridge, _ = self.make_bridge(
-            [
-                '{"type": "user_turn", "turn_id": "t2", "text": "later"}',
-                '{"type": "user_question_response", "request_id": "None:1",'
-                ' "text": "yes"}',
-            ]
-        )
-        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "yes")
-
-        deferred = bridge.read_message()
-        assert deferred is not None
-        self.assertEqual(deferred["type"], "user_turn")
-        self.assertEqual(deferred["turn_id"], "t2")
-        self.assertIsNone(bridge.read_message())
-
-    def test_ignores_stale_request_id(self) -> None:
-        bridge, _ = self.make_bridge(
-            [
-                '{"type": "user_question_response", "request_id": "stale",'
-                ' "text": "yes"}',
-                '{"type": "user_question_response", "request_id": "None:1",'
-                ' "text": "no"}',
-            ]
-        )
-        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "no")
-
-    def test_cancels_when_input_ends(self) -> None:
-        bridge, _ = self.make_bridge([])
-        with self.assertRaises(Cancelled):
-            bridge.request_user_choice("List?", [], True)
-
-    def test_cancels_on_shutdown(self) -> None:
-        bridge, _ = self.make_bridge(['{"type": "shutdown"}'])
-        with self.assertRaises(Cancelled):
-            bridge.request_user_choice("List?", [], True)
-
-    def test_serializes_questions_from_parallel_tool_calls(self) -> None:
-        """Concurrent sub-agents share one protocol channel.
-
-        Without serialization two threads interleave their read-modify-write
-        on stdin: each can consume the other's response, so a request never
-        sees its answer and both wait forever.
-        """
-        questions = 4
-        responses = [
-            '{"type": "user_question_response", "request_id": "None:%d",'
-            ' "text": "yes"}' % index
-            for index in range(1, questions + 1)
-        ]
-        bridge, stdout = self.make_bridge(_SlowStdin(responses))
-        results: list[str] = []
-        lock = threading.Lock()
-        barrier = threading.Barrier(questions, timeout=5)
-
-        def ask(index: int) -> None:
-            barrier.wait()
-            answer = bridge.request_user_choice(f"Question {index}?", [], True)
-            with lock:
-                results.append(answer["text"])
-
-        threads = [
-            threading.Thread(target=ask, args=(index,), daemon=True)
-            for index in range(questions)
-        ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            # An answer consumed by the wrong thread would hang here.
-            thread.join(timeout=10)
-            self.assertFalse(thread.is_alive(), "a question never returned")
-
-        self.assertEqual(results, ["yes"] * questions)
-        # Each request got its own id, and each was answered exactly once.
-        request_ids = [
-            message["request_id"]
-            for message in emitted(stdout)
-            if message["type"] == "user_question"
-        ]
-        self.assertEqual(len(request_ids), questions)
-        self.assertEqual(len(set(request_ids)), questions)
-
-    def test_routes_steering_while_waiting_for_a_question(self) -> None:
-        stdin = _BlockingAfterLines(
-            [
-                '{"type": "user_steer", "turn_id": "t1", "steer_id": "s1", "text": "check tests"}',
-                '{"type": "user_question_response", "request_id": "t1:1", "text": "yes"}',
-            ]
-        )
-        bridge, stdout = self.make_bridge(stdin)
-        self.addCleanup(stdin.release.set)
-        control = TurnControl()
-        bridge.host.turns.turn_id = "t1"
-        bridge.host.turns.control = control
-
-        self.assertEqual(bridge.request_user_choice("List?", [], True)["text"], "yes")
-        self.assertEqual(control.drain_steering()[0].text, "check tests")
-        self.assertIn(
-            "user_steer_received",
-            [message["type"] for message in emitted(stdout)],
-        )
-        bridge.host.turns.control = None
-        stdin.release.set()
-
-    def test_ignores_a_stale_response_that_arrived_before_its_waiter(self) -> None:
-        bridge, _ = self.make_bridge(
-            [
-                '{"type": "user_question_response", "request_id": "None:1", "text": "yes"}',
-            ]
-        )
-        bridge._start_reader()
-        bridge._reader.join(2)
-        self.assertFalse(bridge._reader.is_alive())
-
-        with self.assertRaises(Cancelled):
-            bridge.request_user_choice("List?", [], True)
 
     def test_routes_cancel_for_a_turn_queued_before_run_turn(self) -> None:
         bridge, stdout = self.make_bridge(
@@ -847,7 +690,7 @@ class BridgeInteractionTest(BridgeTestCase):
 
 
 class BridgeCancellationTest(BridgeTestCase):
-    def test_input_cancels_interactions_in_a_worker_turn(self) -> None:
+    def test_input_cancels_a_worker_turn(self) -> None:
         for command in ('{"type":"cancel","turn_id":"t1"}',
                         '{"type":"shutdown"}', None):
             with self.subTest(command=command):
@@ -857,8 +700,10 @@ class BridgeCancellationTest(BridgeTestCase):
 
                 class WaitingAgent:
                     def run(self, *args, **kwargs):
-                        bridge.request_user_choice("Question?", [], True)
-                        raise AssertionError("cancelled interaction returned an answer")
+                        bridge._start_reader()
+                        bridge._reader.join(2)
+                        kwargs["turn_control"].raise_if_cancelled()
+                        raise AssertionError("turn should have been cancelled")
 
                 def run():
                     try:
@@ -879,7 +724,6 @@ class BridgeCancellationTest(BridgeTestCase):
                     self.assertFalse(thread.is_alive())
                     self.assertEqual(errors, [])
                     self.assertEqual([result.status for result in results], ["cancelled"])
-                    self.assertEqual(bridge._waiters, {})
                 finally:
                     bridge.close()
                     thread.join(3)
@@ -893,98 +737,16 @@ class BridgeCancellationTest(BridgeTestCase):
                 bridge.host.turns.turn_id = "t1"
                 bridge.host.turns.control = TurnControl()
             with patch.object(first, "_start_reader"), patch.object(second, "_start_reader"):
-                current = first._register_interaction("t1:1", "t1")
-                unrelated = first._register_interaction("other:1", "other")
-                other_session = second._register_interaction("t1:1", "t1")
                 first.host.turns.enqueue("queued")
                 first.submit({"type": "cancel", "turn_id": "queued"})
                 first.submit({"type": "cancel", "turn_id": "stale"})
-                self.assertTrue(current.empty())
+                self.assertFalse(first.host.turns.control.cancelled)
                 first.submit({"type": "cancel", "turn_id": "t1"})
-                self.assertIsInstance(current.get_nowait(), Cancelled)
-                self.assertTrue(unrelated.empty())
-                self.assertTrue(other_session.empty())
+                self.assertTrue(first.host.turns.control.cancelled)
                 self.assertFalse(second.host.turns.control.cancelled)
-                late = first._register_interaction("t1:2", "t1")
-                self.assertIsInstance(late.get_nowait(), Cancelled)
-                second.submit({
-                    "type": "user_question_response", "request_id": "t1:1", "text": "yes",
-                })
-                self.assertEqual(second._wait_for_interaction(other_session)["text"], "yes")
         finally:
             first.close()
             second.close()
-
-
-class BridgeUserQuestionTest(BridgeTestCase):
-    OPTIONS = [
-        {"id": "memory", "label": "Memory"},
-        {"id": "sqlite", "label": "SQLite"},
-    ]
-
-    def test_runtime_state_contains_the_pending_question(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        bridge, stdout = self.make_bridge(
-            ['{"type": "user_question_response", "request_id": "t1:1",'
-             ' "option_id": "sqlite"}'],
-            Path(directory),
-        )
-        bridge.open_session(
-            open_session_message(Path(directory), session_id="s")
-        )
-        bridge.host.turns.turn_id = "t1"
-
-        bridge.request_user_choice("Cache?", self.OPTIONS, False)
-
-        states = [
-            message for message in emitted(stdout)
-            if message["type"] == "runtime_state"
-        ]
-        self.assertEqual(states[-2]["phase"], "waiting_user")
-        self.assertEqual(states[-2]["question"]["question"], "Cache?")
-        self.assertIsNone(states[-1]["question"])
-        self.assertEqual(states[-1]["phase"], "running")
-
-    def test_returns_the_selected_option(self) -> None:
-        bridge, stdout = self.make_bridge(
-            ['{"type": "user_question_response", "request_id": "None:1",'
-             ' "option_id": "sqlite"}']
-        )
-
-        self.assertEqual(
-            bridge.request_user_choice("Cache?", self.OPTIONS, False),
-            {"type": "option", "id": "sqlite", "label": "SQLite"},
-        )
-        self.assertEqual(
-            next(message for message in emitted(stdout) if message["type"] == "user_question")["type"],
-            "user_question",
-        )
-
-    def test_returns_trimmed_free_text(self) -> None:
-        bridge, _ = self.make_bridge(
-            ['{"type": "user_question_response", "request_id": "None:1",'
-             ' "text": "  Redis  "}']
-        )
-
-        self.assertEqual(
-            bridge.request_user_choice("Cache?", self.OPTIONS, True),
-            {"type": "text", "text": "Redis"},
-        )
-
-    def test_ignores_invalid_answers(self) -> None:
-        bridge, _ = self.make_bridge(
-            [
-                '{"type": "user_question_response", "request_id": "None:1",'
-                ' "option_id": "unknown"}',
-                '{"type": "user_question_response", "request_id": "None:1",'
-                ' "option_id": "memory"}',
-            ]
-        )
-
-        self.assertEqual(
-            bridge.request_user_choice("Cache?", self.OPTIONS, False)["id"],
-            "memory",
-        )
 
 
 class BridgeServeTest(BridgeTestCase):
@@ -1346,6 +1108,31 @@ class InterruptedTurnTest(BridgeTestCase):
         delta = next(message for message in messages if message["type"] == "assistant_delta")
         self.assertNotIn("transcript", delta)
         self.assertGreater(delta["event_sequence"], context["event_sequence"])
+
+    def test_json_input_is_stored_as_a_file_and_passed_to_the_agent(self) -> None:
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        text = '{"name":"样例","number":9007199254740993}'
+        with patch.object(
+            plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
+        ) as stream:
+            self.bridge.run_turn({
+                "turn_id": "json",
+                "json_input": {"filename": "输入.json", "text": text},
+            })
+            self.bridge.run_turn({
+                "turn_id": "invalid",
+                "json_input": {"filename": "bad.json", "text": '{"value":NaN}'},
+            })
+
+        stream.assert_called_once()
+        messages = emitted(self.stdout)
+        completed = next(event for event in messages if event["type"] == "turn_completed")
+        item = next(item for item in completed["transcript"]["items"] if item["role"] == "user")
+        attachment = next(part for part in item["content"] if part["type"] == "file")
+        self.assertEqual(attachment["filename"], "输入.json")
+        self.assertEqual((self.root / attachment["path"]).read_text(encoding="utf-8"), text)
+        self.assertEqual(messages[-1]["type"], "turn_failed")
+        self.assertEqual(messages[-1]["turn_id"], "invalid")
 
     def test_compression_cache_usage_is_persisted_pushed_and_restored(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
@@ -3093,7 +2880,7 @@ class SubagentRoleStartTest(BridgeTestCase):
 
         self.assertEqual(
             [definition.name for definition in plane.agent._tools.definitions],
-            ["ask_user", "update_plan", "remember"],
+            ["update_plan", "remember"],
         )
 
     def test_runtime_tools_are_registered_only_for_the_main_agent(self) -> None:
@@ -3132,10 +2919,8 @@ class SubagentRoleStartTest(BridgeTestCase):
             ).definitions
         }
 
-        self.assertIn("ask_user", main_names)
         self.assertIn("update_plan", main_names)
         self.assertIn("job_control", main_names)
-        self.assertNotIn("ask_user", role_names)
         self.assertNotIn("update_plan", role_names)
         self.assertNotIn("job_control", role_names)
         self.assertNotIn("remember", role_names)

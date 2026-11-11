@@ -30,20 +30,20 @@ function TestComposer() {
   const runtime = useSessionRuntime({
     session, selected: true, contextWindow: null, workspaceOptions: [], backgroundActive: false,
     providers, provider: "test", onProviderChange: noop, onBusyChange: noop,
-    onContextWindowChange: noop, onSessionAvailable, onTitleChange, onTurnEnd, onInitialPromptConsumed: noop,
+    onContextWindowChange: noop, onSessionAvailable, onTitleChange, onTurnEnd,
   });
   return <AssistantRuntimeProvider runtime={runtime.assistantRuntime}><ThreadPrimitive.Root className="thread">
     <Composer runtime={runtime} />
   </ThreadPrimitive.Root></AssistantRuntimeProvider>;
 }
 
-describe("composer commands", () => {
+describe("JSON composer", () => {
   let container: HTMLDivElement;
   let root: Root;
   const snapshot: Incoming = {
     type: "runtime_state", phase: "idle", turn_id: null, provider: "test",
     context_window: null, cache_usage: null,
-    jobs: [], question: null, plan: null,
+    jobs: [], plan: null,
   };
 
   beforeEach(async () => {
@@ -66,16 +66,6 @@ describe("composer commands", () => {
     vi.unstubAllGlobals();
   });
 
-  const input = () => container.querySelector("textarea")!;
-  async function type(text: string) {
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input(), text);
-      input().dispatchEvent(new Event("input", { bubbles: true }));
-    });
-  }
-  async function key(value: string, options: KeyboardEventInit = {}) {
-    await act(async () => input().dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true, ...options })));
-  }
   async function receive(message: Incoming) {
     await act(async () => connection.onMessage(message));
   }
@@ -91,88 +81,48 @@ describe("composer commands", () => {
     expect(sent).toEqual([]);
   });
 
-  it("opens the slash menu and refreshes from a click without sending a message", async () => {
-    await type("/");
-    expect(container.querySelector('[role="listbox"]')?.textContent).toContain("/refresh");
-    await act(async () => container.querySelector<HTMLButtonElement>('[role="option"]')!.click());
+
+
+  async function select(filename: string, text: string) {
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [{ name: filename, arrayBuffer: async () => new TextEncoder().encode(text).buffer }] });
+    await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+  }
+
+  const refresh = () => container.querySelector<HTMLButtonElement>('[aria-label="重新加载运行环境"]')!;
+  const run = () => container.querySelector<HTMLButtonElement>(".json-run")!;
+
+  it("refreshes with a button and keeps the selected JSON for the next turn", async () => {
+    await select("example.json", '{"items":[1,2]}');
+    expect(container.querySelector("textarea")).toBeNull();
+    expect(container.textContent).toContain("example.json");
+    expect(container.querySelector("pre")?.textContent).toBe('{"items":[1,2]}');
+    await act(async () => refresh().click());
     expect(sent).toEqual([{ type: "runtime_refresh" }]);
-    expect(input().value).toBe("");
-    expect(container.textContent).toContain("正在重新加载运行环境");
-    expect(container.querySelector('[aria-label="停止执行"]')).toBeNull();
-    await receive({ ...snapshot, phase: "idle" });
+    expect(run().disabled).toBe(true);
     await receive({ type: "runtime_refreshed", provider: "test", model: "test/model" });
-    expect(container.textContent).toContain("运行环境已重新加载");
-    expect(onTurnEnd).not.toHaveBeenCalled();
-    expect(onSessionAvailable).not.toHaveBeenCalled();
+    await receive(snapshot);
+    await act(async () => run().click());
+    expect(sent.at(-1)).toEqual({
+      type: "user_turn", turn_id: "turn-1",
+      json_input: { filename: "example.json", text: '{"items":[1,2]}' },
+    });
   });
 
-  it("filters, completes with Tab, dismisses with Escape and submits the exact command", async () => {
-    await type("/ref");
-    await key("ArrowDown");
-    await key("Tab");
-    expect(input().value).toBe("/refresh");
-    await key("Escape");
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
-    await key("Enter");
-    expect(sent).toEqual([{ type: "runtime_refresh" }]);
-  });
-
-  it("handles the send button as a command submission", async () => {
-    await type("/refresh");
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="发送消息"]')!.click());
-    expect(sent).toEqual([{ type: "runtime_refresh" }]);
-  });
-
-  it("preserves the command while running and does not turn it into steering", async () => {
+  it("rejects invalid JSON and allows a valid replacement to run when idle", async () => {
+    await select("invalid.json", "{bad}");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("有效的 UTF-8 JSON");
+    expect(run().disabled).toBe(true);
     await receive({ ...snapshot, phase: "running", turn_id: "active" });
-    await type("/refresh");
-    expect(container.querySelector<HTMLButtonElement>('[role="option"]')!.disabled).toBe(true);
-    await key("Enter");
+    await select("replacement.JSON", '{"n":9007199254740993}');
+    expect(run().disabled).toBe(true);
+    await act(async () => run().click());
     expect(sent).toEqual([]);
-    expect(input().value).toBe("/refresh");
     await receive(snapshot);
-    await key("Enter");
-    expect(sent).toEqual([{ type: "runtime_refresh" }]);
-  });
-
-  it("keeps IME confirmation from executing a command", async () => {
-    await type("/refresh");
-    await key("Enter", { isComposing: true });
-    expect(sent).toEqual([]);
-    expect(input().value).toBe("/refresh");
-  });
-
-  it("preserves a new draft until refresh finishes", async () => {
-    await type("/refresh");
-    await key("Enter");
-    await type("continue afterwards");
-    await key("Enter");
-    expect(sent).toEqual([{ type: "runtime_refresh" }]);
-    expect(input().value).toBe("continue afterwards");
-    await receive(snapshot);
-    await receive({ type: "runtime_refreshed", provider: "test", model: "test/model" });
-    await key("Enter");
-    expect(sent.at(-1)).toEqual(expect.objectContaining({ type: "user_turn", text: "continue afterwards" }));
-  });
-
-  it("reports an assembly error without finishing a turn and allows another refresh", async () => {
-    await type("/refresh");
-    await key("Enter");
-    await receive({ ...snapshot, phase: "failed" });
-    await receive({ type: "runtime_refresh_failed", error: { type: "ValueError", message: "bad configuration", details: {} } });
-    expect(container.textContent).toContain("重新加载失败：bad configuration");
-    expect(onTurnEnd).not.toHaveBeenCalled();
-    await type("/refresh");
-    await key("Enter");
-    expect(sent).toEqual([{ type: "runtime_refresh" }, { type: "runtime_refresh" }]);
-  });
-
-  it("leaves ordinary text, unknown commands and embedded slashes to normal messages", async () => {
-    await type("explain /refresh");
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
-    await type("/unknown");
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
-    await key("Enter");
-    expect(sent).toEqual([expect.objectContaining({ type: "user_turn", text: "/unknown" })]);
+    await act(async () => run().click());
+    expect(sent).toEqual([{
+      type: "user_turn", turn_id: "turn-1",
+      json_input: { filename: "replacement.JSON", text: '{"n":9007199254740993}' },
+    }]);
   });
 });

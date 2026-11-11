@@ -22,7 +22,7 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 5 as const,
+  protocol_version: 6 as const,
   session_id: 'abc12345-0000',
   workspace: '/tmp/work',
   provider: 'deepseek',
@@ -36,7 +36,6 @@ const RUNTIME_READY = {
   phase: 'idle' as const,
   turn_id: null,
   provider: 'deepseek',
-  question: null,
   jobs: [],
   context_window: {
     input_tokens: 10,
@@ -349,62 +348,6 @@ describe('reducer', () => {
   });
 
 
-  it('tracks a user question and selects the recommended option', () => {
-    let state = ready();
-    state = reducer(state, {
-      type: 'message',
-      message: {
-        type: 'user_question',
-        turn_id: 't1',
-        request_id: 't1:1',
-        question: 'Which cache?',
-        options: [
-          { id: 'memory', label: 'Memory' },
-          { id: 'sqlite', label: 'SQLite', recommended: true },
-        ],
-        allow_free_text: true,
-      },
-    });
-
-    expect(state.status).toBe('awaiting_user');
-    expect(state.question?.selectedIndex).toBe(1);
-    state = reducer(state, { type: 'question_choice', selectedIndex: 2 });
-    expect(state.question?.selectedIndex).toBe(2);
-    state = reducer(state, { type: 'question_resolved' });
-    expect(state.question).toBeNull();
-    expect(state.status).toBe('running');
-  });
-
-  it('restores a pending user question from the runtime snapshot', () => {
-    const state = reducer(ready(), {
-      type: 'message',
-      message: {
-        ...RUNTIME_READY,
-        phase: 'waiting_user',
-        turn_id: 't1',
-        question: {
-          type: 'user_question',
-          turn_id: 't1',
-          request_id: 't1:1',
-          question: 'Which cache?',
-          options: [
-            { id: 'memory', label: 'Memory' },
-            { id: 'sqlite', label: 'SQLite', recommended: true },
-          ],
-          allow_free_text: true,
-        },
-      },
-    });
-
-    expect(state.status).toBe('awaiting_user');
-    expect(state.question).toMatchObject({
-      requestId: 't1:1',
-      question: 'Which cache?',
-      selectedIndex: 1,
-      allowFreeText: true,
-    });
-  });
-
   it('updates usage on each model completion without ending the turn', () => {
     let state = ready();
     state = reducer(state, { type: 'message', message: {
@@ -498,8 +441,11 @@ describe('reducer', () => {
 
   it('shows steering only after the runtime applies it', () => {
     let state = reducer(ready(), { type: 'submit', turnId: 't1', text: 'work' });
-    state = reducer(state, { type: 'steer_submitted' });
-    expect(state.pendingSteers).toBe(1);
+    state = reducer(state, {
+      type: 'message',
+      message: { type: 'user_steer_received', turn_id: 't1', steer_id: 's1', text: 'check tests first' },
+    });
+    expect(state.entries.at(-1)).toMatchObject({ kind: 'user', text: 'work' });
 
     state = reducer(state, {
       type: 'message',
@@ -512,7 +458,6 @@ describe('reducer', () => {
       },
     });
 
-    expect(state.pendingSteers).toBe(0);
     expect(state.entries.at(-1)).toMatchObject({
       kind: 'user',
       text: 'check tests first',

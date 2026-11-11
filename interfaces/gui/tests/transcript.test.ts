@@ -33,7 +33,7 @@ describe("process folding", () => {
     const applied = applyMessage([], {
       type: "runtime_state", phase: "inactive", turn_id: null,
       provider: "test", context_window: null,
-      jobs: [], question: null, plan: null,
+      jobs: [], plan: null,
       cache_usage: { input_tokens: 1000, cache_read_tokens: 170 },
     });
     expect(applied.cacheUsage).toEqual({ input_tokens: 1000, cache_read_tokens: 170 });
@@ -55,7 +55,6 @@ describe("process folding", () => {
       expect(applyMessage(items, message).cacheUsage).toEqual(applied.cacheUsage);
       expect(applied.items).toBe(items);
       expect(applied.finished).toBeUndefined();
-      expect(applied.question).toBeUndefined();
       expect(isTurnActivity(message)).toBe(true);
     }
   });
@@ -96,7 +95,6 @@ describe("process folding", () => {
     expect(applyMessage(items, { ...message, replayed: true }).cacheUsage).toEqual(applied.cacheUsage);
     expect(applied.items).toBe(items);
     expect(applied.finished).toBeUndefined();
-    expect(applied.question).toBeUndefined();
     expect(isTurnActivity(message)).toBe(true);
   });
 
@@ -243,15 +241,12 @@ function fold(messages: Incoming[], initial: TranscriptItem[] = []) {
       return {
         items: applied.items,
         feedback: applied.feedback ?? state.feedback,
-        question:
-          applied.question !== undefined ? applied.question : state.question,
         finished: applied.finished ?? state.finished,
       };
     },
     {
       items: initial,
       feedback: undefined,
-      question: null,
       finished: false,
     } as ReturnType<typeof applyMessage>,
   );
@@ -365,7 +360,6 @@ describe("applyMessage", () => {
       phase: "running",
       turn_id: "t1",
       provider: "test",
-      question: null,
       jobs: [],
       context_window: {
         input_tokens: 10,
@@ -598,26 +592,6 @@ describe("applyMessage", () => {
     });
   });
 
-  it("raises and then clears a user question", () => {
-    const question = {
-      type: "user_question" as const,
-      turn_id: "t1",
-      request_id: "t1:1",
-      question: "Which cache?",
-      options: [{ id: "sqlite", label: "SQLite", recommended: true }],
-      allow_free_text: true,
-    };
-    const requested = applyMessage([], question);
-    expect(requested.question).toEqual(question);
-
-    const completed = applyMessage([], {
-      type: "turn_completed",
-      turn_id: "t1",
-      usage: null,
-    });
-    expect(completed.question).toBeNull();
-  });
-
   it("accumulates reasoning deltas and keeps them before the answer", () => {
     const { items } = fold([
       { type: "reasoning_delta", turn_id: "t1", text: "weighing ", model_call_index: 1 },
@@ -701,7 +675,7 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 5 as const,
+        protocol_version: 6 as const,
         session_id: "s1",
         workspace: "/tmp",
         provider: "test",

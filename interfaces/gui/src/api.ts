@@ -1,4 +1,4 @@
-import type { CacheUsage, ContextWindow, PlanSnapshot, SessionItem, SessionSummary, UserAttachment } from "@rade/protocol";
+import type { CacheUsage, ContextWindow, PlanSnapshot, SessionItem, SessionSummary } from "@rade/protocol";
 import type { SettingsSnapshot } from "@rade/protocol/internal";
 
 export type { SessionItem, SessionSummary };
@@ -43,7 +43,6 @@ export type MemoryDocument = {
 export type MemorySnapshot = {
   workspaces: { workspace: string; memory: MemoryDocument }[];
 };
-export type { UserAttachment };
 export type Directory = {
   root: string;
   path: string;
@@ -86,19 +85,6 @@ export async function deleteSession(sessionId: string): Promise<void> {
     const error = await response.json();
     throw new Error(error.detail ?? `会话删除失败 (${response.status})`);
   }
-}
-
-export async function forkSession(sessionId: string, anchorId: string): Promise<Session> {
-  const response = await fetch(`${sessionUrl(sessionId)}/fork`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ anchor_id: anchorId }),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail ?? `会话分支创建失败 (${response.status})`);
-  }
-  return response.json();
 }
 
 export async function releaseActiveSession(
@@ -152,19 +138,6 @@ export async function createScratchWorkspace(sessionId: string): Promise<string>
     throw new Error(error.detail ?? `临时工作区创建失败 (${response.status})`);
   }
   return (await response.json() as { workspace: string }).workspace;
-}
-
-export async function uploadAttachments(files: File[], sessionId?: string): Promise<UserAttachment[]> {
-  const body = new FormData();
-  for (const file of files) body.append("files", file, file.name);
-  const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-  const response = await fetch(`/api/attachments${query}`, { method: "POST", body });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail ?? `上传失败 (${response.status})`);
-  }
-  const data = await response.json() as { attachments: UserAttachment[] };
-  return data.attachments;
 }
 
 export async function createSignedImageUrl(

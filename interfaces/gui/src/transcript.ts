@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import type { CacheUsage, ContextWindow, Incoming, UserQuestion } from "@rade/protocol/internal";
+import type { CacheUsage, ContextWindow, Incoming } from "@rade/protocol/internal";
 import { attachmentDownloadUrl, type SessionItem } from "./api";
 
 /** A transcript item, plus the streaming state the live turn needs. */
@@ -15,7 +15,6 @@ export type Applied = {
   feedback?: Feedback;
   contextWindow?: ContextWindow;
   cacheUsage?: CacheUsage | null;
-  question?: UserQuestion | null;
   /** Set once the turn ended, so the caller can clean up turn-local state. */
   finished?: boolean;
 };
@@ -194,20 +193,16 @@ export function applyMessage(
         },
       };
 
-    case "user_question":
-      return { items, question: message };
-
     case "model_completed":
     case "compression_completed":
       return { items, cacheUsage: message.cache_usage };
 
     case "turn_completed":
-      return { items, question: null, finished: true };
+      return { items, finished: true };
 
     case "turn_cancelled":
       return {
         items: settle(items),
-        question: null,
         finished: true,
         feedback: {
           kind: "toast",
@@ -220,7 +215,6 @@ export function applyMessage(
     case "fatal":
       return {
         items: settle(items),
-        question: null,
         finished: true,
         feedback: {
           kind: "alert",

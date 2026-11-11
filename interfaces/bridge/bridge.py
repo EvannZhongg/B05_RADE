@@ -1,18 +1,17 @@
 """One session channel's protocol adapter for the shared application runtime."""
 
-from itertools import count
 from pathlib import Path
 from queue import Queue
-from threading import Lock, RLock
+from threading import RLock
 from typing import Callable, TYPE_CHECKING
 
-from agent_core import AgentCancelled as Cancelled, AgentEvent, SessionInUseError, message_to_dict, runtime_error_info
+from agent_core import AgentEvent, SessionInUseError, message_to_dict, runtime_error_info
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
-from agent_runtime.attachments import parse_attachments
+from agent_runtime.attachments import parse_attachments, store_json_input
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
 from .protocol import (
@@ -40,15 +39,7 @@ class Bridge:
         self._send = send
         self._event_lock = RLock()
         self._messages: Queue[dict[str, object] | BaseException | None] = Queue()
-        self._router_lock = Lock()
-        self._waiters: dict[
-            str, tuple[str | None, Queue[dict[str, object] | BaseException]]
-        ] = {}
-        self._input_closed = False
         self._shutdown_requested = False
-        self._interaction_ids = count(1)
-        self._interaction_lock = Lock()
-        self._question: dict[str, object] | None = None
         self._stream = EventStream()
         self._phase = "inactive"
         self._runtime_warnings: tuple[str, ...] = ()
@@ -65,7 +56,6 @@ class Bridge:
                     **session_title_updated_message(session_id, title, source),
                 ),
                 on_mcp_status=self._emit_mcp_status,
-                ask_user=self.request_user_choice,
             ),
         )
 
@@ -82,7 +72,6 @@ class Bridge:
                     self._jobs.pop(job_id, None)
             if type == "fatal":
                 self._phase = "failed"
-                self._question = None
                 self._jobs.clear()
             state = None
             if type == "runtime_state":
@@ -121,15 +110,6 @@ class Bridge:
     def submit(self, message: dict[str, object]) -> None:
         """Route one decoded command without blocking the process transport."""
         message_type = message["type"]
-        if message_type == "user_question_response":
-            request_id = message.get("request_id")
-            if not isinstance(request_id, str):
-                return
-            with self._router_lock:
-                waiter = self._waiters.get(request_id)
-                if waiter is not None:
-                    waiter[1].put(message)
-            return
         if message_type == "user_steer":
             self._route_steer(message)
             return
@@ -167,106 +147,14 @@ class Bridge:
 
     def _route_cancel(self, message: dict[str, object]) -> None:
         turn_id = message.get("turn_id")
-        cancelled = isinstance(turn_id, str) and self.host.turns.cancel(turn_id)
-        with self._router_lock:
-            waiters = tuple(
-                waiter
-                for waiter_turn_id, waiter in self._waiters.values()
-                if cancelled and waiter_turn_id == turn_id
-            )
-        for waiter in waiters:
-            waiter.put(Cancelled())
-
+        if isinstance(turn_id, str):
+            self.host.turns.cancel(turn_id)
 
     def _route_shutdown(self, *, notify_commands: bool = True) -> None:
-        with self._router_lock:
-            self._input_closed = True
-            self._shutdown_requested = True
-            self.host.turns.shutdown()
-            waiters = tuple(waiter for _, waiter in self._waiters.values())
-        for waiter in waiters:
-            waiter.put(Cancelled())
+        self._shutdown_requested = True
+        self.host.turns.shutdown()
         if notify_commands:
             self._messages.put(None)
-
-
-    def _register_interaction(
-        self, request_id: str, turn_id: str | None
-    ) -> Queue[dict[str, object] | BaseException]:
-        waiter: Queue[dict[str, object] | BaseException] = Queue()
-        with self._router_lock:
-            self._waiters[request_id] = (turn_id, waiter)
-            if (
-                self._input_closed
-                or (
-                    self.host.turns.control is not None
-                    and self.host.turns.turn_id == turn_id
-                    and self.host.turns.control.cancelled
-                )
-            ):
-                waiter.put(Cancelled())
-        return waiter
-
-
-    def _unregister_interaction(self, request_id: str) -> None:
-        with self._router_lock:
-            self._waiters.pop(request_id, None)
-
-
-    @staticmethod
-    def _wait_for_interaction(
-        waiter: Queue[dict[str, object] | BaseException],
-    ) -> dict[str, object]:
-        response = waiter.get()
-        if isinstance(response, BaseException):
-            raise response
-        return response
-
-
-    def request_user_choice(
-        self,
-        question: str,
-        options: list[dict[str, object]],
-        allow_free_text: bool,
-    ) -> object:
-        with self._interaction_lock:
-            turn_id = self.host.turns.turn_id
-            request_id = f"{turn_id}:{next(self._interaction_ids)}"
-            waiter = self._register_interaction(request_id, turn_id)
-            self._question = {
-                "type": "user_question",
-                "turn_id": turn_id,
-                "request_id": request_id,
-                "question": question,
-                "options": options,
-                "allow_free_text": allow_free_text,
-            }
-            if self.host.sessions.session is not None:
-                self._emit_runtime_state("waiting_user")
-            self.emit(**self._question)
-            option_by_id = {
-                str(option["id"]): option for option in options
-            }
-            try:
-                while True:
-                    message = self._wait_for_interaction(waiter)
-                    option_id = message.get("option_id")
-                    text = message.get("text")
-                    if isinstance(option_id, str) and option_id in option_by_id:
-                        option = option_by_id[option_id]
-                        return {
-                            "type": "option",
-                            "id": option_id,
-                            "label": option["label"],
-                        }
-                    if allow_free_text and isinstance(text, str) and text.strip():
-                        return {"type": "text", "text": text.strip()}
-            finally:
-                self._unregister_interaction(request_id)
-                self._question = None
-                if self.host.sessions.session is not None:
-                    self._emit_runtime_state("running")
-
 
     def _emit_runtime_state(
         self,
@@ -285,7 +173,6 @@ class Bridge:
         return runtime_state_message(
             phase=self._phase,
             turn_id=self.host.turns.turn_id,
-            question=self._question,
             provider=self.host.sessions.provider_name,
             cache_usage=cache_usage_to_dict(session.cache_usage) if session is not None else None,
             context_window=(
@@ -481,7 +368,6 @@ class Bridge:
             provider=message.get("provider"),
         )
         self._phase = "inactive"
-        self._question = None
         self._runtime_warnings = ()
         self._jobs.clear()
         self._checkpoint_turn = None
@@ -531,11 +417,17 @@ class Bridge:
     def run_turn(self, message: dict[str, object]) -> None:
         turn_id = str(message["turn_id"])
         self._checkpoint_turn = turn_id
-        result = self.host.run_turn(
-            turn_id, str(message["text"]),
-            attachments=lambda: parse_attachments(message.get("attachments"), self.host.sessions.workspace),
-        )
-        self._question = None
+        workspace = self.host.sessions.workspace
+        if "json_input" in message:
+            result = self.host.run_turn(
+                turn_id, "",
+                attachments=lambda: store_json_input(message["json_input"], workspace),
+            )
+        else:
+            result = self.host.run_turn(
+                turn_id, str(message["text"]),
+                attachments=lambda: parse_attachments(message.get("attachments"), workspace),
+            )
         self._jobs.clear()
         self._emit_runtime_state(
             "failed" if result.startup_failed else "idle",

@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 5
+# Public Bridge protocol, major 6
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -15,9 +15,9 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 ## Stability and scope
 
-Protocol 5 removes permission presets and Tool approval exchanges. Shell and command Hooks run directly with the host user's permissions. The `ask_user` Tool still exchanges structured questions and answers.
+Protocol 6 adds JSON file input to `user_turn` and removes the structured question exchange.
 
-Every `session_ready` advertises `protocol_version: 5`. Clients must check this
+Every `session_ready` advertises `protocol_version: 6`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -30,7 +30,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":5}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":6}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -48,7 +48,7 @@ events are returned as:
 
 The event above is abbreviated; actual snapshots carry all fields defined by
 `Incoming`. Each channel owns an independent RuntimeHost, command queue, event
-sequence, question handling, cancellation, Journal writer, execution plane and MCP clients.
+sequence, cancellation, Journal writer, execution plane and MCP clients.
 Channels execute concurrently. Request and turn IDs need only be unique within
 their channel; one channel waiting on HTTP, MCP or user input does not block others.
 GUI, TUI and SDK hosts use this same server and lifecycle. The TUI retains a
@@ -168,11 +168,10 @@ Normal turns still check configuration changes automatically before executing.
 | `starting` | Runtime assembly in progress. |
 | `idle` | No active turn. |
 | `running` | Executing a turn. |
-| `waiting_user` | Waiting for structured user response. |
 | `failed` | Execution plane startup failed, or a fatal process error occurred. |
 
 The snapshot also includes `turn_id`, `provider`,
-`context_window`, `cache_usage`, `jobs`, `question`, `plan`, optional
+`context_window`, `cache_usage`, `jobs`, `plan`, optional
 `workspace` and `runtime_warnings`. A standalone `runtime_state` or embedded
 `runtime` replaces the prior snapshot. Embedded snapshots are complete, not
 patches. Render state from these snapshots; do not infer it from model text,
@@ -184,10 +183,9 @@ turn: it is emitted before the terminal event. The process may have queued input
 | Command | Payload / response |
 | --- | --- |
 | `open_session` | Above; `session_ready` then `runtime_state`, or opening failure. |
-| `user_turn` | `turn_id`, `text`, optional `attachments`; receipt and execution events below. |
+| `user_turn` | `turn_id` and either `json_input` or `text` with optional `attachments`; receipt and execution events below. |
 | `user_steer` | Target `turn_id`, `steer_id`, `text`; received/rejected then applied if consumed. |
 | `cancel` | Target `turn_id`; matching queued/active turn is cancelled cooperatively. No immediate acknowledgment. |
-| `user_question_response` | Outstanding `request_id`, `option_id` or free-form `text`. |
 | `provider_set` | Configured `provider`; `provider_changed` with `provider`, `model`, `runtime`. |
 | `workspace_set` | `workspace`; `workspace_changed` with actual path and `runtime`. |
 | `list_sessions` | `sessions_listed.sessions`: current workspace session summaries. |
@@ -197,7 +195,7 @@ turn: it is emitted before the terminal event. The process may have queued input
 
 Responses confirm the Runtime's actual changes. Changing provider/workspace may
 also emit `runtime_state: inactive`. Send these changes while idle. Commands other
-than steering, cancellation and question responses are serialized behind an active
+than steering and cancellation are serialized behind an active
 turn within that channel. There is no generic RPC or universal request ID. Serialize listing/history requests if matching responses matters.
 Use the opening checkpoint to display initial history; `load_session` is an
 explicit refresh, not a stream replay or cursor acknowledgment.
@@ -221,15 +219,16 @@ Workspace and Session path rules; there is no binary upload transport. Runtime
 validates actual files and normalizes media metadata. Tool media events reference
 local images by the same convention.
 
-## Turn and interaction lifecycle
+For JSON file input, send `json_input: {filename, text}` with the file's
+name and UTF-8 JSON text. Runtime validates the text and stores it as a file
+attachment in the bound workspace. The attachment is the turn's input.
+
+## Turn lifecycle
 
 ```text
 client → user_turn(turn_id)
        ← user_turn_received(turn_id)
        ← runtime_state(starting/running), context/model/tool/... events
-       ← [runtime_state(waiting_user), user_question(request_id)]
-client → [user_question_response(request_id, option_id or text)]
-       ← [runtime_state(running)]
        ← runtime_state(idle or failed)
        ← turn_completed | turn_cancelled | turn_failed  + transcript
 ```
@@ -239,14 +238,8 @@ Clients should submit one turn at a time and use `user_steer` for new input duri
 execution. The transport does not convert `user_turn` into steering. Steering
 receipt is `user_steer_received` or `user_steer_rejected`, identified by both IDs;
 only `user_steer_applied` means Core consumed it. Accepted steering can remain
-unapplied when the turn ends. Stale cancellation/interaction IDs have no effect.
+unapplied when the turn ends. Stale cancellation IDs have no effect.
 Do not resubmit after an ambiguous disconnect as though IDs made it idempotent.
-
-Questions carry `request_id`, `turn_id`, `question`, `options: [{id, label, description?, recommended?}]` and
-`allow_free_text`. Submit a listed `option_id`, or nonblank `text` only when
-allowed. An invalid answer leaves the question outstanding; there is no validation
-error response. Interactions are serialized within each channel. Cancellation and shutdown
-unblock them through existing Runtime cancellation.
 
 Workspace file writes (`apply_patch`, `edit_file`, `write_file`) execute directly
 and resolve paths within the current Workspace.
@@ -282,7 +275,7 @@ restarting Bridge. Nested Runtime snapshots need not have a sequence of their ow
 | `job_status` | Background job ID, kind, status, opaque details. |
 | `hook_completed` | Hook invocation ID, Plugin-qualified hook ID, checkpoint, Session ID, outcome, decision, reason, timing and optional Tool call ID. See [Plugin Hooks](plugin-hooks.md). |
 | `mcp_server_status` | Startup/status diagnostics for a named server. |
-| `user_steer_*`, interaction requests, terminal events | Lifecycle described above. |
+| `user_steer_*`, terminal events | Lifecycle described above. |
 
 Model deltas precede the complete message for that call; Tool calls can execute
 concurrently and their results can interleave. Preserve actual wire order and
@@ -336,12 +329,12 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 5
+receive bridge_ready; check protocol_version == 6
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 5; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 6; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
-receive/render events; answer interactions by request_id
+receive/render events
 receive terminal event; apply checkpoint
 send close_channel(chat-1); receive channel_closed(chat-1)
 send shutdown; close stdin; drain output; await process close

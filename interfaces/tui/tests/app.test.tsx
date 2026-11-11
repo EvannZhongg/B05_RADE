@@ -1,5 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { render } from 'ink-testing-library';
 import type { Incoming } from '@rade/protocol/internal';
 
@@ -37,7 +40,7 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 5,
+              type: 'session_ready', protocol_version: 6,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               workspace: message.workspace,
               provider: 'test',
@@ -52,7 +55,6 @@ vi.mock('@rade/client', () => ({
               provider: 'test',
               context_window: null,
               jobs: [],
-              question: null,
               plan: null,
             }, channelId);
           }, 10);
@@ -73,6 +75,17 @@ vi.mock('@rade/client', () => ({
   },
 }));
 
+let jsonDirectory: string;
+let jsonPath: string;
+const jsonText = '{"items":[1,2],"label":"样例"}';
+
+beforeEach(async () => {
+  jsonDirectory = await mkdtemp(join(tmpdir(), 'rade-json-'));
+  jsonPath = join(jsonDirectory, 'sample file.json');
+  await writeFile(jsonPath, jsonText);
+});
+afterEach(async () => { await rm(jsonDirectory, { recursive: true, force: true }); });
+
 const { App } = await import('../src/app.js');
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -83,7 +96,7 @@ type Frame = () => string | undefined;
  * Polls an assertion instead of sleeping for a fixed delay, so the suite does
  * not race Ink when the machine is busy. The condition must also survive one
  * event-loop turn before we return: Ink detaches its stdin listener while focus
- * hands over to the question prompt and only re-attaches it in a passive
+ * moves between inputs and only re-attaches it in a passive
  * effect, so a frame can look right slightly before keys are accepted.
  */
 async function waitFor(assertion: () => void, timeout = 1500): Promise<void> {
@@ -102,11 +115,11 @@ async function waitFor(assertion: () => void, timeout = 1500): Promise<void> {
   }
 }
 
-function renderApp() {
+function renderApp(workspace = "/w") {
   return render(
     <App
       python="python3"
-      workspace="/w"
+      workspace={workspace}
     />,
   );
 }
@@ -115,7 +128,6 @@ function renderApp() {
 const waitForReady = (lastFrame: Frame) =>
   waitFor(() => expect(lastFrame()).toContain('test/model'));
 
-const questionResponse = () => sent.find((m) => m.type === 'user_question_response');
 const turns = () => sent.filter((m) => m.type === 'user_turn');
 const steers = () => sent.filter((m) => m.type === 'user_steer');
 
@@ -128,20 +140,6 @@ async function typeDraft(
   stdin.write(text);
   await waitFor(() => expect(lastFrame()).toContain(text));
 }
-
-const requestQuestion = (allowFreeText = true): void => {
-  emit({
-    type: 'user_question',
-    turn_id: 't1',
-    request_id: 't1:1',
-    question: 'Which cache?',
-    options: [
-      { id: 'memory', label: 'Memory', description: 'Fast' },
-      { id: 'sqlite', label: 'SQLite', description: 'Persistent', recommended: true },
-    ],
-    allow_free_text: allowFreeText,
-  });
-};
 
 function lineContaining(frame: string | undefined, text: string): number {
   return (frame ?? '').split('\n').findIndex((line) => line.includes(text));
@@ -273,27 +271,27 @@ describe('App', () => {
     );
   });
 
-  it('submits a typed turn once the runtime is idle', async () => {
-    const { stdin, lastFrame } = renderApp();
+  it('submits a JSON file once the runtime is idle', async () => {
+    const { stdin, lastFrame } = renderApp(jsonDirectory);
     await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, 'hello there');
+    await typeDraft(stdin, lastFrame, '"sample file.json"');
     stdin.write('\r');
     await waitFor(() =>
-      expect(sent.find((m) => m.type === 'user_turn')).toMatchObject({ text: 'hello there' }),
+      expect(sent.find((m) => m.type === 'user_turn')).toMatchObject({ json_input: { filename: 'sample file.json', text: jsonText } }),
     );
   });
 
   it('keeps an opening draft without submitting before runtime synchronization', async () => {
     autoReady = false;
     const { stdin, lastFrame } = renderApp();
-    await typeDraft(stdin, lastFrame, 'wait for sync');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     await wait(20);
     expect(turns()).toHaveLength(0);
-    expect(lastFrame()).toContain('wait for sync');
+    expect(lastFrame()).toContain(jsonPath);
 
     emit({
-      type: 'session_ready', protocol_version: 5,
+      type: 'session_ready', protocol_version: 6,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
@@ -308,12 +306,11 @@ describe('App', () => {
       provider: 'test',
       context_window: null,
       jobs: [],
-      question: null,
       plan: null,
     });
     await waitForReady(lastFrame);
     stdin.write('\r');
-    await waitFor(() => expect(turns()[0]).toMatchObject({ text: 'wait for sync' }));
+    await waitFor(() => expect(turns()[0]).toMatchObject({ json_input: { filename: 'sample file.json', text: jsonText } }));
   });
 
   it('refreshes the runtime without creating a turn or restarting the bridge', async () => {
@@ -324,15 +321,15 @@ describe('App', () => {
     await waitFor(() => expect(sent).toContainEqual({ type: 'runtime_refresh' }));
     expect(turns()).toHaveLength(0);
     expect(bridgeCount).toBe(1);
-    await typeDraft(stdin, lastFrame, 'continue afterwards');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('continue afterwards'));
+    await waitFor(() => expect(lastFrame()).toContain(jsonPath));
     expect(turns()).toHaveLength(0);
     emit({ type: 'runtime_refreshed', provider: 'test', model: 'test/updated' });
     await waitFor(() => expect(lastFrame()).toContain('Runtime refreshed.'));
     expect(lastFrame()).toContain('test/updated');
     stdin.write('\r');
-    await waitFor(() => expect(turns()).toContainEqual(expect.objectContaining({ text: 'continue afterwards' })));
+    await waitFor(() => expect(turns()).toContainEqual(expect.objectContaining({ json_input: { filename: 'sample file.json', text: jsonText } })));
   });
 
   it('opens /model and switches through provider_set', async () => {
@@ -480,7 +477,7 @@ describe('App', () => {
     expect(sent.filter(message => message.type === 'open_session')).toHaveLength(2);
     expect(closedChannels).toEqual([]);
     emit({ type: 'assistant_delta', turn_id: 'background', text: 'hidden second session', model_call_index: 1 }, secondChannel);
-    await typeDraft(stdin, lastFrame, 'continue original runtime');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     await waitFor(() => expect(turns()).toHaveLength(1));
     expect(sentChannels[sent.findIndex(message => message.type === 'user_turn')]).toBe(firstChannel);
@@ -510,12 +507,12 @@ describe('App', () => {
     });
     expect(lastFrame()).toContain('old workspace history');
 
-    await typeDraft(stdin, lastFrame, 'hello new workspace');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 5, session_id: 'fresh', workspace: '/next',
+      type: 'session_ready', protocol_version: 6, session_id: 'fresh', workspace: '/next',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
@@ -526,13 +523,13 @@ describe('App', () => {
     const snapshot = {
       type: 'runtime_state' as const, phase: 'inactive' as const, turn_id: null,
       provider: 'test', workspace: '/next',
-      context_window: null, cache_usage: null, jobs: [], question: null, plan: null,
+      context_window: null, cache_usage: null, jobs: [], plan: null,
     };
     emit(snapshot);
     await waitFor(() => expect(lastFrame()).not.toContain('opening session…'));
     stdin.write('\r');
     await waitFor(() => expect(turns()).toHaveLength(1));
-    expect(turns()[0].text).toBe('hello new workspace');
+    expect(turns()[0].json_input).toEqual({ filename: 'sample file.json', text: jsonText });
 
     emit(snapshot);
     emit({ type: 'turn_completed', turn_id: turns()[0].turn_id, usage: null });
@@ -565,7 +562,7 @@ describe('App', () => {
     await wait(30);
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
     stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
+    await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
     unmount();
   });
@@ -616,7 +613,7 @@ describe('App', () => {
     });
     await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
     stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
+    await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
     await typeDraft(stdin, lastFrame, '/workspaces');
     stdin.write('\r');
     await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
@@ -652,7 +649,7 @@ describe('App', () => {
     const snapshot = {
       type: 'runtime_state' as const, phase: 'idle' as const, turn_id: null,
       provider: 'test', workspace: '/w',
-      context_window: null, cache_usage: null, jobs: [], question: null, plan: null,
+      context_window: null, cache_usage: null, jobs: [], plan: null,
     };
     autoReady = false;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -674,11 +671,11 @@ describe('App', () => {
       expect(lastFrame()).toContain('in use in another window');
       expect(lastFrame()).toContain('original conversation');
       stdin.write('\u001b');
-      await waitFor(() => expect(lastFrame()).toContain('ask anything…'));
-      await typeDraft(stdin, lastFrame, `continue original ${attempt}`);
+      await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
+      await typeDraft(stdin, lastFrame, jsonPath);
       stdin.write('\r');
       await waitFor(() => expect(turns()).toHaveLength(attempt));
-      expect(turns().at(-1).text).toBe(`continue original ${attempt}`);
+      expect(turns().at(-1).json_input).toEqual({ filename: 'sample file.json', text: jsonText });
       expect(sentChannels[sent.lastIndexOf(turns().at(-1))]).toBe('session-1');
       emit(snapshot);
       emit({ type: 'turn_completed', turn_id: turns().at(-1).turn_id, usage: null });
@@ -717,7 +714,7 @@ describe('App', () => {
     });
 
     await waitFor(() => expect(lastFrame()).toContain('replayed line 60'));
-    expect(lastFrame()).toContain('ask anything…');
+    expect(lastFrame()).toContain('JSON file path');
   });
 
   it('closes the session picker on escape without switching', async () => {
@@ -733,66 +730,40 @@ describe('App', () => {
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
   });
 
-  it('sends steering while the agent is busy', async () => {
+  it('keeps a second JSON file from interrupting an active turn', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
 
-    await typeDraft(stdin, lastFrame, 'first');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     await waitFor(() => expect(turns()).toHaveLength(1));
 
-    await typeDraft(stdin, lastFrame, 'second');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     // The draft clears immediately and the message targets the active turn.
     await waitFor(() => expect(lastFrame()).not.toContain('second'));
     expect(turns()).toHaveLength(1);
-    await waitFor(() => expect(steers()).toHaveLength(1));
-    expect(steers()[0]).toMatchObject({ turn_id: turns()[0].turn_id, text: 'second' });
+    expect(steers()).toHaveLength(0);
   });
 
   it('keeps the input above the one-line status when a turn starts running', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
 
-    await typeDraft(stdin, lastFrame, 'run task');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
 
-    const inputLine = lineContaining(lastFrame(), 'steer the current turn…');
+    const inputLine = lineContaining(lastFrame(), 'Enter / for commands');
     const statusLine = lineContaining(lastFrame(), 'test/model');
     expect(statusLine).toBe(inputLine + 2);
     expect((lastFrame() ?? '').split('\n')[statusLine]).toContain('esc to cancel');
   });
 
-  it('selects and returns a question option', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestQuestion(false);
-    await waitFor(() => expect(lastFrame()).toContain('❯ SQLite'));
-
-    stdin.write('\u001b[A');
-    await waitFor(() => expect(lastFrame()).toContain('❯ Memory'));
-    stdin.write('\r');
-    await waitFor(() => expect(questionResponse()).toMatchObject({ option_id: 'memory' }));
-  });
-
-  it('accepts a free-text question answer', async () => {
-    const { stdin, lastFrame } = renderApp();
-    await waitForReady(lastFrame);
-    requestQuestion(true);
-    await waitFor(() => expect(lastFrame()).toContain('Which cache?'));
-
-    stdin.write('\u001b[B');
-    await waitFor(() => expect(lastFrame()).toContain('❯ 其他答案'));
-    await typeDraft(stdin, lastFrame, 'Redis');
-    stdin.write('\r');
-    await waitFor(() => expect(questionResponse()).toMatchObject({ text: 'Redis' }));
-  });
-
   it('cancels the active turn on escape', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, 'long task');
+    await typeDraft(stdin, lastFrame, jsonPath);
     stdin.write('\r');
     // Wait for the busy status: escape only cancels once the turn is running.
     await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
@@ -834,7 +805,7 @@ describe('App', () => {
 
     expect(lineContaining(lastFrame(), 'first output')).toBeLessThan(3);
     expect(lineContaining(lastFrame(), 'first output')).toBeLessThan(
-      lineContaining(lastFrame(), 'steer the current turn…'),
+      lineContaining(lastFrame(), 'Enter / for commands'),
     );
   });
 
@@ -852,7 +823,7 @@ describe('App', () => {
 
     const first = lineContaining(lastFrame(), 'line one');
     const fifth = lineContaining(lastFrame(), 'line five');
-    const input = lineContaining(lastFrame(), 'steer the current turn…');
+    const input = lineContaining(lastFrame(), 'Enter / for commands');
     expect(first).toBeLessThan(3);
     expect(fifth).toBe(first + 4);
     expect(input).toBeGreaterThan(fifth + 1);
@@ -873,7 +844,7 @@ describe('App', () => {
       const frame = lastFrame() ?? '';
       expect(frame).toContain('output line 1');
       expect(frame).toContain('output line 30');
-      expect(frame).toContain('steer the current turn…');
+      expect(frame).toContain('Enter / for commands');
       expect(frame).toContain('test/model');
     });
   });
@@ -901,7 +872,6 @@ describe('App', () => {
       provider: 'test',
       context_window: null,
       jobs: [],
-      question: null,
       plan: null,
     });
     emit({ type: 'turn_completed', turn_id: 't1', usage: null });
@@ -933,11 +903,11 @@ describe('App', () => {
 
     expect(
       lineContaining(lastFrame(), 'opening session…') -
-        lineContaining(lastFrame(), 'steer the current turn…'),
+        lineContaining(lastFrame(), 'Enter / for commands'),
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 5,
+      type: 'session_ready', protocol_version: 6,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
@@ -952,14 +922,13 @@ describe('App', () => {
       provider: 'test',
       context_window: null,
       jobs: [],
-      question: null,
       plan: null,
     });
     await waitForReady(lastFrame);
 
     expect(
       lineContaining(lastFrame(), 'test/model') -
-        lineContaining(lastFrame(), 'ask anything…'),
+        lineContaining(lastFrame(), 'JSON file path'),
     ).toBe(2);
   });
 

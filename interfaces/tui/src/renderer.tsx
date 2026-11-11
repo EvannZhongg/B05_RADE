@@ -4,7 +4,7 @@ import type { DOMElement } from 'ink';
 import Spinner from 'ink-spinner';
 import { cacheHitPercent, formatArguments } from '@rade/protocol';
 import type { PlanSnapshot, SettingsSnapshot } from '@rade/protocol/internal';
-import type { Entry, NavigationPicker as NavigationPickerState, State, UserQuestionState } from './state.js';
+import type { Entry, NavigationPicker as NavigationPickerState, State } from './state.js';
 
 function EntryView({ entry }: { entry: Entry }): React.ReactElement {
   if (entry.kind === 'user') {
@@ -342,7 +342,7 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
         {busy
           ? `${state.status === 'cancelling' ? ' cancelling…' : ' working'} ${elapsed.toFixed(
               1,
-            )}s${state.pendingSteers ? ` · ${state.pendingSteers} steer pending` : ''} · esc to cancel · ${model}`
+            )}s · esc to cancel · ${model}`
           : model}
       </Text>
     </Box>
@@ -412,43 +412,4 @@ export function ProviderOverview({ settings }: { settings: SettingsSnapshot }): 
     </Box>
     <Text dimColor>Use the GUI Settings screen to edit provider secrets and Agent configuration · esc close</Text>
   </Box>;
-}
-
-export function UserQuestionPrompt({
-  question,
-}: {
-  question: UserQuestionState;
-}): React.ReactElement {
-  const choices = [
-    ...question.options,
-    ...(question.allowFreeText
-      ? [{ id: '__free_text__', label: '其他答案', description: '输入自定义答案' }]
-      : []),
-  ];
-  return (
-    <Box
-      marginTop={1}
-      flexDirection="column"
-      borderStyle="round"
-      borderColor="cyan"
-      paddingX={1}
-    >
-      <Text color="cyan" bold>{question.question}</Text>
-      <Box marginTop={1} flexDirection="column">
-        {choices.map((option, index) => {
-          const selected = question.selectedIndex === index;
-          return (
-            <Box key={option.id} flexDirection="column">
-              <Text color={selected ? 'cyan' : undefined} dimColor={!selected} bold={selected}>
-                {selected ? '❯ ' : '  '}{option.label}
-                {'recommended' in option && option.recommended ? '  推荐' : ''}
-              </Text>
-              {option.description ? <Text dimColor>    {option.description}</Text> : null}
-            </Box>
-          );
-        })}
-      </Box>
-      <Text dimColor>↑/↓ select · enter confirm · esc cancel</Text>
-    </Box>
-  );
 }

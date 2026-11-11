@@ -5,7 +5,7 @@ import { Settings, type SettingsSection } from "./Settings";
 import { Workspace } from "./Workspace";
 import { SessionSearch } from "./SessionSearch";
 import { runtimeIsActive, type ContextWindow, type RuntimePhase } from "@rade/protocol";
-import { deleteSession, forkSession, get, sessionUrl, type ModelOption, type ModelOptions, type Session, type WorkspaceSessions } from "./api";
+import { deleteSession, get, sessionUrl, type ModelOption, type ModelOptions, type Session, type WorkspaceSessions } from "./api";
 
 type ActiveSession = Session & { provider: string | null; phase: RuntimePhase };
 const SELECTED_SESSION_KEY = "RADE.selectedSessionId";
@@ -37,8 +37,6 @@ export function App() {
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
   const [sessionsCollapsed, setSessionsCollapsed] = useState(false);
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
-  const [initialPrompts, setInitialPrompts] = useState<Record<string, string>>({});
-  const [pendingFork, setPendingFork] = useState<{ sessionId: string; itemIndex: number; text: string } | null>(null);
   const [searchTarget, setSearchTarget] = useState<{ sessionId: string; itemIndex: number; requestId: string } | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
   const updatedTitlesRef = useRef(new Map<string, string>());
@@ -221,33 +219,6 @@ export function App() {
     }
   }
 
-  async function forkFromMessage(source: Session, anchorId: string, content: string) {
-    setError("");
-    const target = source.editable_user_messages!.find((item) => item.anchor_id === anchorId)!;
-    // Preview the edited branch in the mounted source Chat while the server
-    // creates it. The source transcript and editor remain intact on failure.
-    setPendingFork({ sessionId: source.session_id, itemIndex: target.item_index, text: content });
-    try {
-      const forked = await forkSession(source.session_id, anchorId);
-      setChatSessions((all) => [...all.filter((item) => item.session_id !== forked.session_id), forked]);
-      if (forked.provider) {
-        setProviderBySession((all) => ({ ...all, [forked.session_id]: forked.provider! }));
-      }
-      setInitialPrompts((all) => ({ ...all, [forked.session_id]: content }));
-      setSelectedSessionId(forked.session_id);
-      setPendingFork(null);
-      setSettingsSection(null);
-      setSettingsMenuOpen(false);
-      // The new chat is already available locally. Refresh the sidebar in
-      // the background so it cannot delay the visible session transition.
-      if (forked.items.length > 0) void refreshSessions();
-    } catch (error) {
-      setPendingFork(null);
-      setError(String(error));
-      throw error;
-    }
-  }
-
   async function refreshSession(sessionId: string) {
     try {
       const loaded = await get<Session>(sessionUrl(sessionId));
@@ -339,8 +310,7 @@ export function App() {
         {error && <div className="error-banner" role="alert">{error}</div>}
         {!restoringSession && chatSessions.map((current) => {
           const provider = providerBySession[current.session_id] ?? defaultProvider;
-          const forkPreview = pendingFork?.sessionId === current.session_id ? pendingFork : undefined;
-          return <div key={current.session_id} style={{ display: current.session_id === selectedSessionId ? "contents" : "none" }}><Chat session={current} selected={!pendingFork && current.session_id === selectedSessionId} searchTarget={searchTarget?.sessionId === current.session_id ? searchTarget : undefined} forkPreview={forkPreview} contextWindow={current.session_id === selectedSessionId ? contextWindow : contextBySession[current.session_id] ?? current.context_window ?? null} workspaceOptions={sessionGroups} backgroundActive={Boolean(busyBySession[current.session_id])}
+          return <div key={current.session_id} style={{ display: current.session_id === selectedSessionId ? "contents" : "none" }}><Chat session={current} selected={current.session_id === selectedSessionId} searchTarget={searchTarget?.sessionId === current.session_id ? searchTarget : undefined} contextWindow={current.session_id === selectedSessionId ? contextWindow : contextBySession[current.session_id] ?? current.context_window ?? null} workspaceOptions={sessionGroups} backgroundActive={Boolean(busyBySession[current.session_id])}
             providers={providers} provider={provider} onProviderChange={(value) => setProviderBySession((all) => ({ ...all, [current.session_id]: value }))} onBusyChange={(value) => {
               setBusyBySession((all) => ({ ...all, [current.session_id]: value }));
             }} onContextWindowChange={(value) => setContextBySession((all) => ({ ...all, [current.session_id]: value }))} onTurnEnd={() => {
@@ -356,7 +326,7 @@ export function App() {
           }} onWorkspaceChange={(workspace) => {
             setChatSessions((all) => all.map((item) => item.session_id === current.session_id ? { ...item, workspace } : item));
             setWorkspaceVersion((value) => value + 1);
-          }} onEditMessage={(anchorId, content) => forkFromMessage(current, anchorId, content)} initialPrompt={initialPrompts[current.session_id]} onInitialPromptConsumed={() => setInitialPrompts((all) => { const next = { ...all }; delete next[current.session_id]; return next; })} /></div>;
+          }} /></div>;
         })}
       </main>
       {!settingsSection && selectedSession && <Workspace version={workspaceVersion} workspace={selectedSession.workspace} collapsed={workspaceCollapsed} onCollapsedChange={setWorkspaceCollapsed} />}

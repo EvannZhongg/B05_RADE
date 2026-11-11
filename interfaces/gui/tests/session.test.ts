@@ -45,7 +45,6 @@ const snapshot: Incoming = {
   provider: "default",
   context_window: null,
   jobs: [],
-  question: null,
   plan: null,
 };
 
@@ -103,7 +102,7 @@ describe("SessionSocket synchronization", () => {
     }]);
 
     FakeWebSocket.latest.receive({
-      type: "session_ready", protocol_version: 5,
+      type: "session_ready", protocol_version: 6,
       session_id: "session-1",
       workspace: "/workspace",
       provider: "default",
@@ -216,7 +215,7 @@ describe("SessionSocket synchronization", () => {
     expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message).type)).toEqual(["open_session"]);
   });
 
-  it.each(["starting", "running", "waiting_user"] as const)(
+  it.each(["starting", "running"] as const)(
     "rejects queued configuration for a %s session without blocking steer or cancel",
     (phase) => {
       const rejected = vi.fn();

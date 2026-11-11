@@ -65,7 +65,7 @@ class FakeBridge:
         self._stream = EventStream()
         self.state = bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="inactive", question=None, provider=None,
+            phase="inactive", provider=None,
             context_window=None, jobs=[],
         )
         self.items = []
@@ -102,8 +102,6 @@ class FakeBridge:
                 self.state["workspace"] = message["workspace"]
             elif kind == "plan_updated":
                 self.state["plan"] = message["plan"]
-            elif kind == "user_question":
-                self.state.update(phase="waiting_user", question=message)
             elif kind == "assistant_message":
                 self.items.append({"role": "assistant", "content": message["content"]})
             elif kind in {"turn_completed", "turn_failed", "turn_cancelled", "fatal"}:
@@ -186,13 +184,13 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runtime.state["phase"], "inactive")
         bridge.emit(bridge_protocol.runtime_state_message(
             phase="starting", provider="first",
-            question=None, context_window=None, cache_usage=None, jobs=[],
+            context_window=None, cache_usage=None, jobs=[],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 1)
         self.assertTrue(runtime.running)
         bridge.emit(bridge_protocol.runtime_state_message(
             phase="idle", provider="first",
-            question=None, context_window=None, cache_usage=None, jobs=[],
+            context_window=None, cache_usage=None, jobs=[],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 2)
         self.assertTrue(runtime.running)
@@ -208,7 +206,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         bridge._messages.put_nowait({
             **bridge_protocol.runtime_state_message(
                 cache_usage=None,
-                phase="running", turn_id="t2", question=None,
+                phase="running", turn_id="t2",
                 provider="first", context_window=None, jobs=[],
             ),
             "event_sequence": 75, "resume_after": 74,
@@ -260,26 +258,16 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         bridge = FakeBridge()
         runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
         self.addAsyncCleanup(runtime.close)
-        question = {
-            "type": "user_question",
-            "turn_id": "t1",
-            "request_id": "t1:1",
-            "question": "List files?",
-            "options": [],
-            "allow_free_text": True,
-        }
         bridge.emit(bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="waiting_user",
+            phase="running",
             turn_id="t1",
-            question=question,
             provider="first",
             context_window={"input_tokens": 1},
             jobs=[{"job_id": "j1", "kind": "shell", "status": "running"}],
         ))
         await _wait_for_async(lambda: runtime.event_sequence == 1)
 
-        self.assertEqual(runtime.state["question"], question)
         self.assertEqual([job["job_id"] for job in runtime.state["jobs"]], ["j1"])
         self.assertEqual(runtime.state["context_window"], {"input_tokens": 1})
 
@@ -293,7 +281,6 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
             cache_usage=None,
             phase="running",
             turn_id="t1",
-            question=None,
             provider="first",
             context_window=None,
             jobs=[],
@@ -349,8 +336,7 @@ class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
                 cache_usage=None,
                 phase="running",
                 turn_id="t1",
-                question=None,
-                provider="first",
+                    provider="first",
                 context_window=None,
                 jobs=[],
                 runtime_warnings=("warning",),
@@ -361,8 +347,7 @@ class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
                 cache_usage=None,
                 phase="idle",
                 turn_id=None,
-                question=None,
-                provider="first",
+                    provider="first",
                 context_window=None,
                 jobs=[],
             )
@@ -1214,58 +1199,6 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFalse(scratch.exists())
 
-    def test_reconnect_restores_a_user_question(self) -> None:
-        question = {
-            "type": "user_question",
-            "turn_id": "t1",
-            "request_id": "t1:1",
-            "question": "Which cache?",
-            "options": [{"id": "sqlite", "label": "SQLite"}],
-            "allow_free_text": False,
-        }
-        bridge = FakeBridge(
-            replies={
-                "open_session": [{"type": "session_ready", "session_id": "shared"}],
-                "user_turn": [question],
-                "user_question_response": [
-                    {"type": "turn_completed", "turn_id": "t1", "usage": None},
-                    None,
-                ],
-            }
-        )
-        with self.client(bridge) as client:
-            with client.websocket_connect("/api/session") as first:
-                first.send_json(
-                    {"type": "open_session", "session_id": "shared", "attachment_id": "page-1"}
-                )
-                self.assertEqual(first.receive_json()["type"], "session_ready")
-                first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "choose"}
-                )
-                self.assertEqual(first.receive_json()["type"], "user_question")
-
-            with client.websocket_connect("/api/session") as second:
-                second.send_json(
-                    {
-                        "type": "open_session",
-                        "session_id": "shared",
-                        "attachment_id": "page-1",
-                        "attach_only": True,
-                        "after_event": 2,
-                    }
-                )
-                state = second.receive_json()
-                self.assertEqual(state["question"], question)
-                second.send_json(
-                    {
-                        "type": "user_question_response",
-                        "request_id": "t1:1",
-                        "option_id": "sqlite",
-                    }
-                )
-                self.assertEqual(second.receive_json()["type"], "turn_completed")
-
-        self.assertEqual(bridge.sent[-1]["option_id"], "sqlite")
 
     def test_does_not_forward_unknown_or_lifecycle_messages(self) -> None:
         bridge = FakeBridge(
@@ -1313,67 +1246,6 @@ class GuiTest(unittest.TestCase):
             ["open_session", "user_turn", "cancel"],
         )
 
-    def test_reconnects_to_the_same_runtime_and_restores_question(self) -> None:
-        bridge = FakeBridge(
-            replies={
-                "open_session": [{"type": "session_ready", "session_id": "shared"}],
-                "user_turn": [
-                    {
-                        "type": "user_question",
-                        "turn_id": "t1",
-                        "request_id": "t1:1",
-                        "question": "List files?",
-                        "options": [],
-                        "allow_free_text": True,
-                    }
-                ],
-                "user_question_response": [
-                    {"type": "turn_completed", "turn_id": "t1", "usage": None},
-                    None,
-                ],
-            }
-        )
-        with self.client(bridge) as client:
-            with client.websocket_connect("/api/session") as first:
-                first.send_json({"type": "open_session", "session_id": "shared", "attachment_id": "page-1"})
-                self.assertEqual(first.receive_json()["type"], "session_ready")
-                first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "list"}
-                )
-                self.assertEqual(
-                    first.receive_json()["type"], "user_question"
-                )
-
-            self.assertFalse(bridge.closed)
-            with client.websocket_connect("/api/session") as second:
-                second.send_json(
-                    {
-                        "type": "open_session",
-                        "session_id": "shared",
-                        "attachment_id": "page-2",
-                        "attach_only": True,
-                        "after_event": 2,
-                    }
-                )
-                state = second.receive_json()
-                self.assertEqual(state["phase"], "waiting_user")
-                self.assertEqual(state["question"]["request_id"], "t1:1")
-                second.send_json(
-                    {
-                        "type": "user_question_response",
-                        "request_id": "t1:1",
-                        "text": "yes",
-                    }
-                )
-                self.assertEqual(
-                    second.receive_json()["type"], "turn_completed"
-                )
-
-        self.assertEqual(
-            [message["type"] for message in bridge.sent],
-            ["open_session", "user_turn", "user_question_response"],
-        )
-        self.assertEqual(bridge.sent[-1]["text"], "yes")
 
     def test_idle_view_detach_reuses_bridge_for_the_next_turn(self) -> None:
         bridge = FakeBridge(replies={
@@ -1579,7 +1451,7 @@ class GuiTest(unittest.TestCase):
     def test_reconnecting_marks_old_snapshots_as_replay_before_current_state(self) -> None:
         snapshot = bridge_protocol.runtime_state_message(
             cache_usage=None,
-            phase="inactive", turn_id=None, question=None,
+            phase="inactive", turn_id=None,
             provider="first",
             context_window=None, jobs=[],
         )

@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { PlanSnapshot } from "@rade/protocol";
 
-export function PlanStatus({ plan, open, disabled, onOpenChange }: {
+export function PlanStatus({ plan, open, onOpenChange }: {
   plan: PlanSnapshot;
   open: boolean;
-  disabled: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -27,7 +26,7 @@ export function PlanStatus({ plan, open, disabled, onOpenChange }: {
   }, [onOpenChange, open]);
 
   return <div ref={rootRef} className="plan-status">
-    <button type="button" className="runtime-menu-trigger" aria-expanded={open} disabled={disabled} onClick={() => onOpenChange(!open)}>
+    <button type="button" className="runtime-menu-trigger" aria-expanded={open} onClick={() => onOpenChange(!open)}>
       Plan {completed}/{plan.steps.length}
     </button>
     {open && <div className="plan-popover" role="dialog" aria-label="任务计划">

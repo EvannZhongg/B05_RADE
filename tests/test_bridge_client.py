@@ -157,7 +157,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
     def open(self, peer, session_id=None):
         peer.send({"type": "open_session", "workspace": str(self.external), "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 5)
+        self.assertEqual(ready["protocol_version"], 6)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 
@@ -291,18 +291,15 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
                      "call_id": call_id, "name": name, "arguments": json.dumps(arguments)}]
 
         outputs.put(tool("shell", {"command": "echo direct"}, "shell-1"))
-        question = {"question": "Proceed?", "options": [{"id": "yes", "label": "Yes"}]}
-        outputs.put(tool("ask_user", question, "question-1"))
         outputs.put([{"id": "msg_fixture", "type": "message", "role": "assistant", "status": "completed",
                       "content": [{"type": "output_text", "text": "完成🙂", "annotations": []}]}])
-        outputs.put(tool("ask_user", question, "question-2"))
         result = subprocess.run(
             [shutil.which("node"), "integration.mjs"], cwd=self.external, env=self.env,
             capture_output=True, text=True, encoding="utf-8", timeout=60,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertGreater(json.loads(result.stdout)["events"], 20)
-        self.assertEqual(len(requests), 4)
+        self.assertEqual(len(requests), 2)
         self.assertTrue(outputs.empty())
 
     def test_packaged_sdk_runs_independent_runtimes_in_one_resident_bridge(self):

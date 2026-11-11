@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export type JSONValue =
   | string
@@ -98,13 +98,11 @@ export type RuntimePhase =
   | 'starting'
   | 'idle'
   | 'running'
-  | 'waiting_user'
   | 'failed';
 
 export function runtimeIsActive(phase: RuntimePhase): boolean {
   return phase === 'starting'
-    || phase === 'running'
-    || phase === 'waiting_user';
+    || phase === 'running';
 }
 
 export type SessionSummary = {
@@ -136,22 +134,6 @@ export type SessionItem = {
   origin?: 'conversation' | 'tool_media' | 'tool_delivery' | 'job_result' | 'user_interaction' | 'hook_feedback';
 };
 
-export type UserQuestionOption = {
-  id: string;
-  label: string;
-  description?: string;
-  recommended?: boolean;
-};
-
-export type UserQuestion = {
-  type: 'user_question';
-  turn_id: string | null;
-  request_id: string;
-  question: string;
-  options: UserQuestionOption[];
-  allow_free_text: boolean;
-};
-
 export type BackgroundJob = {
   job_id: string;
   kind: string;
@@ -174,7 +156,6 @@ export type RuntimeState = {
   event_sequence?: number;
   workspace?: string;
   jobs: BackgroundJob[];
-  question: UserQuestion | null;
   runtime_warnings?: string[];
   plan: PlanSnapshot | null;
 };
@@ -185,7 +166,6 @@ export function initialRuntimeState(): RuntimeState {
     type: 'runtime_state',
     phase: 'inactive',
     turn_id: null,
-    question: null,
     provider: null,
     context_window: null,
     cache_usage: null,
@@ -276,7 +256,6 @@ export type Incoming = (
   | { type: 'session_title_updated'; session_id: string; title: string; title_source: 'initial' | 'generated' | 'manual' }
   | { type: 'session_items'; items: SessionItem[] }
   | { type: 'plan_updated'; plan: PlanSnapshot }
-  | UserQuestion
   | { type: 'mcp_server_status'; server: string; status: string; tool_count?: number; error?: string }
   | { type: 'turn_completed'; turn_id: string; usage: Usage | null }
   | { type: 'turn_cancelled'; turn_id: string }
@@ -290,6 +269,11 @@ export type Incoming = (
   transcript?: TranscriptCheckpoint;
 };
 
+export type JsonInput = {
+  filename: string;
+  text: string;
+};
+
 export type Outgoing =
   | {
       // May also rebind an idle Bridge to another Session without restarting it.
@@ -300,12 +284,12 @@ export type Outgoing =
       provider?: string;
     }
   | { type: 'user_turn'; turn_id: string; text: string; attachments?: UserAttachment[] }
+  | { type: 'user_turn'; turn_id: string; json_input: JsonInput }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
   | { type: 'provider_set'; provider: string }
   | { type: 'workspace_set'; workspace: string }
   | { type: 'runtime_refresh' }
   | { type: 'cancel'; turn_id: string }
-  | { type: 'user_question_response'; request_id: string; option_id?: string; text?: string }
   // List stored conversations; control-plane-only Sessions can be absent.
   | { type: 'list_sessions' }
   | { type: 'list_workspaces' }

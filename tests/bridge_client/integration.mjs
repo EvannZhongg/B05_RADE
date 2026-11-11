@@ -1,9 +1,12 @@
 // Runs from an external npm installation; imports only the public packages.
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { BridgeClient } from '@rade/client';
 import { PROTOCOL_VERSION } from '@rade/protocol';
 
+const jsonText = '{"label":"中文","count":9007199254740993}';
 const messages = [];
+let attachmentPath;
 const problems = [];
 let ready;
 let stage = 'open';
@@ -34,21 +37,25 @@ function handleMessage(message) {
   if (message.type === 'runtime_state' && ready && !synchronized) {
     synchronized = true;
     stage = 'complete';
-    client.send({ type: 'user_turn', turn_id: 'complete', text: 'External 中文 client' }, 'main');
+    client.send({ type: 'user_turn', turn_id: 'complete', json_input: { filename: 'example.json', text: jsonText } }, 'main');
   }
-  if (message.type === 'user_question') {
-    if (stage === 'complete') {
-      client.send({ type: 'user_steer', turn_id: 'complete', steer_id: 'steer-1', text: 'Use this answer' }, 'main');
-      client.send({ type: 'user_question_response', request_id: message.request_id, option_id: 'yes' }, 'main');
-    } else if (stage === 'cancel') client.cancel('cancel', 'main');
+  if (message.type === 'user_turn_received' && message.turn_id === 'complete') {
+    client.send({ type: 'user_steer', turn_id: 'complete', steer_id: 'steer-1', text: 'Use this answer' }, 'main');
   }
   if (message.type === 'turn_completed') {
     assert.equal(stage, 'complete');
     assert.equal(message.turn_id, 'complete');
     assert.ok(message.transcript.items.some(item => item.role === 'assistant' && item.content === '完成🙂'));
     assert.ok(messages.some(item => item.type === 'user_steer_applied' && item.steer_id === 'steer-1'));
+    const attachment = message.transcript.items
+      .filter(item => item.role === 'user' && Array.isArray(item.content))
+      .flatMap(item => item.content)
+      .find(part => part.type === 'file' && part.filename === 'example.json');
+    assert.ok(attachment);
+    attachmentPath = attachment.path;
     stage = 'cancel';
     client.send({ type: 'user_turn', turn_id: 'cancel', text: 'Wait for cancellation' }, 'main');
+    client.cancel('cancel', 'main');
   }
   if (message.type === 'turn_cancelled') {
     assert.equal(message.turn_id, 'cancel');
@@ -88,9 +95,9 @@ const result = await client.closed;
 clearTimeout(timeout);
 assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
 assert.deepEqual(problems, []);
+assert.equal(await readFile(attachmentPath, 'utf8'), jsonText);
 assert.equal(result.code, 0);
-assert.equal(messages.filter(message => message.type === 'user_question').length, 2);
-assert.equal(messages.filter(message => message.type === 'model_completed').length, 4);
+assert.equal(messages.filter(message => message.type === 'model_completed').length, 2);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));
 assert.ok(messages.some(message => message.type === 'tool_result' && message.name === 'shell' && message.ok));
 for (let i = 0; i < messages.length; i++) assert.equal(messages[i].event_sequence, i + 1);

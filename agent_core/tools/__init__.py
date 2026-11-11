@@ -11,7 +11,6 @@ from .base import (
 from .budget import MAX_TOOL_RESULT_CHARS
 from .builtin import (
     ApplyPatchTool,
-    AskUserTool,
     EditFileTool,
     ListDirectoryTool,
     ReadFileTool,
@@ -33,7 +32,6 @@ from .paths import resolve_image, resolve_readable_path
 
 __all__ = [
     "ApplyPatchTool",
-    "AskUserTool",
     "EditFileTool",
     "JSONValue",
     "ListDirectoryTool",

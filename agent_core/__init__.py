@@ -110,7 +110,6 @@ from .tool_result import (
 from .tool_batch import ToolBatchExecutor
 from .tools import (
     ApplyPatchTool,
-    AskUserTool,
     EditFileTool,
     JSONValue,
     ListDirectoryTool,
@@ -167,7 +166,6 @@ __all__ = [
     "AgentConfig",
     "AgentEvent",
     "AgentRunResult",
-    "AskUserTool",
     "CacheUsage",
     "AssistantMessageDeltaEvent",
     "AssistantMessageEvent",

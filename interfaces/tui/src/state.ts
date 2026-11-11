@@ -9,8 +9,6 @@ import type {
   SessionSummary,
   SettingsSnapshot,
   Usage,
-  UserQuestion,
-  UserQuestionOption,
 } from '@rade/protocol/internal';
 
 export type Status =
@@ -19,7 +17,6 @@ export type Status =
   | 'idle'
   | 'streaming'
   | 'running'
-  | 'awaiting_user'
   | 'cancelling'
   | 'runtime_failed'
   | 'session_unavailable'
@@ -42,14 +39,6 @@ export type Entry =
   | { kind: 'notice'; id: string; level: 'info' | 'warning' | 'error'; text: string };
 
 
-export type UserQuestionState = {
-  requestId: string;
-  question: string;
-  options: UserQuestionOption[];
-  allowFreeText: boolean;
-  selectedIndex: number;
-};
-
 export type NavigationPicker = (
   | { kind: 'sessions'; list: SessionSummary[] | null }
   | { kind: 'workspaces'; list: string[] | null }
@@ -64,7 +53,6 @@ export type State = {
   entries: Entry[];
   /** Latest MCP startup status; cleared once Runtime initialization finishes. */
   mcpStatus: string | null;
-  question: UserQuestionState | null;
   picker: NavigationPicker | null;
   settings: SettingsSnapshot | null;
   turnId: string | null;
@@ -72,16 +60,12 @@ export type State = {
   cacheUsage: CacheUsage | null;
   contextWindow: ContextWindow | null;
   plan: PlanSnapshot | null;
-  pendingSteers: number;
 };
 
 export type Action =
   | { type: 'message'; message: Incoming }
   | { type: 'submit'; turnId: string; text: string }
-  | { type: 'steer_submitted' }
   | { type: 'refresh_submitted' }
-  | { type: 'question_choice'; selectedIndex: number }
-  | { type: 'question_resolved' }
   | { type: 'picker_opened'; kind: NavigationPicker['kind'] }
   | { type: 'picker_choice'; selectedIndex: number }
   | { type: 'picker_closed' }
@@ -101,7 +85,6 @@ export const initialState: State = {
   provider: initialRuntime.provider ?? '',
   entries: [],
   mcpStatus: null,
-  question: null,
   picker: null,
   settings: null,
   turnId: initialRuntime.turn_id,
@@ -109,24 +92,12 @@ export const initialState: State = {
   cacheUsage: initialRuntime.cache_usage,
   contextWindow: initialRuntime.context_window,
   plan: initialRuntime.plan,
-  pendingSteers: 0,
 };
 
 let entryCounter = 0;
 function nextId(prefix: string): string {
   entryCounter += 1;
   return `${prefix}-${entryCounter}`;
-}
-
-function questionState(question: UserQuestion): UserQuestionState {
-  const recommendedIndex = question.options.findIndex((option) => option.recommended);
-  return {
-    requestId: question.request_id,
-    question: question.question,
-    options: question.options,
-    allowFreeText: question.allow_free_text,
-    selectedIndex: recommendedIndex >= 0 ? recommendedIndex : 0,
-  };
 }
 
 /** Appends to the open assistant entry, creating it on the first delta. */
@@ -351,22 +322,8 @@ function reduceAction(state: State, action: Action): State {
         ],
       };
 
-    case 'steer_submitted':
-      return { ...state, pendingSteers: state.pendingSteers + 1 };
-
     case 'refresh_submitted':
       return { ...state, status: 'starting', turnId: null };
-
-    case 'question_choice':
-      return state.question === null
-        ? state
-        : {
-            ...state,
-            question: { ...state.question, selectedIndex: action.selectedIndex },
-          };
-
-    case 'question_resolved':
-      return { ...state, status: 'running', question: null };
 
     case 'picker_opened':
       return { ...state, picker: { kind: action.kind, list: null, selectedIndex: 0 } };
@@ -394,7 +351,7 @@ function reduceAction(state: State, action: Action): State {
     case 'cancelling':
       return state.status === 'idle' || state.status === 'fatal'
         ? state
-        : { ...state, status: 'cancelling', question: null };
+        : { ...state, status: 'cancelling' };
 
     case 'exited':
       return {
@@ -429,11 +386,9 @@ function applyMessage(state: State, message: Incoming): State {
         ? 'starting'
         : message.phase === 'running'
           ? 'running'
-          : message.phase === 'waiting_user'
-            ? 'awaiting_user'
-            : message.phase === 'failed'
-              ? 'runtime_failed'
-              : 'idle';
+          : message.phase === 'failed'
+            ? 'runtime_failed'
+            : 'idle';
       return {
         ...state,
         status,
@@ -442,7 +397,6 @@ function applyMessage(state: State, message: Incoming): State {
         cacheUsage: message.cache_usage,
         plan: visiblePlan(message.plan),
         mcpStatus: message.phase === 'starting' ? state.mcpStatus : null,
-        question: message.question ? questionState(message.question) : null,
         entries: [...state.entries, ...startupNotices],
       };
     }
@@ -598,7 +552,6 @@ function applyMessage(state: State, message: Incoming): State {
     case 'user_steer_applied':
       return {
         ...state,
-        pendingSteers: Math.max(0, state.pendingSteers - 1),
         entries: [
           ...state.entries,
           { kind: 'user', id: nextId('user'), text: message.text },
@@ -608,7 +561,6 @@ function applyMessage(state: State, message: Incoming): State {
     case 'user_steer_rejected':
       return {
         ...state,
-        pendingSteers: Math.max(0, state.pendingSteers - 1),
         entries: [
           ...state.entries,
           {
@@ -668,14 +620,6 @@ function applyMessage(state: State, message: Incoming): State {
       // session_ready cleared the previous transcript and added the resumed notice.
       return { ...state, entries: [...state.entries, ...historyEntries(message.items)] };
 
-    case 'user_question': {
-      return {
-        ...state,
-        status: 'awaiting_user',
-        question: questionState(message),
-      };
-    }
-
     case 'model_completed':
       return { ...state, usage: message.usage, cacheUsage: message.cache_usage };
 
@@ -683,14 +627,12 @@ function applyMessage(state: State, message: Incoming): State {
       return { ...state, cacheUsage: message.cache_usage };
 
     case 'turn_completed':
-      return { ...state, turnId: null, question: null, pendingSteers: 0, usage: message.usage };
+      return { ...state, turnId: null, usage: message.usage };
 
     case 'turn_cancelled':
       return {
         ...state,
         turnId: null,
-        question: null,
-        pendingSteers: 0,
         entries: [
           ...state.entries,
           {
@@ -706,8 +648,6 @@ function applyMessage(state: State, message: Incoming): State {
       return {
         ...state,
         turnId: null,
-        question: null,
-        pendingSteers: 0,
         entries: [
           ...state.entries,
           {

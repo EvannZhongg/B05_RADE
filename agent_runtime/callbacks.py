@@ -15,4 +15,3 @@ class RuntimeCallbacks:
     on_plan: Callable[[PlanSnapshot], None] = lambda snapshot: None
     on_session_title: Callable[[str, str, str], None] = lambda session_id, title, source: None
     on_mcp_status: Callable[["McpServerStatus"], None] = lambda status: None
-    ask_user: Callable[[str, list[dict[str, object]], bool], object] | None = None

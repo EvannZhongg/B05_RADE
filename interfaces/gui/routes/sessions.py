@@ -38,7 +38,6 @@ RELAYED_MESSAGE_TYPES = frozenset(
         "provider_set",
         "workspace_set",
         "runtime_refresh",
-        "user_question_response",
     }
 )
 

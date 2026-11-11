@@ -1,16 +1,14 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
-import { useExternalStoreRuntime, type AppendMessage } from "@assistant-ui/react";
-import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase, type UserQuestion } from "@rade/protocol";
-import { createScratchWorkspace, releaseActiveSession, selectWorkspace, uploadAttachments, type ModelOption, type Session, type UserAttachment, type WorkspaceOption } from "../api";
+import { useExternalStoreRuntime } from "@assistant-ui/react";
+import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type JsonInput, type PlanSnapshot, type RuntimePhase } from "@rade/protocol";
+import { createScratchWorkspace, releaseActiveSession, selectWorkspace, type ModelOption, type Session, type WorkspaceOption } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
-import { composerConnectionGate } from "./composerState";
 import { jobKindLabel, shouldShowPlan, updateBackgroundJobs, userMessagePreview, type BackgroundJob } from "./runtimeState";
 
 export type SessionRuntimeOptions = {
   session: Session;
   selected: boolean;
-  forkPreview?: { itemIndex: number; text: string };
   contextWindow: ContextWindow | null;
   workspaceOptions: WorkspaceOption[];
   backgroundActive: boolean;
@@ -23,14 +21,11 @@ export type SessionRuntimeOptions = {
   onTitleChange?: (sessionId: string, title: string) => void;
   onTurnEnd: () => void;
   onWorkspaceChange?: (workspace: string) => void;
-  initialPrompt?: string;
-  onInitialPromptConsumed: () => void;
 };
 
 export function useSessionRuntime({
   session,
   selected,
-  forkPreview,
   contextWindow,
   workspaceOptions,
   backgroundActive,
@@ -43,29 +38,19 @@ export function useSessionRuntime({
   onTitleChange,
   onTurnEnd,
   onWorkspaceChange,
-  initialPrompt,
-  onInitialPromptConsumed,
 }: SessionRuntimeOptions) {
   const [items, setItems] = useState<TranscriptItem[]>(session.items);
   const [cacheUsage, setCacheUsage] = useState<CacheUsage | null>(session.cache_usage ?? null);
-  // The fork's first render includes its prompt, even before socket startup.
-  const [pendingUserItem, setPendingUserItem] = useState<TranscriptItem | null>(() =>
-    initialPrompt ? { role: "user", content: initialPrompt } : null);
+  const [pendingUserItem, setPendingUserItem] = useState<TranscriptItem | null>(null);
   const [runtimePhase, setRuntimePhase] = useState<RuntimePhase>(() => initialRuntimeState().phase);
-  const [pendingSteers, setPendingSteers] = useState(0);
   const [jobs, setJobs] = useState<Record<string, BackgroundJob>>({});
   const [attaching, setAttaching] = useState(false);
   const [attachmentReplaced, setAttachmentReplaced] = useState(false);
   const [toast, setToast] = useState<Extract<Feedback, { kind: "toast" }> | null>(null);
   const [alerts, setAlerts] = useState<Record<string, Extract<Feedback, { kind: "alert" }>>>({});
   const [reconnecting, setReconnecting] = useState(false);
-  const [question, setQuestion] = useState<UserQuestion | null>(null);
   const [plan, setPlan] = useState<PlanSnapshot | null>(session.plan ?? null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
-  const [questionDraft, setQuestionDraft] = useState("");
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [uploadingAttachments, setUploadingAttachments] = useState(false);
-  const [initialPromptDraft, setInitialPromptDraft] = useState<string | null>(null);
   const [workspaceDraft, setWorkspaceDraft] = useState(session.workspace ?? "");
   const [scratchWorkspace, setScratchWorkspace] = useState<string | null>(null);
   const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null);
@@ -76,7 +61,6 @@ export function useSessionRuntime({
   const mountedRef = useRef(true);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const turnCounter = useRef(0);
-  const steerCounter = useRef(0);
   const activeTurnIdRef = useRef<string | null>(null);
   const eventCounterRef = useRef(session.event_sequence ?? 0);
   const [attachmentId] = useState(() => crypto.randomUUID());
@@ -86,17 +70,12 @@ export function useSessionRuntime({
   const pendingUserItemRef = useRef(pendingUserItem);
   const runtimePhaseRef = useRef<RuntimePhase>(runtimePhase);
   const attachmentReplacedRef = useRef(false);
-  const attachmentSubmitRef = useRef(false);
   const awaitingSessionActivityRef = useRef(false);
-  const initialPromptSubmittedRef = useRef(false);
-  const initialPromptFailedRef = useRef(false);
 
   const messages = useMemo(() => toMessages(
-    forkPreview
-      ? [...items.slice(0, forkPreview.itemIndex), { role: "user", content: forkPreview.text }]
-      : pendingUserItem ? [...items, pendingUserItem] : items,
+    pendingUserItem ? [...items, pendingUserItem] : items,
     session.session_id,
-  ), [forkPreview, items, pendingUserItem, session.session_id]);
+  ), [items, pendingUserItem, session.session_id]);
   const turnPreviews = useMemo(() => messages
     .filter((message) => message.role === "user")
     .map((message) => userMessagePreview(message)), [messages]);
@@ -107,18 +86,11 @@ export function useSessionRuntime({
   const displayedWorkspace = pendingWorkspace ?? workspaceDraft;
   const workspaceSelected = Boolean(displayedWorkspace.trim());
   const running = runtimeIsActive(runtimePhase);
-  const interactionActive = question !== null;
   const backgroundDisconnected = backgroundActive && socketRef.current === null;
-  const composerGate = composerConnectionGate({
-    attaching: attaching || uploadingAttachments || pendingUserItem !== null || Boolean(forkPreview),
-    configurationPending,
-    attachmentReplaced,
-    interactionActive,
-    backgroundDisconnected,
-    workspaceSelected,
-  });
-  const controlsDisabled = attachmentReplaced || backgroundDisconnected || pendingUserItem !== null || Boolean(forkPreview) || refreshing;
-  const sessionRunning = running || backgroundActive || pendingUserItem !== null || Boolean(forkPreview) || refreshing;
+  const controlsDisabled = attachmentReplaced || backgroundDisconnected || pendingUserItem !== null || refreshing;
+  const sessionRunning = running || backgroundActive || pendingUserItem !== null || refreshing;
+
+  const canSubmitJson = workspaceSelected && !sessionRunning && !controlsDisabled && !configurationPending && !attaching;
 
   useEffect(() => {
     if (session.workspace) setWorkspaceDraft(session.workspace);
@@ -192,11 +164,8 @@ export function useSessionRuntime({
   const endTurn = useCallback(() => {
     activeTurnIdRef.current = null;
     awaitingSessionActivityRef.current = false;
-    setPendingSteers(0);
     setJobs({});
     setReconnecting(false);
-    setQuestion(null);
-    setQuestionDraft("");
     onTurnEnd();
   }, [onTurnEnd]);
 
@@ -239,7 +208,6 @@ export function useSessionRuntime({
           setAttaching(false);
           setReconnecting(false);
           setJobs({});
-          setQuestion(null);
           applyRuntimePhase("inactive");
           eventCounterRef.current = 0;
         }
@@ -264,7 +232,6 @@ export function useSessionRuntime({
           attachmentReplacedRef.current = true;
           setAttachmentReplaced(true);
           setAttaching(false);
-          setQuestion(null);
           applyRuntimePhase(message.phase);
           socket.close();
           return;
@@ -300,7 +267,6 @@ export function useSessionRuntime({
           applyRuntimePhase(message.phase);
           if (message.phase === "starting" && message.turn_id === null) setRefreshing(true);
           if (!pendingUserItemRef.current) activeTurnIdRef.current = message.turn_id;
-          setQuestion(message.question);
           setJobs(Object.fromEntries(message.jobs.map((job) => [job.job_id, job])));
           setPlan(message.plan ?? null);
           onContextWindowChange(message.context_window);
@@ -326,9 +292,6 @@ export function useSessionRuntime({
         }
         if (message.type === "mcp_server_status" && message.status === "unavailable" && !message.replayed) {
           showAlert({ kind: "alert", id: `mcp:${message.server}`, level: "warning", text: `MCP ${message.server} 连接失败：${message.error ?? "服务不可用"}` });
-        }
-        if (message.type === "user_steer_applied" || message.type === "user_steer_rejected") {
-          setPendingSteers((count) => Math.max(0, count - 1));
         }
         if (message.type === "job_status") {
           setJobs((current) => updateBackgroundJobs(current, message));
@@ -374,10 +337,6 @@ export function useSessionRuntime({
         if (applied.feedback?.kind === "alert") showAlert(applied.feedback);
         if (applied.contextWindow !== undefined) onContextWindowChange(applied.contextWindow);
         if (applied.cacheUsage !== undefined) setCacheUsage(applied.cacheUsage);
-        if (applied.question !== undefined) {
-          setQuestion(applied.question);
-          setQuestionDraft("");
-        }
         if (applied.finished) endTurn();
       },
       onClose: () => {
@@ -418,48 +377,13 @@ export function useSessionRuntime({
     connect({ attachOnly: true, takeover: true });
   }
 
-  async function submitMessage(text: string) {
-    if (!text && pendingFiles.length === 0) return;
-    if (!workspaceSelected) {
-      showToast({ kind: "toast", level: "info", text: "请先选择工作区。" });
-      return;
-    }
-    if (attachmentSubmitRef.current) return;
-    if (runtimeIsActive(runtimePhaseRef.current)) {
-      const turnId = activeTurnIdRef.current;
-      if (pendingFiles.length > 0) {
-        showToast({ kind: "toast", level: "info", text: "任务运行中不能发送附件；待发送内容已保留，请停止或等待当前任务结束。" });
-        return;
-      }
-      if (!turnId) return;
-      steerCounter.current += 1;
-      socketRef.current?.send({ type: "user_steer", turn_id: turnId, steer_id: `steer-${steerCounter.current}`, text });
-      setPendingSteers((count) => count + 1);
-      return;
-    }
+  async function submitJson(file: JsonInput): Promise<boolean> {
+    if (!canSubmitJson || runtimeIsActive(runtimePhaseRef.current)) return false;
     const startsSession = !itemsRef.current.some(
       (item) => item.role === "user"
         && (item.origin === undefined || item.origin === "conversation"),
     );
-    let attachments: UserAttachment[] = [];
-    if (pendingFiles.length) {
-      attachmentSubmitRef.current = true;
-      setUploadingAttachments(true);
-      try {
-        attachments = await uploadAttachments(pendingFiles, session.session_id);
-      } catch (error) {
-        showAlert({ kind: "alert", id: "attachment-upload", level: "error", text: String(error) });
-        return;
-      } finally {
-        attachmentSubmitRef.current = false;
-        setUploadingAttachments(false);
-      }
-    }
-    const submittedItem: TranscriptItem = {
-      role: "user",
-      content: attachments.length ? [{ type: "text", text }, ...attachments] : text,
-    };
-    showPendingUserItem(submittedItem);
+    showPendingUserItem({ role: "user", content: file.filename });
     applyRuntimePhase("starting");
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToast(null);
@@ -471,7 +395,7 @@ export function useSessionRuntime({
     const socket = socketRef.current ?? connect();
     awaitingSessionActivityRef.current = startsSession;
     try {
-      await socket.sendUserTurn({ type: "user_turn", turn_id: activeTurnIdRef.current, text, ...(attachments.length ? { attachments } : {}) });
+      await socket.sendUserTurn({ type: "user_turn", turn_id: activeTurnIdRef.current, json_input: file });
     } catch (error) {
       showPendingUserItem(null);
       activeTurnIdRef.current = null;
@@ -479,30 +403,11 @@ export function useSessionRuntime({
       applyRuntimePhase("inactive");
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       setReconnecting(false);
-      throw error;
+      showAlert({ kind: "alert", id: "json-submit", level: "error", text: String(error) });
+      return false;
     }
-    setPendingFiles([]);
-    if (initialPromptFailedRef.current) {
-      initialPromptFailedRef.current = false;
-      setInitialPromptDraft(null);
-      onInitialPromptConsumed();
-    }
+    return true;
   }
-
-  async function onNew(message: AppendMessage) {
-    const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
-    await submitMessage(text);
-  }
-
-  useEffect(() => {
-    if (!selected || !initialPrompt || initialPromptSubmittedRef.current) return;
-    initialPromptSubmittedRef.current = true;
-    void submitMessage(initialPrompt).then(onInitialPromptConsumed, () => {
-      initialPromptFailedRef.current = true;
-      setInitialPromptDraft(initialPrompt);
-      showAlert({ kind: "alert", id: "initial-prompt", level: "error", text: "消息未送达，内容已保留在输入框中。" });
-    });
-  }, [initialPrompt, onInitialPromptConsumed, selected]);
 
   function changeProvider(nextProvider: string) {
     if (!workspaceSelected) return;
@@ -522,13 +427,6 @@ export function useSessionRuntime({
     )));
     (socketRef.current ?? connect()).send({ type: "runtime_refresh" });
     return true;
-  }
-
-  function answerQuestion(answer: { option_id: string } | { text: string }) {
-    if (!question) return;
-    socketRef.current?.send({ type: "user_question_response", request_id: question.request_id, ...answer });
-    setQuestion(null);
-    setQuestionDraft("");
   }
 
   async function saveWorkspace(value = workspaceDraft) {
@@ -577,10 +475,8 @@ export function useSessionRuntime({
     messages,
     convertMessage: (message) => message,
     isRunning: running,
-    isDisabled: composerGate.inputDisabled,
-    isSendDisabled: composerGate.sendDisabled,
-    onNew,
-    queue: { items: [], steerItems: [], enqueue: onNew, steer: onNew, move: () => {}, edit: () => {}, remove: () => {} },
+    isSendDisabled: true,
+    onNew: async () => {},
   });
 
   return {
@@ -589,43 +485,32 @@ export function useSessionRuntime({
     turnPreviews,
     running,
     runtimePhase,
-    pendingSteers,
     jobs: Object.values(jobs),
     attaching,
     attachmentReplaced,
     toast,
     alerts: Object.values(alerts),
     reconnecting,
-    question,
-    questionDraft,
-    setQuestionDraft,
     plan: shouldShowPlan(plan) ? plan : null,
     displayedProvider,
     displayedWorkspace,
     providerSaving,
     workspaceSaving,
     refreshing,
-    uploadingAttachments,
-    pendingFiles,
-    initialPromptDraft,
-    composerGate,
+    canSubmitJson,
     controlsDisabled,
     sessionRunning,
     workspaceSelected,
     availableWorkspaces: displayedWorkspace && !workspaceOptions.some((option) => option.workspace === displayedWorkspace)
       ? [...workspaceOptions, { workspace: displayedWorkspace, scratch: displayedWorkspace === scratchWorkspace }]
       : workspaceOptions,
-    addPendingFiles: (files: File[]) => setPendingFiles((current) => [...current, ...files]),
-    removePendingFile: (index: number) => setPendingFiles((current) => current.filter((_, itemIndex) => itemIndex !== index)),
-    notifyRunningAttachmentBlocked: () => showToast({ kind: "toast", level: "info", text: "任务运行中不能发送附件；待发送内容已保留，请停止或等待当前任务结束。" }),
     dismissAlert: (id: string) => setAlerts((current) => {
       const next = { ...current };
       delete next[id];
       return next;
     }),
-    submitMessage,
+    submitJson,
     takeOverAttachment,
-    answerQuestion,
     changeProvider,
     refreshRuntime,
     saveWorkspace,

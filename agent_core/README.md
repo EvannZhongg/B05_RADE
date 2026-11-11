@@ -89,7 +89,7 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 - 后台 Shell 与子 Agent Job 的查询和取消
 - 用户提问、计划更新与长期记忆写入
 
-`ask_user`、`update_plan`、`remember`、`job_control` 等 Tool 依赖注入的 Runtime 能力，不把应用决策复制到 Tool 内。`job_control` 只对父 Session 可见，用于查看和取消自己的 Job。
+`update_plan`、`remember`、`job_control` 等 Tool 依赖注入的 Runtime 能力，不把应用决策复制到 Tool 内。`job_control` 只对父 Session 可见，用于查看和取消自己的 Job。
 
 `search_files` 与 `list_directory` 默认 60 秒超时并响应取消。`search_files` 跳过符号链接、junction 以及常见依赖、缓存和构建目录；`list_directory` 可传 `timeout_seconds`，递归只进入真实目录，符号链接与 junction 只列出、不展开目标。
 

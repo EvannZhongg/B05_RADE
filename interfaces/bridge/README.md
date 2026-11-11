@@ -44,7 +44,6 @@ GUI、TUI 和 SDK 都使用这一常驻服务端。TUI 为访问过的会话保�
 Bridge 路由的输入包括：
 
 - `user_turn`、`user_steer` 和 `cancel`
-- `user_question_response`
 - `provider_set` 和 `workspace_set`
 - Session 列表与历史加载
 - 设置读取及 Provider、Agent、路由更新

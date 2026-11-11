@@ -96,11 +96,6 @@ function CommandMenu({
 }
 
 /**
- * Stays mounted while the agent works so the caller can submit steering.
- *
- * Top and bottom rules mark the input area; the dimmed border distinguishes
- * steering the active turn from starting a new one.
- *
  * The draft is edited here because the real terminal cursor has to sit on
  * the caret: an IME draws its preedit ("nihao"
  * on the way to "你好") wherever that cursor is, and Ink parks it below the
@@ -260,7 +255,7 @@ export function Prompt({
         paddingX={1}
       >
         {value === '' ? (
-          <Text dimColor>{placeholder ?? (busy ? 'steer the current turn…' : 'ask anything…')}</Text>
+          <Text dimColor>{placeholder ?? 'JSON file path'}</Text>
         ) : (
           <Text>{renderedValue}</Text>
         )}

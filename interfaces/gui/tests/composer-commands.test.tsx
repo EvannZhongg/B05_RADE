@@ -12,7 +12,6 @@ const sent: Outgoing[] = [];
 let connection: SessionSocketOptions;
 const onTurnEnd = vi.fn();
 const onSessionAvailable = vi.fn();
-const onTitleChange = vi.fn();
 const noop = () => {};
 const session = { session_id: "commands", workspace: "/workspace", items: [] };
 const providers = [{ id: "test", model: "test/model" }];
@@ -30,7 +29,7 @@ function TestComposer() {
   const runtime = useSessionRuntime({
     session, selected: true, contextWindow: null, workspaceOptions: [], backgroundActive: false,
     providers, provider: "test", onProviderChange: noop, onBusyChange: noop,
-    onContextWindowChange: noop, onSessionAvailable, onTitleChange, onTurnEnd,
+    onContextWindowChange: noop, onSessionAvailable, onTurnEnd,
   });
   return <AssistantRuntimeProvider runtime={runtime.assistantRuntime}><ThreadPrimitive.Root className="thread">
     <Composer runtime={runtime} />
@@ -52,7 +51,6 @@ describe("JSON composer", () => {
     sent.length = 0;
     onTurnEnd.mockClear();
     onSessionAvailable.mockClear();
-    onTitleChange.mockClear();
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -69,19 +67,6 @@ describe("JSON composer", () => {
   async function receive(message: Incoming) {
     await act(async () => connection.onMessage(message));
   }
-
-  it("applies title updates during a running turn without treating them as turn completion", async () => {
-    await receive({ ...snapshot, phase: "running", turn_id: "active" });
-    await receive({
-      type: "session_title_updated", session_id: session.session_id,
-      title: "分析会话加载", title_source: "generated",
-    });
-    expect(onTitleChange).toHaveBeenCalledWith(session.session_id, "分析会话加载");
-    expect(onTurnEnd).not.toHaveBeenCalled();
-    expect(sent).toEqual([]);
-  });
-
-
 
   async function select(filename: string, text: string) {
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;

@@ -24,7 +24,7 @@ RADE-server（常驻宿主）
 - **完整 Agent Loop**：支持流式响应、Tool 批次、上下文压缩、steer、取消、计划和后台 Job。
 - **可恢复 Session**：对话和执行事件写入 append-only JSONL Journal，TUI 与 GUI 可读取同一类 Session。
 - **长期记忆**按 Workspace 保存偏好、事实与决策。
-- **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。主 Agent、辅助调用与子 Agent 角色可以独立选择 Provider。支持视觉输入的模型可以读取 Workspace 图片。
+- **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。子 Agent、上下文压缩和记忆使用当前主 Agent 选中的 Provider。支持视觉输入的模型可以读取 Workspace 图片。
 - **扩展系统**：支持 standalone Skill、Plugin 提供的 Skill / Agent / MCP / [Hook](docs/plugin-hooks.md) 组件，以及独立 MCP Server。
 - **两个交互入口**分别是终端中的 TUI 和浏览器中的 GUI。GUI 提供多会话管理、附件、文件树、设置和记忆。
 
@@ -55,7 +55,7 @@ RADE
 首次启动会在项目根目录初始化 `.RADE/`。退出 TUI 后，创建 `.RADE/.env` 并填入默认 Provider 所需的环境变量，例如：
 
 ```dotenv
-OPENAI_KEY=your-api-key
+DASHSCOPE_API_KEY=your-api-key
 ```
 
 配置完成后重新启动 TUI：
@@ -70,7 +70,7 @@ RADE
 RADE-server
 ```
 
-GUI 默认监听 <http://127.0.0.1:8737>。
+GUI 默认监听 <http://127.0.0.1:8736>。
 
 `RADE-server` 管理 HTTP 服务、活动 Session 和 Bridge。同一配置目录通过进程锁保证单实例。
 
@@ -113,7 +113,7 @@ Runtime 层：
 
 | 路径 | 内容 |
 | --- | --- |
-| `.RADE/provider_config.json` | Provider、模型和角色路由（含可选的 `fast_model`） |
+| `.RADE/provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
 | `.RADE/agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Workspace Instructions 与 scratch Workspace 设置 |
 | `.RADE/.env` | 配置引用的密钥和环境变量 |
 | `.RADE/prompts/` | 主 Agent、子 Agent、压缩与记忆 Prompt |

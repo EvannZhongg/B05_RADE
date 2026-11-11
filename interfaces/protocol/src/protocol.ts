@@ -107,7 +107,8 @@ export function runtimeIsActive(phase: RuntimePhase): boolean {
 
 export type SessionSummary = {
   session_id: string;
-  title: string;
+  input_preview: string | null;
+  started_at: string | null;
   forked_from?: string;
 };
 
@@ -253,7 +254,6 @@ export type Incoming = (
   | { type: 'runtime_refresh_failed'; error: RuntimeFailure }
   | { type: 'sessions_listed'; sessions: SessionSummary[] }
   | { type: 'workspaces_listed'; workspaces: string[] }
-  | { type: 'session_title_updated'; session_id: string; title: string; title_source: 'initial' | 'generated' | 'manual' }
   | { type: 'session_items'; items: SessionItem[] }
   | { type: 'plan_updated'; plan: PlanSnapshot }
   | { type: 'mcp_server_status'; server: string; status: string; tool_count?: number; error?: string }

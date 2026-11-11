@@ -9,10 +9,9 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterable, Iterator, TextIO
 
 from .atomic import atomic_write_text
-from .content import text_content
+from .content import FilePart, ImagePart, text_content
 from .file_lock import acquire_file_lock
 from .session import JournalEvent, JournalSink, Session, message_from_dict
-from .session_title import initial_session_title
 from .session_paths import (
     _validate_session_id,
     default_sessions_directory,
@@ -119,14 +118,13 @@ class JsonlSessionStore:
                 raise ValueError("editable user message has no turn boundary")
 
             workspace = self._workspace_for_unlocked(source_session_id)
-            metadata = _session_metadata(source_directory)
-            metadata["has_activity"] = False
+            metadata = _new_session_metadata()
+            provider = _session_metadata(source_directory).get("provider")
+            if provider is not None:
+                metadata["provider"] = provider
             metadata["forked_from"] = source_session_id
             metadata["fork_anchor_id"] = anchor_id
             prefix = tuple(source.journal[:turn_start])
-            # Editing the first message starts a new conversation to be named.
-            if not any(event.event_type == "message_appended" for event in prefix):
-                metadata.update(title="", title_source="initial")
 
             with self._locked_session(new_session_id):
                 if self._find_session_directory(new_session_id) is not None:
@@ -244,8 +242,7 @@ class JsonlSessionStore:
                                     result["has_more_in_session"] = True
                                 break
                             session_matches.append({
-                                "session_id": session_id,
-                                "title": summary["title"],
+                                **summary,
                                 "workspace": group["workspace"],
                                 "item_index": item_index,
                                 "role": message.role,
@@ -373,30 +370,6 @@ class JsonlSessionStore:
         with self._locked_session(session_id):
             self._append_events_unlocked(session_id, events, workspace)
 
-    def title_source_for(self, session_id: str) -> str:
-        with self._locked_session(session_id):
-            directory = self._find_session_directory(session_id)
-            if directory is None:
-                raise ValueError(f"session does not exist: {session_id!r}")
-            return str(_session_metadata(directory)["title_source"])
-
-    def set_title(
-        self, session_id: str, title: str, source: str, *,
-        expected_source: str | None = None,
-    ) -> bool:
-        if source not in {"initial", "generated", "manual"} or not title.strip():
-            raise ValueError("invalid Session title or source")
-        with self._locked_session(session_id):
-            directory = self._find_session_directory(session_id)
-            if directory is None:
-                raise ValueError(f"session does not exist: {session_id!r}")
-            metadata = _session_metadata(directory)
-            if expected_source is not None and metadata["title_source"] != expected_source:
-                return False
-            metadata.update(title=title, title_source=source)
-            _write_session_metadata(directory, metadata)
-            return True
-
     @contextmanager
     def open_journal(
         self, session_id: str, workspace: Path | str | None = None,
@@ -422,7 +395,7 @@ class JsonlSessionStore:
             def append(events: tuple[JournalEvent, ...]) -> None:
                 with self._locked_session(session_id):
                     _write_journal_events(file, events)
-                    _update_session_metadata(path.parent, session_id, events)
+                    _update_session_metadata(path.parent, events)
 
             yield append
         finally:
@@ -450,7 +423,7 @@ class JsonlSessionStore:
         with _open_journal_file(path) as file:
             _prepare_journal_append(file)
             _write_journal_events(file, events)
-        _update_session_metadata(path.parent, session_id, events)
+        _update_session_metadata(path.parent, events)
 
     @contextmanager
     def _locked_session(self, session_id: str) -> Iterator[None]:
@@ -664,28 +637,48 @@ def _write_session_metadata(
 
 
 def _new_session_metadata() -> dict[str, object]:
-    return {"title": "", "title_source": "initial", "has_activity": False}
+    return {"has_activity": False}
 
 
 def _update_session_metadata(
-    directory: Path, session_id: str, events: tuple[JournalEvent, ...],
+    directory: Path, events: tuple[JournalEvent, ...],
 ) -> None:
     metadata = _session_metadata(directory)
+    if _record_session_activity(metadata, events):
+        _write_session_metadata(directory, metadata)
+
+
+def _record_session_activity(
+    metadata: dict[str, object], events: Iterable[JournalEvent],
+) -> bool:
     changed = False
     for event in events:
-        if not metadata["has_activity"] and event.event_type != "plan_updated":
-            metadata["has_activity"] = True
+        if "started_at" in metadata and "input_preview" in metadata:
+            break
+        if event.event_type == "plan_updated":
+            continue
+        if "started_at" not in metadata:
+            metadata.update(has_activity=True, started_at=_format_utc(event.timestamp_utc))
             changed = True
-        message = event.payload.get("message")
-        if (
-            not metadata["title"] and metadata["title_source"] == "initial"
-            and event.event_type == "message_appended"
-            and isinstance(message, dict) and message.get("role") == "user"
-        ):
-            metadata["title"] = initial_session_title(message_from_dict(message), session_id)
-            changed = True
-    if changed:
-        _write_session_metadata(directory, metadata)
+        if "input_preview" in metadata or event.event_type != "message_appended":
+            continue
+        data = event.payload.get("message")
+        if not isinstance(data, dict) or data.get("role") != "user":
+            continue
+        message = message_from_dict(data)
+        if message.origin != "conversation":
+            continue
+        text = " ".join((text_content(message.content) or "").split())
+        metadata["input_preview"] = text[:80] or next(
+            (
+                part.filename
+                for part in message.parts
+                if isinstance(part, (FilePart, ImagePart)) and part.filename
+            ),
+            None,
+        )
+        changed = True
+    return changed
 
 
 def _scan_sessions(
@@ -714,7 +707,8 @@ def _scan_sessions(
 def _session_summary(session_id: str, metadata: dict[str, object]) -> dict[str, object]:
     return {
         "session_id": session_id,
-        "title": metadata["title"] or session_id,
+        "input_preview": metadata.get("input_preview"),
+        "started_at": metadata.get("started_at"),
         **(
             {"forked_from": metadata["forked_from"]}
             if isinstance(metadata.get("forked_from"), str)

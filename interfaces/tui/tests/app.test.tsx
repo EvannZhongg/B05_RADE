@@ -158,12 +158,12 @@ describe('App', () => {
     fail();
     await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
     expect(sent.some((m) => m.type === 'list_sessions')).toBe(true);
-    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', title: 'Retry session' }] });
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', input_preview: 'Retry session', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Retry session'));
     stdin.write('\r');
     await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
     fail();
-    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', title: 'Retry session' }] });
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'occupied', input_preview: 'Retry session', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Retry session'));
     autoReady = true;
     stdin.write('\r');
@@ -348,7 +348,6 @@ describe('App', () => {
           { id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
           { id: 'second', model: 'test/second', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
         ],
-        routing: { main_agent: 'test', subagent: null, roles: {} },
         agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
@@ -371,7 +370,6 @@ describe('App', () => {
       settings: {
         revision: 'r1', config_directory: '/config', default_provider: 'test',
         providers: [{ id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } }],
-        routing: { main_agent: 'test', subagent: null, roles: {} },
         agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
@@ -401,6 +399,8 @@ describe('App', () => {
   it('switches to another conversation and replays it', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
+    const startedAt = '2026-10-26T01:00:00Z';
+    const time = new Date(startedAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
 
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
@@ -410,11 +410,11 @@ describe('App', () => {
     emit({
       type: 'sessions_listed',
       sessions: [
-        { session_id: 'newer', title: 'about the parser' },
-        { session_id: 'older', title: 'about the tests' },
+        { session_id: 'newer', input_preview: 'parser.json', started_at: startedAt },
+        { session_id: 'older', input_preview: 'about the tests', started_at: null },
       ],
     });
-    await waitFor(() => expect(lastFrame()).toContain('❯ about the parser'));
+    await waitFor(() => expect(lastFrame()).toContain(`❯ ${time} · parser.json`));
 
     stdin.write('\u001b[B');
     await waitFor(() => expect(lastFrame()).toContain('❯ about the tests'));
@@ -452,7 +452,7 @@ describe('App', () => {
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
     await waitFor(() => expect(lastFrame()).toContain('Sessions'));
-    emit({ type: 'sessions_listed', sessions: [{ session_id: 'second', title: 'Second runtime' }] });
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'second', input_preview: 'Second runtime', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Second runtime'));
     stdin.write('\r');
     await waitFor(() => expect(sent.filter(message => message.type === 'open_session')).toHaveLength(2));
@@ -467,7 +467,7 @@ describe('App', () => {
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
     await waitFor(() => expect(lastFrame()).toContain('Sessions'));
-    emit({ type: 'sessions_listed', sessions: [{ session_id: 'sess-1234', title: 'Original runtime' }] });
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'sess-1234', input_preview: 'Original runtime', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Original runtime'));
     stdin.write('\r');
     await waitFor(() => expect(sent.some(message => message.type === 'session_snapshot')).toBe(true));
@@ -537,7 +537,7 @@ describe('App', () => {
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
     await waitFor(() => expect(sent.some((m) => m.type === 'list_sessions')).toBe(true));
-    emit({ type: 'sessions_listed', sessions: [{ session_id: 'next-history', title: 'Next history' }] });
+    emit({ type: 'sessions_listed', sessions: [{ session_id: 'next-history', input_preview: 'Next history', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Next history'));
     stdin.write('\r');
     await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(3));
@@ -656,7 +656,7 @@ describe('App', () => {
       await typeDraft(stdin, lastFrame, '/sessions');
       stdin.write('\r');
       await waitFor(() => expect(lastFrame()).toContain('Sessions'));
-      emit({ type: 'sessions_listed', sessions: [{ session_id: 'gui-session', title: 'Open in GUI' }] });
+      emit({ type: 'sessions_listed', sessions: [{ session_id: 'gui-session', input_preview: 'Open in GUI', started_at: null }] });
       await waitFor(() => expect(lastFrame()).toContain('Open in GUI'));
       stdin.write('\r');
       await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(attempt + 1));
@@ -696,7 +696,7 @@ describe('App', () => {
     await waitFor(() => expect(lastFrame()).toContain('Sessions'));
     emit({
       type: 'sessions_listed',
-      sessions: [{ session_id: 'older', title: 'a long conversation' }],
+      sessions: [{ session_id: 'older', input_preview: 'a long conversation', started_at: null }],
     });
     await waitFor(() => expect(lastFrame()).toContain('a long conversation'));
     stdin.write('\r');

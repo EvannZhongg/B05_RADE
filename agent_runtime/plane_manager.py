@@ -33,10 +33,7 @@ from agent_core.execution.process import CancellationSignal
 from .config import (
     ModelConfig,
     configured_skill_sources,
-    configured_role_names,
-    load_config_with_name,
-    load_fast_config,
-    load_model_options,
+    load_config,
     load_prompt_templates,
     memory_store,
 )
@@ -47,7 +44,6 @@ from .role_tools import resolve_role_tools
 from .settings import EnvironmentReloader, configuration_fingerprint
 from .callbacks import RuntimeCallbacks
 from .session_controller import SessionRuntimeController
-from .session_title import SessionTitleTask
 
 
 class ExecutionPlaneManager:
@@ -110,19 +106,9 @@ class ExecutionPlaneManager:
         self.callbacks.on_phase("starting", ())
         config_path = self._config_path
         workspace = session.workspace
-        _, config = load_config_with_name(config_path, session.provider_name)
+        config = load_config(config_path, session.provider_name)
         plugin_agents, agent_warnings = plugins.load_agents()
         hook_definitions, hook_warnings = plugins.load_hooks()
-        if agent_config.tools.is_enabled("subagent"):
-            known_roles = set(agent_config.subagent_roles)
-            known_roles.update(agent.name for agent in plugin_agents)
-            unknown = configured_role_names(config_path) - known_roles
-            if unknown:
-                names = ", ".join(sorted(unknown))
-                raise ValueError(
-                    "provider_config.json configures unknown subagent role(s): "
-                    f"{names}"
-                )
         from agent_core.mcp.manager import McpClientManager
 
         mcp = McpClientManager(
@@ -145,11 +131,6 @@ class ExecutionPlaneManager:
             prompts = load_prompt_templates(self._config_directory / "prompts")
 
             main_provider = self._provider_for(config, workspace, agent_config)
-            fast_config = load_fast_config(config_path)
-            fast_provider = (
-                self._provider_for(fast_config, workspace, agent_config)
-                if fast_config is not None else main_provider
-            )
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
             catalog = builtin_catalog()
@@ -189,7 +170,6 @@ class ExecutionPlaneManager:
                 configuration_fingerprint=config_fingerprint,
                 instructions=instructions,
                 provider=main_provider,
-                fast_provider=fast_provider,
                 catalog=catalog,
                 skills=skills,
                 prompts=prompts,
@@ -220,14 +200,12 @@ class ExecutionPlaneManager:
             if session.session is None:
                 raise RuntimeError("session is not initialized")
             main_provider = plane.provider
-            fast_provider = plane.fast_provider
             catalog = plane.catalog
             skills = plane.skills
             prompts = plane.prompts
             instructions = plane.instructions
             plugin_agents = plane.plugin_agents
             mcp = plane.mcp
-            config_path = self._config_path
             store = None
             memory_context = None
             if agent_config.memory.enabled:
@@ -244,11 +222,11 @@ class ExecutionPlaneManager:
                     workspace.path,
                     store,
                     MemoryReconciler(
-                        fast_provider,
+                        main_provider,
                         workspace_prompt=prompts.workspace_memory,
                         workspace_max_tokens=agent_config.memory.workspace_max_tokens,
                         on_auxiliary_call=partial(
-                            owner.auxiliary_model_completed, model=fast_provider.model_name,
+                            owner.auxiliary_model_completed, model=main_provider.model_name,
                         ),
                     ),
                 )
@@ -272,8 +250,7 @@ class ExecutionPlaneManager:
             subagents = self._subagent_runtime(
                 agent_config,
                 catalog,
-                config_path,
-                workspace,
+                main_provider,
                 prompts.subagent,
                 prompts.consolidator,
                 instructions,
@@ -328,11 +305,6 @@ class ExecutionPlaneManager:
                 context=context,
             )
             plane.memory = memory
-            if agent_config.generate_session_title:
-                plane.title_task = SessionTitleTask(
-                    session.session, session.store, fast_provider, prompts.session_title,
-                    self.callbacks.on_session_title,
-                )
             plane.agent = agent
             plane.context_window = agent.context_window()
         except BaseException:
@@ -372,8 +344,7 @@ class ExecutionPlaneManager:
         self,
         agent_config,
         catalog,
-        config_path: Path,
-        workspace: Workspace,
+        provider: LLMProvider,
         subagent_prompt_template: str,
         consolidator_prompt: str,
         workspace_instructions: WorkspaceInstructions,
@@ -389,37 +360,19 @@ class ExecutionPlaneManager:
                 name=name,
                 description=role.description,
                 tools=role_tools[name],
-                provider=self._provider_for(
-                    load_config_with_name(config_path, role=name)[1],
-                    workspace,
-                    agent_config,
-                ),
+                provider=provider,
             )
             for name, role in agent_config.subagent_roles.items()
             if role.enabled
         ]
-        provider_names = set(load_model_options(config_path)[1])
         for agent in plugin_agents:
-            declared_provider = (
-                agent.model
-                if agent.model not in {None, "inherit"}
-                and agent.model in provider_names
-                else None
-            )
-            provider_config = (
-                load_config_with_name(config_path, declared_provider)[1]
-                if declared_provider is not None
-                else load_config_with_name(config_path, role=agent.name)[1]
-            )
             roles.append(
                 SubagentRole(
                     name=agent.name,
                     description=agent.description,
                     instructions=agent.instructions,
                     tools=role_tools[agent.name],
-                    provider=self._provider_for(
-                        provider_config, workspace, agent_config
-                    ),
+                    provider=provider,
                 )
             )
         registry = SubagentRoleRegistry(roles)

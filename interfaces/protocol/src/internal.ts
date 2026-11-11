@@ -1,7 +1,7 @@
 /** First-party settings and GUI Host extensions; no public stability promise. */
 import type {
   Incoming as BridgeIncoming, Outgoing as BridgeOutgoing, JSONValue,
-  ProtocolError, RuntimePhase, RuntimeState, TranscriptCheckpoint,
+  ProtocolError, RuntimePhase, RuntimeState, SessionSummary, TranscriptCheckpoint,
 } from './protocol.js';
 export * from './protocol.js';
 
@@ -24,7 +24,6 @@ export type AgentSettings = {
   max_same_tool_calls: number;
   output_reserve_tokens: number;
   max_generation_tokens: number | null;
-  generate_session_title: boolean;
   workspace_instruction_files: string[];
   tools: Record<string, boolean>;
   context: { compression: { enabled: boolean; trigger_ratio: number | null; keep_recent_units: number; user_anchor_token_budget: number } };
@@ -38,17 +37,11 @@ export type SettingsSnapshot = {
   config_directory: string;
   default_provider: string;
   providers: ProviderSetting[];
-  routing: {
-    main_agent: string;
-    fast_model: string | null;
-    subagent: string | null;
-    roles: Record<string, { provider?: string }>;
-  };
   agent: AgentSettings;
   skills: { id: string; name: string; description: string; source: string; path: string; content: string }[];
   plugins: { name: string; version: string | null; description: string | null; enabled: boolean; capabilities: string[]; path: string; components: { skills: string[]; mcp: string[]; agents: string[]; hooks: string[] } }[];
   mcp_servers: { id: string; source: string; enabled: boolean; transport: string; command: string | null; args: string[]; cwd: string | null; url: string | null; env_names: string[]; header_names: string[]; startup_timeout_seconds: number; call_timeout_seconds: number }[];
-  plugin_agents: { name: string; description: string; model: string | null; source: string }[];
+  plugin_agents: { name: string; description: string; source: string }[];
   warnings: string[];
 };
 
@@ -81,5 +74,18 @@ export type Outgoing =
     })
   | { type: 'settings_get'; request_id?: string }
   | { type: 'settings_provider_save'; request_id?: string; expected_revision?: string; provider: string; settings: JSONValue }
-  | { type: 'settings_agent_save'; request_id?: string; expected_revision?: string; settings: JSONValue }
-  | { type: 'settings_routing_save'; request_id?: string; expected_revision?: string; settings: JSONValue };
+  | { type: 'settings_agent_save'; request_id?: string; expected_revision?: string; settings: JSONValue };
+
+const sessionStartFormat = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'short',
+  timeStyle: 'medium',
+});
+
+export function formatSessionStart(startedAt: string): string {
+  return sessionStartFormat.format(new Date(startedAt));
+}
+
+export function sessionLabel({ session_id, input_preview, started_at }: SessionSummary): string {
+  const input = input_preview ?? session_id;
+  return started_at ? `${formatSessionStart(started_at)} · ${input}` : input;
+}

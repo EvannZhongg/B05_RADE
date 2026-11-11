@@ -75,12 +75,8 @@ class PluginInteropTest(BridgeTestCase):
         }
         self.write_mcp()
         self.main = MockProvider([])
-        self.child = MockProvider([])
         self.enterContext(patch.object(
-            ExecutionPlaneManager, "_provider_for",
-            side_effect=lambda config, *_: None if config is None else (
-                self.child if config.model == "child" else self.main
-            ),
+            ExecutionPlaneManager, "_provider_for", side_effect=lambda *_: self.main,
         ))
 
     def write_mcp(self, **other_servers: dict) -> None:
@@ -91,17 +87,15 @@ class PluginInteropTest(BridgeTestCase):
     def open(self, lines: list[str] | None = None, *, mcp_enabled: bool = True):
         bridge, stdout = self.make_bridge(lines or [], self.root)
         bridge.open_session(open_session_message(self.root, agent_config={
-            "max_same_tool_calls": 5, "output_reserve_tokens": 100, "generate_session_title": False,
+            "max_same_tool_calls": 5, "output_reserve_tokens": 100,
             "workspace_instruction_files": [],
             "memory": {"enabled": False},
             "main_agent": {"tools": {"subagent": True}},
             "mcp": {"enabled": mcp_enabled},
         }, provider_config={
-            "main_agent": {"provider": "main"}, "subagent": {"provider": "child"},
-            "subagent_roles": {"review-kit:reviewer": {"provider": "child"}},
+            "main_agent": {"provider": "main"},
             "providers": {
                 "main": {"model": "main", "max_context_tokens": 1000},
-                "child": {"model": "child", "max_context_tokens": 1000},
             },
         }))
         return bridge, stdout
@@ -110,12 +104,10 @@ class PluginInteropTest(BridgeTestCase):
         self.main = MockProvider([
             calls(ToolCall("skill", "read_skill", {"name": "review-kit:code-review"})),
             calls(ToolCall("delegate", "subagent", {"role": "review-kit:reviewer", "task": "Review sample.py"})),
-            "Review delivered.",
-        ])
-        self.child = MockProvider([
             calls(ToolCall("read", "read_file", {"path": "sample.py"})),
             calls(ToolCall("analyze", TOOL, {"text": "source review"})),
             "Reviewer findings.",
+            "Review delivered.",
         ])
         (self.root / "sample.py").write_text("print('hello')\n", encoding="utf-8")
         bridge, stdout = self.open()
@@ -123,18 +115,19 @@ class PluginInteropTest(BridgeTestCase):
         messages = emitted(stdout)
         completed = [message for message in messages if message["type"] == "turn_completed"]
         self.assertEqual(len(completed), 1, messages)
-        self.assertEqual(len(self.child.requests), 3)
-        self.assertEqual({tool.name for tool in self.child.requests[0].tools}, {"read_file", "read_skill", TOOL})
-        self.assertIn("review-kit:code-review", self.child.requests[0].system_prompt)
-        self.assertIn("Review the requested code.", self.child.requests[0].system_prompt)
-        for request in (self.main.requests[0], self.child.requests[0]):
+        self.assertEqual(len(self.main.requests), 6)
+        child_requests = self.main.requests[2:5]
+        self.assertEqual({tool.name for tool in child_requests[0].tools}, {"read_file", "read_skill", TOOL})
+        self.assertIn("review-kit:code-review", child_requests[0].system_prompt)
+        self.assertIn("Review the requested code.", child_requests[0].system_prompt)
+        for request in (self.main.requests[0], child_requests[0]):
             self.assertIn("### review-kit:analyzer", request.system_prompt)
             self.assertNotIn("Tools:", request.system_prompt)
             self.assertNotIn(TOOL, request.system_prompt)
             self.assertEqual(request.system_prompt.count("Use analyzer echo for code review."), 1)
-        for requests in (self.main.requests, self.child.requests):
+        for requests in ([*self.main.requests[:2], self.main.requests[-1]], child_requests):
             self.assertTrue(all(request.system_prompt == requests[0].system_prompt for request in requests))
-        self.assertTrue(any("source review" in str(message.content) for message in self.child.requests[-1].messages))
+        self.assertTrue(any("source review" in str(message.content) for message in child_requests[-1].messages))
         plane = bridge.host.planes.current
         runtime = plane.agent._tools._context.subagents
         self.assertIs(runtime._catalog, plane.catalog)
@@ -143,8 +136,7 @@ class PluginInteropTest(BridgeTestCase):
     def test_mcp_instructions_follow_each_agents_actual_tool_selection(self) -> None:
         other = {**self.server_config, "env": {"TEST_MCP_INSTRUCTIONS": "Other server guide."}}
         self.write_mcp(other=other)
-        self.main = MockProvider(["done"])
-        self.child = MockProvider(["reviewed", "reviewed without MCP"])
+        self.main = MockProvider(["done", "reviewed", "reviewed without MCP"])
         bridge, stdout = self.open()
         bridge.run_turn({"turn_id": "instructions", "text": "Review the workspace."})
         self.assertTrue(any(message["type"] == "turn_completed" for message in emitted(stdout)))
@@ -154,8 +146,8 @@ class PluginInteropTest(BridgeTestCase):
         ))
         self.assertIsNone(result.error)
         self.assertIn("Other server guide.", self.main.requests[0].system_prompt)
-        self.assertIn("Use analyzer echo for code review.", self.child.requests[0].system_prompt)
-        self.assertNotIn("Other server guide.", self.child.requests[0].system_prompt)
+        self.assertIn("Use analyzer echo for code review.", self.main.requests[1].system_prompt)
+        self.assertNotIn("Other server guide.", self.main.requests[1].system_prompt)
 
         write_agent(self.plugin, fields="tools: [read_file]\n")
         bridge.host.planes.close()
@@ -164,10 +156,10 @@ class PluginInteropTest(BridgeTestCase):
             "review-local", "subagent", {"role": "review-kit:reviewer", "task": "Review locally"},
         ))
         self.assertIsNone(result.error)
-        self.assertNotIn("## MCP Server Instructions", self.child.requests[-1].system_prompt)
+        self.assertNotIn("## MCP Server Instructions", self.main.requests[-1].system_prompt)
 
     def test_reviewer_cannot_call_tools_outside_its_selection(self) -> None:
-        self.child = MockProvider([
+        self.main = MockProvider([
             calls(ToolCall("hidden", "mcp__review-kit_analyzer__hidden", {})),
             calls(ToolCall("echo", TOOL, {"text": "still works"})),
             "done",
@@ -176,8 +168,8 @@ class PluginInteropTest(BridgeTestCase):
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         result = plane.agent._tools.execute(ToolCall("review", "subagent", {"role": "review-kit:reviewer", "task": "Review"}))
         self.assertIsNone(result.error)
-        self.assertIn("tool_not_found", str(self.child.requests[1].messages))
-        self.assertIn("still works", str(self.child.requests[2].messages))
+        self.assertIn("tool_not_found", str(self.main.requests[1].messages))
+        self.assertIn("still works", str(self.main.requests[2].messages))
 
     def test_missing_dynamic_tools_skip_only_affected_role(self) -> None:
         manifest = self.plugin / "plugin.json"
@@ -223,10 +215,6 @@ class PluginInteropTest(BridgeTestCase):
         (other / ".mcp.json").write_text(json.dumps({"analyzer": self.server_config}), encoding="utf-8")
         (self.plugin / "plugin.json").write_text(json.dumps({"name": "review_kit", "components": {"mcp": [".mcp.json"]}}), encoding="utf-8")
         bridge, stdout = self.open()
-        provider_path = self.root / "provider_config.json"
-        provider = json.loads(provider_path.read_text(encoding="utf-8"))
-        provider.pop("subagent_roles")
-        provider_path.write_text(json.dumps(provider), encoding="utf-8")
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         self.assertIn("mcp__review_kit_analyzer__echo", plane.catalog.names)
         failures = [message for message in emitted(stdout) if message["type"] == "mcp_server_status" and message["status"] == "unavailable"]
@@ -264,11 +252,6 @@ class PluginInteropTest(BridgeTestCase):
         document = json.loads(manifest.read_text(encoding="utf-8"))
         document["enabled"] = False
         manifest.write_text(json.dumps(document), encoding="utf-8")
-        # Remove explicit routing to a role that is no longer declared.
-        provider_path = self.root / "provider_config.json"
-        provider = json.loads(provider_path.read_text(encoding="utf-8"))
-        provider.pop("subagent_roles")
-        provider_path.write_text(json.dumps(provider), encoding="utf-8")
         disabled = bridge.host.planes.ensure(bridge.host.sessions)
         self.assertIsNot(disabled, third)
         self.assertEqual(disabled.plugin_agents, ())

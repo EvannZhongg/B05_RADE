@@ -72,19 +72,6 @@ def create_settings_router(settings: SettingsStore) -> APIRouter:
         except (OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
-    @router.put("/api/settings/routing")
-    def save_routing_settings(
-        payload: dict[str, object] = Body(...),
-    ) -> dict[str, object]:
-        try:
-            revision = payload.pop("expected_revision", None)
-            return settings.save_routing(
-                payload,
-                revision if isinstance(revision, str) else None,
-            )
-        except (OSError, ValueError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-
     return router
 
 

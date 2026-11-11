@@ -1,4 +1,4 @@
-"""Migrate Session journals and populate their listing/title metadata.
+"""Migrate Session journals and populate their listing metadata.
 
 Run with Python 3.11+ on Windows, macOS, or Linux after stopping RADE:
     python scripts/migrate_sessions.py
@@ -17,8 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent_core.atomic import atomic_write_text
-from agent_core.session import message_from_dict
-from agent_core.session_title import initial_session_title
+from agent_core.session_store import _event_from_dict, _record_session_activity
 from agent_runtime.config import default_config_directory
 
 
@@ -114,24 +113,15 @@ def migrate_metadata(path: Path) -> bool:
     metadata_path = path.parent / "session.json"
     original = metadata_path.read_bytes() if metadata_path.exists() else None
     metadata = json.loads(original) if original is not None else {}
-    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    updated = dict(metadata)
-    if "title" not in updated:
-        message = next((
-            record["payload"]["message"] for record in records
-            if record["event_type"] == "message_appended"
-            and record["payload"].get("message", {}).get("role") == "user"
-        ), None)
-        updated["title"] = (
-            initial_session_title(message_from_dict(message), path.stem)
-            if message is not None else path.stem
-        )
-    if "title_source" not in updated:
-        updated["title_source"] = "manual" if metadata.get("title") else "initial"
-    updated["has_activity"] = any(
-        record["event_type"] not in {"permission_preset_changed", "plan_updated"}
-        for record in records
-    )
+    updated = {key: value for key, value in metadata.items()
+               if key not in {"has_activity", "started_at", "input_preview"}}
+    updated["has_activity"] = False
+    with path.open(encoding="utf-8") as file:
+        records = (json.loads(line) for line in file if line.strip())
+        _record_session_activity(updated, (
+            _event_from_dict(record) for record in records
+            if record["event_type"] != "permission_preset_changed"
+        ))
     if updated == metadata:
         return False
     if original is not None:

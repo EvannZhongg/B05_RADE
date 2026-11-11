@@ -25,7 +25,6 @@ from .protocol import (
     session_items_message,
     sessions_listed_message,
     workspaces_listed_message,
-    session_title_updated_message,
     settings_snapshot_message,
     settings_update_failed_message,
     user_turn_received_message,
@@ -52,9 +51,6 @@ class Bridge:
                 on_event=self._emit_agent_event,
                 on_phase=lambda phase, warnings: self._emit_runtime_state(phase, runtime_warnings=warnings),
                 on_plan=lambda snapshot: self.emit(**plan_updated_message(snapshot)),
-                on_session_title=lambda session_id, title, source: self.emit(
-                    **session_title_updated_message(session_id, title, source),
-                ),
                 on_mcp_status=self._emit_mcp_status,
             ),
         )
@@ -270,19 +266,6 @@ class Bridge:
             self.emit(**settings_update_failed_message(error, request_id))
 
 
-    def _save_routing_settings(self, message: dict[str, object]) -> None:
-        request_id = self._settings_request_id(message)
-        try:
-            revision = message.get("expected_revision")
-            snapshot = self.host.settings.save_routing(
-                message.get("settings"),
-                revision if isinstance(revision, str) else None,
-            )
-            self.emit(**settings_snapshot_message(snapshot, request_id))
-        except (OSError, ValueError) as error:
-            self.emit(**settings_update_failed_message(error, request_id))
-
-
     def _emit_mcp_status(self, status: "McpServerStatus") -> None:
         fields: dict[str, object] = {
             "server": status.server,
@@ -357,8 +340,6 @@ class Bridge:
                 self._save_provider_settings(message)
             elif message["type"] == "settings_agent_save":
                 self._save_agent_settings(message)
-            elif message["type"] == "settings_routing_save":
-                self._save_routing_settings(message)
 
 
     def open_session(self, message: dict[str, object]) -> None:

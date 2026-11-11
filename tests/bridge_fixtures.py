@@ -120,7 +120,6 @@ def open_session_message(
         ),
         "Consolidator.md": "Consolidate the conversation.",
         "WorkspaceMemory.md": "Reconcile workspace memory as JSON.",
-        "SessionTitle.md": "Name this conversation: {{conversation}}",
     }.items():
         path = prompts / filename
         if not path.exists():
@@ -131,7 +130,6 @@ def open_session_message(
             if provider_config is not None
             else {
                 "main_agent": {"provider": "first"},
-                "subagent": {"provider": ""},
                 "providers": {
                     "first": {
                         "model": "openai/first",
@@ -147,7 +145,6 @@ def open_session_message(
         encoding="utf-8",
     )
     resolved_agent_config = {
-        "generate_session_title": False,
         "provider": {
             "request_timeout_seconds": 300,
             "max_retries": 2,

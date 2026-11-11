@@ -26,7 +26,7 @@ from .routes.workspace import WorkspaceResolver, create_workspace_router
 
 STATIC_PATH = Path(__file__).resolve().parent / "static"
 HOST = "127.0.0.1"
-PORT = 8737
+PORT = 8736
 
 
 def create_app(

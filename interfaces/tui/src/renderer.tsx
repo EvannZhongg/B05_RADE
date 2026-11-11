@@ -1,3 +1,4 @@
+import { sessionLabel } from '@rade/protocol/internal';
 import React from 'react';
 import { Box, Static, Text, useBoxMetrics } from 'ink';
 import type { DOMElement } from 'ink';
@@ -352,7 +353,7 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
 export function NavigationPicker({ picker }: { picker: NavigationPickerState }): React.ReactElement {
   const workspaces = picker.kind === 'workspaces';
   const items = picker.kind === 'sessions'
-    ? picker.list?.map((session) => ({ id: session.session_id, label: session.title }))
+    ? picker.list?.map((session) => ({ id: session.session_id, label: sessionLabel(session) }))
     : picker.list?.map((workspace) => ({ id: workspace, label: workspace }));
   return (
     <Box

@@ -90,8 +90,6 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.http_thread.start()
         self.opening = open_session_message(self.root, provider_config={
             "main_agent": {"provider": "native"},
-            "fast_model": {"provider": "native"},
-            "subagent": {"provider": "native"},
             "providers": {"native": {
                 "model": "gpt-5", "api": "chat_completions", "key": "test-key",
                 "url": f"http://127.0.0.1:{self.http.server_port}/v1",

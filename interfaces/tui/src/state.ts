@@ -609,13 +609,6 @@ function applyMessage(state: State, message: Incoming): State {
         ? { ...state, picker: { kind: 'workspaces', list: message.workspaces, selectedIndex: 0 } }
         : state;
 
-    case 'session_title_updated':
-      return state.picker?.kind !== 'sessions' ? state : {
-        ...state,
-        picker: { ...state.picker, list: state.picker.list?.map((item) =>
-          item.session_id === message.session_id ? { ...item, title: message.title } : item) ?? null },
-      };
-
     case 'session_items':
       // session_ready cleared the previous transcript and added the resumed notice.
       return { ...state, entries: [...state.entries, ...historyEntries(message.items)] };

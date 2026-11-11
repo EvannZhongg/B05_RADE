@@ -1,3 +1,4 @@
+import { sessionLabel } from "@rade/protocol/internal";
 import { useEffect, useId, useRef, useState } from "react";
 import { LoaderCircle, Search } from "lucide-react";
 import { get, type SessionSearchMatch, type SessionSearchResults } from "./api";
@@ -111,8 +112,9 @@ export function SessionSearch({ collapsed, onSelect }: {
       <div className="session-search-results" id={listId} role="listbox" aria-label="搜索结果" aria-busy={loading || opening}>
         {Array.from(groups, ([sessionId, entries]) => {
           const first = entries[0].match;
-          return <div className="session-search-group" role="group" aria-label={first.title} key={sessionId}>
-            <div className="session-search-heading"><span className="session-search-source" title={`${first.scratch ? "Chat" : first.workspace} / ${first.title}`}><span>{first.scratch ? "Chat" : first.workspace.split(/[\\/]/).pop()}</span><span aria-hidden="true">/</span><strong>{first.title}</strong></span></div>
+          const label = sessionLabel(first);
+          return <div className="session-search-group" role="group" aria-label={label} key={sessionId}>
+            <div className="session-search-heading"><span className="session-search-source" title={`${first.scratch ? "Chat" : first.workspace} / ${label}`}><span>{first.scratch ? "Chat" : first.workspace.split(/[\\/]/).pop()}</span><span aria-hidden="true">/</span><strong>{label}</strong></span></div>
             {entries.map(({ match, index }) => <button type="button" role="option" id={`${listId}-${index}`} key={match.item_index} tabIndex={-1} aria-selected={index === activeIndex} disabled={opening} className="session-search-result" onMouseEnter={() => setActiveIndex(index)} onClick={() => void selectMatch(match)}>
               {match.timestamp_utc && <span className="session-search-meta"><time dateTime={match.timestamp_utc}>{new Date(match.timestamp_utc).toLocaleString()}</time></span>}
               <span className="session-search-snippet">{match.prefix_omitted && "…"}{match.snippet.slice(0, match.match_start)}<mark>{match.snippet.slice(match.match_start, match.match_end)}</mark>{match.snippet.slice(match.match_end)}{match.suffix_omitted && "…"}</span>

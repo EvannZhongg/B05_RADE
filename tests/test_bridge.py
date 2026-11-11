@@ -773,7 +773,7 @@ class BridgeServeTest(BridgeTestCase):
             "session_ready", "runtime_state", "workspaces_listed", "sessions_listed",
         ])
         self.assertEqual(set(messages[2]["workspaces"]), {str(root.resolve()), str(other.resolve())})
-        self.assertEqual(messages[3]["sessions"], [{"session_id": "root-history", "title": "root-history"}])
+        self.assertEqual(messages[3]["sessions"], store.list_workspace_sessions(root))
         self.assertEqual(bridge.host.sessions.workspace.path, root.resolve())
         self.assertIsNone(bridge.host.planes.current)
 
@@ -869,7 +869,10 @@ class BridgeServeTest(BridgeTestCase):
         )
         self.assertEqual(
             listed["sessions"],
-            [{"session_id": "saved", "title": "hello there"}],
+            [{
+                "session_id": "saved", "input_preview": "hello there",
+                "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
+            }],
         )
 
     def test_answers_settings_requests_without_starting_runtime(self) -> None:
@@ -1117,7 +1120,7 @@ class InterruptedTurnTest(BridgeTestCase):
         ) as stream:
             self.bridge.run_turn({
                 "turn_id": "json",
-                "json_input": {"filename": "输入.json", "text": text},
+                "json_input": {"filename": "输入  样例.json", "text": text},
             })
             self.bridge.run_turn({
                 "turn_id": "invalid",
@@ -1129,10 +1132,16 @@ class InterruptedTurnTest(BridgeTestCase):
         completed = next(event for event in messages if event["type"] == "turn_completed")
         item = next(item for item in completed["transcript"]["items"] if item["role"] == "user")
         attachment = next(part for part in item["content"] if part["type"] == "file")
-        self.assertEqual(attachment["filename"], "输入.json")
+        self.assertEqual(attachment["filename"], "输入  样例.json")
         self.assertEqual((self.root / attachment["path"]).read_text(encoding="utf-8"), text)
         self.assertEqual(messages[-1]["type"], "turn_failed")
         self.assertEqual(messages[-1]["turn_id"], "invalid")
+        summary, = self.store.list_workspace_sessions(self.root)
+        self.assertEqual(summary["input_preview"], "输入  样例.json")
+        self.assertEqual(
+            summary["started_at"],
+            self.session.turns["json"].started_at.isoformat().replace("+00:00", "Z"),
+        )
 
     def test_compression_cache_usage_is_persisted_pushed_and_restored(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
@@ -1756,7 +1765,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         )
         self.assertEqual(emitted(stdout)[-1]["phase"], "inactive")
 
-    def test_compression_uses_main_model_and_fast_model_only_serves_memory(self) -> None:
+    def test_compression_and_memory_use_selected_model(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
         bridge, _ = self.make_bridge([], root)
@@ -1764,19 +1773,18 @@ class BridgeSessionOpenTest(BridgeTestCase):
             root,
             provider_config={
                 "main_agent": {"provider": "first"},
-                "fast_model": {"provider": "second"},
                 "providers": {
-                    "first": {"model": "openai/first", "max_context_tokens": 1200},
-                    "second": {"model": "openai/second", "max_context_tokens": 200},
+                    "first": {"model": "openai/first", "max_context_tokens": 200},
+                    "second": {"model": "openai/second", "max_context_tokens": 1200},
                 },
             },
         ))
+        bridge.host.change_provider("second")
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         self.assertIs(plane.agent._provider, plane.provider)
         self.assertIs(plane.agent._context._provider, plane.provider)
         self.assertEqual(plane.agent._context.limits.compression_threshold, 825)
-        self.assertIs(plane.memory.reconciler._provider, plane.fast_provider)
-        self.assertIsNot(plane.provider, plane.fast_provider)
+        self.assertIs(plane.memory.reconciler._provider, plane.provider)
 
         session = bridge.host.sessions.session
         for index in range(8):
@@ -1791,7 +1799,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             plane.agent._context.archive(plane.agent._context.build_request(plane.agent._tools.definitions))
         plane.memory.remember(MemoryCandidate("fact", "A fact."))
         with patch.object(
-            plane.fast_provider, "stream",
+            plane.provider, "stream",
             return_value=LLMResponse(
                 content='{"entries":[{"kind":"fact","content":"A fact."}]}',
                 usage=TokenUsage(12, 6, 18, 0, None),
@@ -1804,7 +1812,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         records = [event.payload for event in calls]
         self.assertEqual([(event.event_type, r["scope"], r["model"], r["status"])
                           for event, r in zip(calls, records)], [
-            ("compression_completed", None, "openai/first", "completed"),
+            ("compression_completed", None, "openai/second", "completed"),
             ("memory_completed", "workspace", "openai/second", "completed"),
         ])
         self.assertEqual(records[0]["usage"], {
@@ -1820,34 +1828,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         compression = [event for event in stored.journal if event.event_type == "compression_completed"]
         self.assertEqual(len(compression), 1)
         self.assertEqual(compression[0].payload["usage"], records[0]["usage"])
-
-    def test_disabled_memory_still_loads_the_fast_model(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(open_session_message(
-            root,
-            agent_config={
-                "max_same_tool_calls": 5,
-                "output_reserve_tokens": 100,
-                "workspace_instruction_files": [],
-                "main_agent": {"tools": {}},
-                "memory": {"enabled": False},
-            },
-            provider_config={
-                "main_agent": {"provider": "first"},
-                "fast_model": {"provider": "fast"},
-                "providers": {
-                    "first": {"model": "openai/first", "max_context_tokens": 1000},
-                    "fast": {"model": "openai/fast", "max_context_tokens": 1000},
-                },
-            },
-        ))
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIs(plane.agent._context._provider, plane.provider)
-        self.assertIsNot(plane.fast_provider, plane.provider)
-        self.assertEqual(plane.fast_provider.model_name, "openai/fast")
-        self.assertIsNone(plane.memory)
 
     def test_subagent_compression_and_memory_are_logged_in_own_session(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -1870,18 +1850,19 @@ class BridgeSessionOpenTest(BridgeTestCase):
             },
             provider_config={
                 "main_agent": {"provider": "first"},
-                "subagent_roles": {"researcher": {"provider": "second"}},
                 "providers": {
                     "first": {"model": "openai/first", "max_context_tokens": 1000},
                     "second": {"model": "openai/second", "max_context_tokens": 1000},
                 },
             },
         ))
+        bridge.host.change_provider("second")
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         context = plane.agent._tools._context
         subagents = context.subagents
         assert subagents is not None
         provider = subagents.roles.get("researcher").provider
+        self.assertIs(provider, plane.provider)
         responses = [
             LLMResponse(content=None, tool_calls=(
                 ToolCall("child-call", "remember", {
@@ -1903,7 +1884,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             ),
             patch.object(provider, "stream_cancellable", side_effect=responses),
             patch.object(
-                plane.fast_provider, "stream",
+                provider, "stream",
                 return_value=LLMResponse(content=json.dumps({"entries": [
                     {"kind": "fact", "content": "A durable fact."},
                 ]}), usage=TokenUsage(1000, 10, 1010, 0, None)),
@@ -1929,7 +1910,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         )
         self.assertEqual(
             (calls[1].event_type, records[1]["scope"], records[1]["model"], records[1]["status"]),
-            ("memory_completed", "workspace", "openai/first", "completed"),
+            ("memory_completed", "workspace", "openai/second", "completed"),
         )
         self.assertFalse(any(event.event_type in {"compression_completed", "memory_completed"}
                              for event in parent_session.journal))
@@ -1940,7 +1921,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             ("A durable fact.",),
         )
 
-    def test_applies_provider_request_policy_to_all_chat_providers(self) -> None:
+    def test_applies_provider_request_policy_to_shared_provider(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
         bridge, _ = self.make_bridge([], root)
@@ -1968,7 +1949,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                     "main_agent": {
                         "provider": "first",
                     },
-                    "subagent": {"provider": ""},
                     "providers": {
                         "first": {
                             "model": "openai/first",
@@ -2000,8 +1980,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
 
         self.assertEqual(main_provider._request_timeout_seconds, 45)
         self.assertEqual(main_provider._max_retries, 4)
-        self.assertEqual(role_provider._request_timeout_seconds, 45)
-        self.assertEqual(role_provider._max_retries, 4)
+        self.assertIs(role_provider, main_provider)
 
     def test_opening_a_session_does_not_require_the_provider_key(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -2564,7 +2543,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         root = Path(directory)
         config = {
             "main_agent": {"provider": "first"},
-            "subagent": {"provider": ""},
             "providers": {
                 "first": {
                     "model": "openai/first",
@@ -2927,7 +2905,7 @@ class SubagentRoleStartTest(BridgeTestCase):
 
 
 class PluginAgentStartTest(BridgeTestCase):
-    def test_assembles_plugin_agents_with_prompts_tools_and_providers(self) -> None:
+    def test_assembles_plugin_agent_with_selected_main_provider(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
         plugin = root / "plugins" / "review-kit"
@@ -2937,31 +2915,16 @@ class PluginAgentStartTest(BridgeTestCase):
             json.dumps(
                 {
                     "name": "review-kit",
-                    "components": {
-                        "agents": [
-                            "agents/matched.md",
-                            "agents/fallback.md",
-                            "agents/overridden.md",
-                        ]
-                    },
+                    "components": {"agents": ["agents/reviewer.md"]},
                 }
             ),
             encoding="utf-8",
         )
-        for name, model in (
-            ("matched", "second"),
-            ("fallback", "opus"),
-            ("overridden", "inherit"),
-        ):
-            (agents / f"{name}.md").write_text(
-                "---\n"
-                f"name: {name}\n"
-                f"description: Review as {name}.\n"
-                f"model: {model}\n"
-                "---\n\n"
-                f"System instructions for {name}.\n",
-                encoding="utf-8",
-            )
+        (agents / "reviewer.md").write_text(
+            "---\nname: reviewer\ndescription: Review changes.\n---\n\n"
+            "System instructions for reviewer.\n",
+            encoding="utf-8",
+        )
         bridge, _ = self.make_bridge([], root)
         bridge.open_session(
             open_session_message(
@@ -2977,10 +2940,6 @@ class PluginAgentStartTest(BridgeTestCase):
                 },
                 provider_config={
                     "main_agent": {"provider": "first"},
-                    "subagent": {"provider": "first"},
-                    "subagent_roles": {
-                        "review-kit:overridden": {"provider": "second"}
-                    },
                     "providers": {
                         "first": {
                             "model": "openai/first",
@@ -2995,22 +2954,17 @@ class PluginAgentStartTest(BridgeTestCase):
             )
         )
 
+        bridge.host.change_provider("second")
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         runtime = plane.agent._tools._context.subagents
         assert runtime is not None
-        matched = runtime.roles.get("review-kit:matched")
-        fallback = runtime.roles.get("review-kit:fallback")
-        overridden = runtime.roles.get("review-kit:overridden")
+        reviewer = runtime.roles.get("review-kit:reviewer")
 
-        self.assertEqual(matched.description, "Review as matched.")
-        self.assertEqual(
-            matched.instructions,
-            "System instructions for matched.",
-        )
-        self.assertEqual(matched.tools, ROLE_TOOL_NAMES)
-        self.assertEqual(matched.provider._model, "openai/second")
-        self.assertEqual(fallback.provider._model, "openai/first")
-        self.assertEqual(overridden.provider._model, "openai/second")
+        self.assertEqual(reviewer.description, "Review changes.")
+        self.assertEqual(reviewer.instructions, "System instructions for reviewer.")
+        self.assertEqual(reviewer.tools, ROLE_TOOL_NAMES)
+        self.assertIs(reviewer.provider, plane.provider)
+        self.assertEqual(plane.provider.model_name, "openai/second")
 
 
 class ReadImageAvailabilityTest(BridgeTestCase):
@@ -3031,54 +2985,6 @@ class ReadImageAvailabilityTest(BridgeTestCase):
                     "read_image" in {tool.name for tool in plane.agent._tools.definitions},
                     model == VISION_MODEL,
                 )
-
-
-class CrossFileRoleValidationTest(BridgeTestCase):
-    """The two config files must agree on which roles exist."""
-
-    def start(self, provider_roles: dict, agent_roles: dict) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        bridge, _ = self.make_bridge([], Path(directory))
-        bridge.open_session(
-            open_session_message(
-                Path(directory),
-                provider_config={
-                    "main_agent": {"provider": "first"},
-                    "subagent": {"provider": ""},
-                    "subagent_roles": provider_roles,
-                    "providers": {
-                        "first": {
-                            "model": "openai/first",
-                            "max_context_tokens": 1000,
-                        }
-                    },
-                },
-                agent_config={
-                    "max_same_tool_calls": 5,
-                    "output_reserve_tokens": 100,
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "main_agent": {"tools": {"subagent": True}},
-                    "subagent_roles": agent_roles,
-                },
-            )
-        )
-        bridge.host.planes.ensure(bridge.host.sessions)
-
-    def test_rejects_a_provider_override_for_an_unknown_role(self) -> None:
-        """A typo must fail loudly instead of silently doing nothing."""
-        with self.assertRaisesRegex(
-            ValueError, "unknown subagent role\\(s\\): codr"
-        ):
-            self.start(
-                {"codr": {"provider": "first"}},
-                {"coder": {"description": "Writes.", "tools": {}}},
-            )
-
-    def test_accepts_matching_role_names(self) -> None:
-        self.start(
-            {"coder": {"provider": "first"}},
-            {"coder": {"description": "Writes.", "tools": {}}},
-        )
 
 
 if __name__ == "__main__":

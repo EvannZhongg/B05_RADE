@@ -24,7 +24,7 @@ RADE-server
 - **A complete agent loop**: streaming responses, tool batches, context compaction, steer, cancel, plans, and background jobs.
 - **Resumable sessions**: conversation and execution events are written to an append-only JSONL journal, and the TUI and GUI can read the same kind of session.
 - **Memory** stores long-term context for each workspace.
-- **Models and media** use Chat Completions or Responses through the OpenAI SDK. The main agent, auxiliary calls, and each subagent role can use different providers. Models with image input can inspect workspace images.
+- **Models and media** use Chat Completions or Responses through the OpenAI SDK. Subagents, context compression, and memory use the main agent’s selected provider. Models with image input can inspect workspace images.
 - **Extension system**: standalone skills, skills / agents / MCP / [command hooks](docs/plugin-hooks.md) provided by plugins, and standalone MCP servers.
 - **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, attachments, a file tree, settings, and memory.
 
@@ -55,7 +55,7 @@ RADE
 The first launch initializes `.RADE/` in the project root. After quitting the TUI, create `.RADE/.env` and fill in the environment variables required by the default provider, for example:
 
 ```dotenv
-OPENAI_KEY=your-api-key
+DASHSCOPE_API_KEY=your-api-key
 ```
 
 Then restart the TUI:
@@ -70,7 +70,7 @@ To start the GUI server, run
 RADE-server
 ```
 
-The GUI listens on <http://127.0.0.1:8737> by default.
+The GUI listens on <http://127.0.0.1:8736> by default.
 
 `RADE-server` manages HTTP and the shared Session Host and Bridge. A configuration-directory process lock prevents duplicate servers.
 
@@ -113,7 +113,7 @@ Frontends and SDK:
 
 | Path | Contents |
 | --- | --- |
-| `.RADE/provider_config.json` | Providers, models, and role routing, including the optional `fast_model` |
+| `.RADE/provider_config.json` | Provider definitions and the default main agent provider |
 | `.RADE/agent_config.json` | Tools, context, memory, skill paths, subagents, MCP, workspace instructions, and scratch workspace settings |
 | `.RADE/.env` | The secrets and environment variables referenced by the configuration |
 | `.RADE/prompts/` | Main agent, subagent, compaction, and memory prompts |

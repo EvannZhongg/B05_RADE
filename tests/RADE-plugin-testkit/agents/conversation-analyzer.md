@@ -1,7 +1,6 @@
 ---
 name: conversation-analyzer
 description: Analyze supplied conversation excerpts and recommend concrete Hookify project rules.
-model: inherit
 tools: [read_file, search_files]
 ---
 

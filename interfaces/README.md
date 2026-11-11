@@ -39,7 +39,7 @@ RADE-server ── application_host
 
 `ApplicationHost` 持有 `JsonlSessionStore`、`SettingsStore` 和 `ActiveSessionRegistry`。它先启动共享 Bridge，再启动 HTTP 服务。关闭时先停止 HTTP，再关闭活动 Session 和 Bridge。Ctrl+C、SIGTERM 和 Windows Ctrl+Break 由宿主管理。
 
-HTTP 服务默认监听 `127.0.0.1:8737`。FastAPI lifespan 只管理 HTTP 应用，Session 和 Bridge 由宿主关闭。
+HTTP 服务默认监听 `127.0.0.1:8736`。FastAPI lifespan 只管理 HTTP 应用，Session 和 Bridge 由宿主关闭。
 
 ## Bridge 进程与通道
 

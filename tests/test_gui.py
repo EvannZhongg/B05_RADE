@@ -397,7 +397,7 @@ class SessionSearchCancellationTest(unittest.IsolatedAsyncioTestCase):
             "method": "GET", "scheme": "http", "path": "/api/sessions/search",
             "root_path": "", "query_string": f"q={query}&limit=50&per_session_limit=3".encode(),
             "headers": [(b"host", b"127.0.0.1")],
-            "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8737),
+            "client": ("127.0.0.1", 12345), "server": ("127.0.0.1", 8736),
         }
         task = asyncio.create_task(self.app(scope, receive, send))
         self.requests.append(task)
@@ -639,8 +639,6 @@ class GuiTest(unittest.TestCase):
         self.config.mkdir()
         (self.config / "provider_config.json").write_text(json.dumps({
             "main_agent": {"provider": "first"},
-            "subagent": {"provider": ""},
-            "subagent_roles": {},
             "providers": {
                 "first": {"model": "openai/first"},
                 "second": {"model": "openai/second"},
@@ -649,7 +647,6 @@ class GuiTest(unittest.TestCase):
         (self.config / "agent_config.json").write_text(json.dumps({
             "max_same_tool_calls": 5,
             "output_reserve_tokens": 100,
-            "generate_session_title": False,
             "max_generation_tokens": None,
             "provider": {"request_timeout_seconds": 300, "max_retries": 2},
             "scratch_workspace_root": str(self.root / "scratch"),
@@ -1127,7 +1124,8 @@ class GuiTest(unittest.TestCase):
             "workspace": str(self.root.resolve()),
             "sessions": [{
                 "session_id": "project-session",
-                "title": "项目会话",
+                "input_preview": "项目会话",
+                "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
             }],
         }])
 
@@ -1783,7 +1781,10 @@ class GuiTest(unittest.TestCase):
                     {
                         "workspace": str(self.root.resolve()),
                         "sessions": [
-                            {"session_id": "from-tui", "title": "TUI 对话"}
+                            {
+                                "session_id": "from-tui", "input_preview": "TUI 对话",
+                                "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
+                            }
                         ],
                     }
                 ],
@@ -1818,7 +1819,6 @@ class GuiTest(unittest.TestCase):
             session.journal,
             workspace=self.root,
         )
-        self.store.set_title("source", "Generated conversation title", "generated")
 
         with self.client() as client:
             source = client.get("/api/sessions/source").json()
@@ -1845,12 +1845,11 @@ class GuiTest(unittest.TestCase):
             for item in groups[0]["sessions"]
         }
         self.assertIn("source", summaries)
-        self.assertEqual(summaries["source"]["title"], "Generated conversation title")
+        self.assertEqual(summaries["source"]["input_preview"], "first question")
         self.assertEqual(
-            summaries[forked["session_id"]]["title"],
-            "Generated conversation title",
+            summaries[forked["session_id"]]["input_preview"],
+            "first question",
         )
-        self.assertEqual(self.store.title_source_for(forked["session_id"]), "generated")
         self.assertEqual(
             summaries[forked["session_id"]]["forked_from"],
             "source",

@@ -4,6 +4,7 @@ import { Chat } from "./Chat";
 import { Settings, type SettingsSection } from "./Settings";
 import { Workspace } from "./Workspace";
 import { SessionSearch } from "./SessionSearch";
+import { formatSessionStart, sessionLabel } from "@rade/protocol/internal";
 import { runtimeIsActive, type ContextWindow, type RuntimePhase } from "@rade/protocol";
 import { deleteSession, get, sessionUrl, type ModelOption, type ModelOptions, type Session, type WorkspaceSessions } from "./api";
 
@@ -39,20 +40,10 @@ export function App() {
   const [workspaceCollapsed, setWorkspaceCollapsed] = useState(false);
   const [searchTarget, setSearchTarget] = useState<{ sessionId: string; itemIndex: number; requestId: string } | null>(null);
   const settingsMenuRef = useRef<HTMLDivElement>(null);
-  const updatedTitlesRef = useRef(new Map<string, string>());
 
   const refreshSessions = useCallback(async () => {
     try {
-      const titlesAtRequest = updatedTitlesRef.current;
-      const groups = await get<WorkspaceSessions[]>("/api/sessions");
-      setSessionGroups(groups.map((group) => ({
-        ...group,
-        sessions: group.sessions.map((item) => {
-          const title = updatedTitlesRef.current.get(item.session_id);
-          return title !== undefined && title !== titlesAtRequest.get(item.session_id)
-            ? { ...item, title } : item;
-        }),
-      })));
+      setSessionGroups(await get<WorkspaceSessions[]>("/api/sessions"));
     } catch (error) {
       setError(String(error));
     }
@@ -231,7 +222,8 @@ export function App() {
   const sessions = sessionGroups.flatMap((group) => group.sessions);
   const projectGroups = sessionGroups.filter((group) => !group.scratch);
   const scratchSessions = sessionGroups.filter((group) => group.scratch).flatMap((group) => group.sessions);
-  const selectedTitle = sessions.find((item) => item.session_id === selectedSessionId)?.title ?? "New chat";
+  const selectedSummary = sessions.find((item) => item.session_id === selectedSessionId);
+  const selectedLabel = selectedSummary ? sessionLabel(selectedSummary) : "New chat";
   const busy = Boolean(busyBySession[selectedSessionId]);
   const contextWindow = contextBySession[selectedSessionId] ?? selectedSession?.context_window ?? null;
   const settingsItems: { id: SettingsSection; label: string; description: string; icon: typeof Bot }[] = [
@@ -246,7 +238,21 @@ export function App() {
     <div className="settings-popover-label">Settings</div>
     {settingsItems.map((item) => { const Icon = item.icon; return <button type="button" role="menuitem" key={item.id} onClick={() => { setSettingsSection(item.id); setSettingsMenuOpen(false); }}><Icon size={15} /><span><strong>{item.label}</strong><small>{item.description}</small></span><ChevronRight size={13} /></button>; })}
   </div>;
-  const sessionRow = (item: WorkspaceSessions["sessions"][number]) => <div className={`session-row ${item.session_id === selectedSessionId ? "selected" : ""}`} key={item.session_id}><button className="session-button" title={item.title} disabled={loadingSessionId === item.session_id} onClick={() => void selectSession(item.session_id)}>{busyBySession[item.session_id] ? <LoaderCircle size={15} className="spin" role="img" aria-label="正在执行任务" /> : item.forked_from ? <GitFork size={15} aria-label="分支会话" /> : <MessageSquare size={15} />}<span>{item.title}</span></button><button className="delete-session" aria-label={`删除会话 ${item.title}`} title="删除会话" disabled={loadingSessionId === item.session_id || Boolean(busyBySession[item.session_id])} onClick={(event) => { event.stopPropagation(); void removeSession(item.session_id); }}><Trash2 size={14} /></button></div>;
+  const sessionRow = (item: WorkspaceSessions["sessions"][number]) => {
+    const label = sessionLabel(item);
+    return <div className={`session-row ${item.session_id === selectedSessionId ? "selected" : ""}`} key={item.session_id}>
+      <button className="session-button" title={label} disabled={loadingSessionId === item.session_id} onClick={() => void selectSession(item.session_id)}>
+        {busyBySession[item.session_id] ? <LoaderCircle size={15} className="spin" role="img" aria-label="正在执行任务" /> : item.forked_from ? <GitFork size={15} aria-label="分支会话" /> : <MessageSquare size={15} />}
+        <span className="session-input">
+          <span>{item.input_preview ?? item.session_id}</span>
+          {item.started_at && <time dateTime={item.started_at}>{formatSessionStart(item.started_at)}</time>}
+        </span>
+      </button>
+      <button className="delete-session" aria-label={`删除会话 ${label}`} title="删除会话" disabled={loadingSessionId === item.session_id || Boolean(busyBySession[item.session_id])} onClick={(event) => { event.stopPropagation(); void removeSession(item.session_id); }}>
+        <Trash2 size={14} />
+      </button>
+    </div>;
+  };
 
   return (
     <div className={`app-shell ${sessionsCollapsed ? "sessions-collapsed" : ""} ${workspaceCollapsed ? "workspace-collapsed" : ""}`}>
@@ -306,7 +312,7 @@ export function App() {
 
       {settingsSection && <Settings section={settingsSection} onClose={() => { setSettingsSection(null); void refreshSessions(); }} onChanged={refreshModels} />}
       <main className="chat-panel" style={{ display: settingsSection ? "none" : undefined }}>
-        <header className="chat-header"><div className="breadcrumb">Chat <ChevronRight size={14} /><span>{restoringSession ? "…" : selectedTitle}</span></div><span className="status-label"><span className={`status-dot ${busy ? "working" : ""}`} />{busy ? "Working" : "Ready"}</span></header>
+        <header className="chat-header"><div className="breadcrumb">Chat <ChevronRight size={14} /><span>{restoringSession ? "…" : selectedLabel}</span></div><span className="status-label"><span className={`status-dot ${busy ? "working" : ""}`} />{busy ? "Working" : "Ready"}</span></header>
         {error && <div className="error-banner" role="alert">{error}</div>}
         {!restoringSession && chatSessions.map((current) => {
           const provider = providerBySession[current.session_id] ?? defaultProvider;
@@ -317,13 +323,7 @@ export function App() {
             void refreshSessions();
             void refreshSession(current.session_id);
             setWorkspaceVersion((value) => value + 1);
-          }} onSessionAvailable={() => { void refreshSessions(); }} onTitleChange={(sessionId, title) => {
-            updatedTitlesRef.current = new Map(updatedTitlesRef.current).set(sessionId, title);
-            setSessionGroups((groups) => groups.map((group) => ({
-              ...group,
-              sessions: group.sessions.map((item) => item.session_id === sessionId ? { ...item, title } : item),
-            })));
-          }} onWorkspaceChange={(workspace) => {
+          }} onSessionAvailable={() => { void refreshSessions(); }} onWorkspaceChange={(workspace) => {
             setChatSessions((all) => all.map((item) => item.session_id === current.session_id ? { ...item, workspace } : item));
             setWorkspaceVersion((value) => value + 1);
           }} /></div>;

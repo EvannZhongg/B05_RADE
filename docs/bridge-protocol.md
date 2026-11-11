@@ -207,11 +207,8 @@ start chatting in a listed workspace, send `open_session` with its path and
 `session_id: null`, then wait for the ready/sync pair before sending `user_turn`.
 `workspace_set` instead moves the current session into the specified workspace.
 
-Automatic naming may emit `session_title_updated` after the first completed
-assistant/Tool unit, independently of turn completion. It carries `session_id`,
-`title` and `title_source` (`initial`, `generated`, or `manual`). Apply it to the
-matching list row without changing turn state; subsequent listings return the
-persisted title.
+Session summaries include `session_id`, `input_preview` (the first JSON file
+name or text preview), and `started_at` (the first run time in UTC).
 
 Attachments are local descriptors `{type: "image" | "file", path, filename,
 mime_type, size_bytes}`. Paths reference files readable by the Runtime under its

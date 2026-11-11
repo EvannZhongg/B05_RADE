@@ -156,7 +156,7 @@ class PluginContractTest(unittest.TestCase):
         manifest = write_manifest(self.root, "test", version=None, components={
             "skills": ["skills"], "agents": ["agents/reviewer.md"],
         })
-        write_agent(manifest.parent, fields="model: null\ncolor: green\n")
+        write_agent(manifest.parent, fields="color: green\n")
         write_skill(manifest.parent)
         path = manifest.parent / "skills" / "shared" / "SKILL.md"
         path.write_text("---\nname: hidden\ndescription: Hidden.\nmetadata:\n  RADE:\n    register: false\n---\n", encoding="utf-8")

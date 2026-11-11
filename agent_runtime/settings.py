@@ -225,31 +225,15 @@ class SettingsStore:
             for server in plugin_mcp
         ]
 
-        main_agent = provider_document.get("main_agent")
-        fast_model = provider_document.get("fast_model", {})
-        subagent = provider_document.get("subagent", {})
-        roles = provider_document.get("subagent_roles", {})
-        assert isinstance(main_agent, dict)
-        assert isinstance(fast_model, dict)
-        assert isinstance(subagent, dict)
-        assert isinstance(roles, dict)
-
         return {
             "revision": configuration_fingerprint(self.directory),
             "config_directory": str(self.directory),
             "default_provider": default_provider,
             "providers": providers,
-            "routing": {
-                "main_agent": main_agent.get("provider"),
-                "fast_model": fast_model.get("provider") or None,
-                "subagent": subagent.get("provider") or None,
-                "roles": roles,
-            },
             "agent": {
                 "max_same_tool_calls": agent_config.max_same_tool_calls,
                 "output_reserve_tokens": agent_config.output_reserve_tokens,
                 "max_generation_tokens": agent_config.max_generation_tokens,
-                "generate_session_title": agent_config.generate_session_title,
                 "workspace_instruction_files": list(agent_config.workspace_instruction_files),
                 "tools": {name: agent_config.tools.is_enabled(name) for name in TOOL_NAMES},
                 "context": {
@@ -281,7 +265,6 @@ class SettingsStore:
             "plugin_agents": [{
                 "name": agent.name,
                 "description": agent.description,
-                "model": agent.model,
                 "source": str(agent.source),
             } for agent in plugin_agents],
             "warnings": list(skills.warnings) + list(plugin_mcp_warnings) + list(plugin_agent_warnings) + list(plugin_hook_warnings),
@@ -423,59 +406,12 @@ class SettingsStore:
             self._check_revision(expected_revision)
             return self._save_agent(payload)
 
-    def save_routing(
-        self,
-        payload: object,
-        expected_revision: str | None = None,
-    ) -> dict[str, object]:
-        with self._lock:
-            self._check_revision(expected_revision)
-            if not isinstance(payload, dict):
-                raise ValueError("routing settings must be an object")
-            allowed = {
-                "main_agent", "fast_model", "subagent", "roles",
-            }
-            unknown = set(payload) - allowed
-            if unknown:
-                raise ValueError(f"unknown routing setting(s): {', '.join(sorted(unknown))}")
-            document = _read_json(self.provider_path)
-            main = document.get("main_agent")
-            subagent = document.get("subagent")
-            if not isinstance(main, dict) or not isinstance(subagent, dict):
-                raise ValueError("provider routing blocks must be objects")
-            main["provider"] = payload.get("main_agent")
-            fast_model = document.get("fast_model")
-            document["fast_model"] = (
-                {**fast_model, "provider": payload.get("fast_model") or ""}
-                if isinstance(fast_model, dict)
-                else {"provider": payload.get("fast_model") or ""}
-            )
-            subagent["provider"] = payload.get("subagent") or ""
-            roles = payload.get("roles", {})
-            if not isinstance(roles, dict):
-                raise ValueError("routing roles must be an object")
-            current_roles = document.get("subagent_roles")
-            current_roles = current_roles if isinstance(current_roles, dict) else {}
-            document["subagent_roles"] = {
-                name: (
-                    {**current_roles[name], **route}
-                    if name in current_roles
-                    and isinstance(current_roles[name], dict)
-                    and isinstance(route, dict)
-                    else route
-                )
-                for name, route in roles.items()
-            }
-            self._validate_provider_document(document)
-            _atomic_json(self.provider_path, document)
-            return self._snapshot()
-
     def _save_agent(self, payload: object) -> dict[str, object]:
         if not isinstance(payload, dict):
             raise ValueError("agent settings must be an object")
         allowed = {
             "max_same_tool_calls", "output_reserve_tokens", "max_generation_tokens",
-            "workspace_instruction_files", "tools", "context", "memory", "subagent_roles", "mcp_enabled", "generate_session_title",
+            "workspace_instruction_files", "tools", "context", "memory", "subagent_roles", "mcp_enabled",
         }
         unknown = set(payload) - allowed
         if unknown:
@@ -484,7 +420,6 @@ class SettingsStore:
         for field in (
             "max_same_tool_calls", "output_reserve_tokens", "max_generation_tokens",
             "workspace_instruction_files",
-            "generate_session_title",
         ):
             if field in payload:
                 document[field] = payload[field]
@@ -558,9 +493,7 @@ class SettingsStore:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as file:
                 json.dump(document, file)
-            default, models = load_model_options(path)
-            if default not in models:
-                raise ValueError("default provider is not configured")
+            load_model_options(path)
             providers = document.get("providers")
             assert isinstance(providers, dict)
             for provider, value in providers.items():
@@ -590,18 +523,6 @@ class SettingsStore:
                 api = value.get("api")
                 if api is not None and (not isinstance(api, str) or api not in OPENAI_APIS):
                     raise ValueError("provider api must be responses or chat_completions")
-            for label in ("main_agent", "subagent", "fast_model"):
-                route = document.get(label, {})
-                if not isinstance(route, dict):
-                    raise ValueError(f"config field '{label}' must be an object")
-                self._validate_routes(route, providers, label)
-            roles = document.get("subagent_roles", {})
-            if not isinstance(roles, dict):
-                raise ValueError("config field 'subagent_roles' must be an object")
-            for role, route in roles.items():
-                if not isinstance(route, dict):
-                    raise ValueError(f"config field 'subagent_roles.{role}' must be an object")
-                self._validate_routes(route, providers, f"subagent_roles.{role}")
         finally:
             path.unlink(missing_ok=True)
 
@@ -620,13 +541,3 @@ class SettingsStore:
     def _provider_env_name(provider_id: str) -> str:
         normalized = re.sub(r"[^A-Za-z0-9]+", "_", provider_id).strip("_").upper()
         return f"RADE_{normalized}_API_KEY"
-
-    @staticmethod
-    def _validate_routes(
-        route: dict[str, object],
-        providers: dict[str, object],
-        path: str,
-    ) -> None:
-        value = route.get("provider")
-        if value not in (None, "") and (not isinstance(value, str) or value not in providers):
-            raise ValueError(f"config field '{path}.provider' must name a configured provider")

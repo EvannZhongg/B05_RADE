@@ -1,8 +1,5 @@
 {
   "main_agent": {"provider": "qwen"},
-  "fast_model": {"provider": ""},
-  "subagent": {"provider": ""},
-  "subagent_roles": {},
   "providers": {
     "openai": {
       "model": "gpt-5",

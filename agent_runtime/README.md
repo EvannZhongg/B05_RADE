@@ -33,7 +33,7 @@ RuntimeHost
 
 装配阶段负责：
 
-- 创建主 Provider、`fast_model` 对应的辅助模型 Provider
+- 创建当前 Session 选中的主 Provider
 - 使用 OpenAI SDK 按配置装配 Chat Completions 或 Responses
 - 为执行面建立一个以当前 Workspace 为工作目录的宿主命令执行器
 - 从内置 Catalog 按主 Agent 和子 Agent 角色选择 Tool
@@ -105,7 +105,7 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 | 路径 | 用途 |
 | --- | --- |
-| `provider_config.json` | Provider 定义与主 Agent、辅助调用、子 Agent 角色路由 |
+| `provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
 | `agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Instructions 与 scratch Workspace |
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
 | `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`WorkspaceMemory.md` |
@@ -117,13 +117,8 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 `agent_config.json` 的 `skills.global_paths` 相对配置目录解析、`skills.workspace_paths` 相对当前 Workspace 解析。`scratch_workspace_root` 的相对路径也以配置目录为基准，默认为 `workspaces/scratch`。同名 Skill 保留最先注册的来源，Plugin Skill 排在配置来源之后。
 
-Provider 路由按以下链解析：
+子 Agent（含插件角色）、上下文压缩和长期记忆合并共用当前 Session 选中的主 Provider。上下文压缩复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
 
-```text
-具体 subagent role → subagent 默认值 → main_agent
-```
-
-空字符串表示继续继承。`fast_model` 是独立的一路，服务长期记忆合并和会话标题生成，不参与上面的子 Agent 链；未配置时沿用当前选中的主模型，主 Agent 与子 Agent 的记忆合并共享这个 Provider。上下文压缩始终使用当前 Agent 自己的 LLM，复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
 每个 `provider_config.json` 的 `providers.<name>` 条目可以配置 `api: "responses"` 或 `api: "chat_completions"`，按协议选择原生 OpenAI SDK；与中转域名无关，也不在失败后切换协议。显式选择协议时，除 `deepseek/` 路由前缀会移除外，`model` 是原样发送的服务端模型 ID，例如 `gpt-6-astra` 或 `openai/gpt-5`（后者适用于要求该 ID 的网关）。
 
 省略 `api` 时，DeepSeek 模型默认使用 Chat Completions，其余模型默认使用 Responses。自动选择时会移除 `openai/` 前缀。DeepSeek 模型在两种协议下均移除 `deepseek/` 前缀。其他带服务商前缀的模型可以使用 LiteLLM 的元数据和 token 估算。
@@ -176,7 +171,7 @@ GUI HTTP API 和 Bridge 设置消息都复用该服务。
 
 - Skill 注册为 `<plugin>:<skill>`，每个直接子目录使用标准 `SKILL.md`。
 - MCP Server 保存为 `<plugin>:<server>`；是否加载仍受 `agent_config.json.mcp.enabled` 总开关控制。
-- Agent component 使用 YAML frontmatter 声明 `name`、`description`，可选 `tools` 和 `model`；注册为 `<plugin>:<agent>`。
+- Agent component 使用 YAML frontmatter 声明 `name`、`description`，可选 `tools`；注册为 `<plugin>:<agent>`。
 - Agent 的 `tools` 保留内置角色工具，并可显式选择完整 MCP 工具名（例如
   `mcp__example_analyzer__analyze_code`）；省略时仍只使用原有内置角色工具。
   Runtime 在 MCP 发现与 allowlist 过滤后校验引用，缺失工具仅跳过受影响角色并报告来源。
@@ -201,7 +196,6 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `session_controller.py` | Session、Workspace、Provider 与计划绑定 |
 | `turn_runner.py` | Turn、steer、cancel 和结果 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
-| `session_title.py` | 执行面持有的 Session 命名任务 |
 | `config.py` | 配置目录初始化、Provider 与 Prompt 读取 |
 | `settings.py` | 配置快照、校验、写入和 fingerprint |
 | `plugins.py` | Plugin manifest、Skill、MCP、Agent 与 Hook component 发现 |

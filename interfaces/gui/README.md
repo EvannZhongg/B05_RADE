@@ -20,7 +20,7 @@ RADE-server
 RADE-server --workspace ~/projects/my-project
 ```
 
-默认监听 <http://127.0.0.1:8737>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
+默认监听 <http://127.0.0.1:8736>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
 
 ## 服务端
 

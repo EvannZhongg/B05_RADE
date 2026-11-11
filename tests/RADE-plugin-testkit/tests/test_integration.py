@@ -290,21 +290,20 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.http.scripts = {
             "gpt-4": [call("read_skill", name="repo-review-kit:code-review"),
                       call("read_skill", name="repo-review-kit:writing-rules"),
-                      call("subagent", role="repo-review-kit:reviewer", task="Review sample.py"), "Review delivered."],
-            "gpt-3.5-turbo": [call("read_file", path="sample.py"), call(TOOL, source=SOURCE), "Reviewer findings."],
+                      call("subagent", role="repo-review-kit:reviewer", task="Review sample.py"),
+                      call("read_file", path="sample.py"), call(TOOL, source=SOURCE),
+                      "Reviewer findings.", "Review delivered."],
         }
         thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         thread.start()
         self.addCleanup(self.http.server_close)
         self.addCleanup(self.http.shutdown)
-        providers = {name: {"model": model, "api": "chat_completions", "key": "local-test",
-                            "url": f"http://127.0.0.1:{self.http.server_port}/v1", "max_context_tokens": 128000}
-                     for name, model in (("main", "gpt-4"), ("reviewer", "gpt-3.5-turbo"))}
+        providers = {"main": {"model": "gpt-4", "api": "chat_completions", "key": "local-test",
+                            "url": f"http://127.0.0.1:{self.http.server_port}/v1", "max_context_tokens": 128000}}
         self.json_file(self.config / "provider_config.json", {
-            "main_agent": {"provider": "main"}, "subagent": {"provider": "reviewer"}, "providers": providers,
+            "main_agent": {"provider": "main"}, "providers": providers,
         })
         self.json_file(self.config / "agent_config.json", {
-            "generate_session_title": False,
             "max_same_tool_calls": 5, "output_reserve_tokens": 1000, "workspace_instruction_files": [],
             "provider": {"request_timeout_seconds": 15, "max_retries": 0},
             "skills": {"global_paths": [], "workspace_paths": []},
@@ -351,7 +350,8 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.assertEqual(len({message["session_id"] for message in hooks}), 2)
         self.assertTrue(all(message["status"] == "completed" and message["decision"] == "pass" for message in hooks), hooks)
         self.assertTrue(all(message["hook_id"].startswith("repo-review-kit:") for message in hooks))
-        child = [request for request in self.http.requests if request["model"] == "gpt-3.5-turbo"]
+        self.assertEqual({request["model"] for request in self.http.requests}, {"gpt-4"})
+        child = self.http.requests[3:6]
         names = {tool["function"]["name"] for tool in child[0]["tools"]}
         self.assertIn(TOOL, names)
         self.assertNotIn("subagent", names)

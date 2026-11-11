@@ -60,7 +60,6 @@ class PluginAgent:
     description: str
     instructions: str
     tools: tuple[str, ...] | None
-    model: str | None
     source: Path
 
 
@@ -341,17 +340,11 @@ def _load_plugin_agent(path: Path, plugin_name: str) -> PluginAgent:
     instructions = content[match.end() :].strip()
     if not instructions:
         raise ValueError("agent Markdown body must not be empty")
-    model = metadata.get("model")
-    if model is not None:
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("agent field 'model' must be a non-empty string")
-        model = model.strip()
     return PluginAgent(
         name=f"{plugin_name}:{name}",
         description=description,
         instructions=instructions,
         tools=_agent_tools(metadata),
-        model=model,
         source=path,
     )
 

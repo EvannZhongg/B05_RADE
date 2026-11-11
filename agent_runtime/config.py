@@ -19,7 +19,6 @@ PROMPT_FILENAMES = (
     "SubAgent.md",
     "Consolidator.md",
     "WorkspaceMemory.md",
-    "SessionTitle.md",
 )
 
 
@@ -40,7 +39,6 @@ class PromptTemplates:
     subagent: str
     consolidator: str
     workspace_memory: str
-    session_title: str
 
 
 def default_config_directory() -> Path:
@@ -184,16 +182,12 @@ def load_prompt_templates(directory: Path) -> PromptTemplates:
         workspace_memory=(
             (directory / "WorkspaceMemory.md").read_text(encoding="utf-8").strip()
         ),
-        session_title=(
-            (directory / "SessionTitle.md").read_text(encoding="utf-8").strip()
-        ),
     )
 
 
 def _read_config(
     path: Path,
-) -> tuple[str, dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
-    """Return main provider, providers, main_agent, subagent, role overrides."""
+) -> tuple[str, dict[str, object]]:
     with path.open(encoding="utf-8") as file:
         data = json.load(file)
 
@@ -201,17 +195,6 @@ def _read_config(
     if not isinstance(main_agent, dict):
         raise ValueError("config field 'main_agent' must be an object")
     provider = main_agent.get("provider")
-    subagent = data.get("subagent", {})
-    if not isinstance(subagent, dict):
-        raise ValueError("config field 'subagent' must be an object")
-    roles = data.get("subagent_roles", {})
-    if not isinstance(roles, dict):
-        raise ValueError("config field 'subagent_roles' must be an object")
-    for name, settings in roles.items():
-        if not isinstance(settings, dict):
-            raise ValueError(
-                f"config field 'subagent_roles.{name}' must be an object"
-            )
     providers = data.get("providers")
     if not isinstance(provider, str) or not provider.strip():
         raise ValueError(
@@ -222,44 +205,7 @@ def _read_config(
         raise ValueError("config field 'providers' must be an object")
     if provider not in providers:
         raise ValueError(f"provider '{provider}' is not configured")
-    return provider, providers, main_agent, subagent, roles
-
-
-def configured_role_names(path: Path) -> frozenset[str]:
-    """Return the role names that override a provider in this file."""
-    return frozenset(_read_config(path)[4])
-
-
-def _resolve_field(
-    field: str,
-    role: str | None,
-    main_agent: dict[str, object],
-    subagent: dict[str, object],
-    roles: dict[str, object],
-) -> str | None:
-    """Resolve one provider field down the role → subagent → main chain.
-
-    An empty string means "inherit", so the chain keeps walking instead of
-    stopping at a key that merely exists. A role's own block is consulted
-    only for that role; the main agent is the last word for everyone.
-    """
-    sources: list[tuple[str, dict[str, object]]] = []
-    if role is not None:
-        role_settings = roles.get(role)
-        if isinstance(role_settings, dict):
-            sources.append((f"subagent_roles.{role}", role_settings))
-        sources.append(("subagent", subagent))
-    sources.append(("main_agent", main_agent))
-    for label, source in sources:
-        value = source.get(field)
-        if value is None or value == "":
-            continue
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError(
-                f"config field '{label}.{field}' must be a non-empty string"
-            )
-        return value.strip()
-    return None
+    return provider, providers
 
 
 def _provider_entry(
@@ -287,27 +233,15 @@ def load_model_options(path: Path) -> tuple[str, dict[str, str]]:
     Keys are deliberately not resolved: listing the choices must not
     require a key for providers the user is not using.
     """
-    default, providers, _, _, _ = _read_config(path)
+    default, providers = _read_config(path)
     return default, {
         name: _model_name(_provider_entry(providers, name), name)
         for name in providers
     }
 
 
-def load_config_with_name(
-    path: Path,
-    provider: str | None = None,
-    *,
-    role: str | None = None,
-) -> tuple[str, ModelConfig]:
-    default, providers, _, subagent, roles = _read_config(path)
-    # A role or the subagent default overrides the interface's choice; the
-    # main agent's own provider is the caller's default, not an override.
-    configured = _resolve_field(
-        "provider", role, {}, subagent, roles
-    )
-    if configured is not None:
-        provider = configured
+def load_config(path: Path, provider: str | None = None) -> ModelConfig:
+    default, providers = _read_config(path)
     provider = default if provider is None else provider
     selected = _provider_entry(providers, provider)
     model = _model_name(selected, provider)
@@ -345,7 +279,7 @@ def load_config_with_name(
                 f"for provider '{provider}'"
             )
 
-    return provider, ModelConfig(
+    return ModelConfig(
         model=model,
         url=url,
         key=key,
@@ -354,30 +288,6 @@ def load_config_with_name(
         reasoning_parameters=reasoning_parameters,
         api=api,
     )
-
-
-def load_config(
-    path: Path,
-    provider: str | None = None,
-    *,
-    role: str | None = None,
-) -> ModelConfig:
-    return load_config_with_name(path, provider, role=role)[1]
-
-
-def load_fast_config(path: Path) -> ModelConfig | None:
-    """Return the optional fast model; None means use the selected main model."""
-    with path.open(encoding="utf-8") as file:
-        document = json.load(file)
-    route = document.get("fast_model", {})
-    if not isinstance(route, dict):
-        raise ValueError("config field 'fast_model' must be an object")
-    provider = route.get("provider", "")
-    if provider in (None, ""):
-        return None
-    if not isinstance(provider, str) or not provider.strip():
-        raise ValueError("config field 'fast_model.provider' must name a configured provider")
-    return load_config(path, provider.strip())
 
 
 def _optional_string(

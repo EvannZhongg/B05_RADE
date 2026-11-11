@@ -10,11 +10,9 @@ from agent_core import DirectorySkillSource, SkillLoader, load_agent_config
 from agent_runtime.config import (
     EXECUTION_CONFIG_FILENAMES,
     ModelConfig,
-    configured_role_names,
     default_config_directory,
     initialize_config_directory,
     load_config,
-    load_fast_config,
     load_model_options,
     load_prompt_templates,
     load_scratch_workspace_root,
@@ -24,45 +22,6 @@ from agent_runtime.plugins import PluginManager
 
 
 class ConfigTest(unittest.TestCase):
-    def test_existing_agent_config_can_omit_session_title_generation_switch(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            config_directory = Path(directory)
-            initialize_config_directory(config_directory)
-            path = config_directory / "agent_config.json"
-            document = json.loads(path.read_text(encoding="utf-8"))
-            del document["generate_session_title"]
-            path.write_text(json.dumps(document), encoding="utf-8")
-            preserved = path.read_bytes()
-
-            initialize_config_directory(config_directory)
-
-            self.assertEqual(path.read_bytes(), preserved)
-            self.assertTrue(load_agent_config(path).generate_session_title)
-
-    def test_fast_model_selection_and_inheritance(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.json"
-            document = {
-                "main_agent": {"provider": "first"},
-                "fast_model": {"provider": ""},
-                "providers": {
-                    "first": {"model": "openai/first"},
-                    "second": {"model": "openai/second"},
-                },
-            }
-            path.write_text(json.dumps(document), encoding="utf-8")
-            self.assertIsNone(load_fast_config(path))
-            document["fast_model"]["provider"] = None
-            path.write_text(json.dumps(document), encoding="utf-8")
-            self.assertIsNone(load_fast_config(path))
-            document["fast_model"]["provider"] = "second"
-            path.write_text(json.dumps(document), encoding="utf-8")
-            self.assertEqual(load_fast_config(path).model, "openai/second")
-            document["fast_model"]["provider"] = "missing"
-            path.write_text(json.dumps(document), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "not configured"):
-                load_fast_config(path)
-
     def test_requires_main_agent_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -78,35 +37,11 @@ class ConfigTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "main_agent"):
                 load_config(path)
 
-    def test_empty_subagent_provider_reuses_selected_main_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "config.json"
-            path.write_text(
-                json.dumps(
-                    {
-                        "main_agent": {"provider": "first"},
-                        "subagent": {"provider": ""},
-                        "providers": {
-                            "first": {"model": "openai/first"},
-                            "second": {"model": "openai/second"},
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(load_config(path, provider="second").model, "openai/second")
-            self.assertEqual(
-                load_config(path, provider="second", role="researcher").model,
-                "openai/second",
-            )
-
     def test_lists_models_without_resolving_keys_and_loads_explicit_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
             content = json.dumps({
                 "main_agent": {"provider": "first"},
-                "subagent": {"provider": ""},
                 "providers": {
                     "first": {"model": "openai/first", "key": "${FIRST_KEY}"},
                     "second": {"model": "openai/second", "key": "${SECOND_KEY}"},
@@ -195,7 +130,6 @@ class ConfigTest(unittest.TestCase):
                     config_directory / "prompts" / "SubAgent.md",
                     config_directory / "prompts" / "Consolidator.md",
                     config_directory / "prompts" / "WorkspaceMemory.md",
-                    config_directory / "prompts" / "SessionTitle.md",
                     config_directory / "skills" / "plugin-creator",
                     config_directory / "skills" / "skill-creator",
                 ),
@@ -206,8 +140,7 @@ class ConfigTest(unittest.TestCase):
                 provider_config["main_agent"]["provider"],
                 "qwen",
             )
-            self.assertEqual(provider_config["subagent"]["provider"], "")
-            self.assertEqual(provider_config["fast_model"]["provider"], "")
+            self.assertEqual(set(provider_config), {"main_agent", "providers"})
             self.assertIn("openai", provider_config["providers"])
             self.assertEqual(
                 provider_config["providers"]["qwen"],
@@ -316,7 +249,6 @@ class ConfigTest(unittest.TestCase):
                     config_directory / "prompts" / "SubAgent.md",
                     config_directory / "prompts" / "Consolidator.md",
                     config_directory / "prompts" / "WorkspaceMemory.md",
-                    config_directory / "prompts" / "SessionTitle.md",
                     config_directory / "skills" / "plugin-creator",
                 ),
             )
@@ -348,7 +280,7 @@ class ConfigTest(unittest.TestCase):
             prompts.mkdir()
             for filename in (
                 "Soul.md", "SubAgent.md", "Consolidator.md",
-                "WorkspaceMemory.md", "SessionTitle.md",
+                "WorkspaceMemory.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
 
@@ -390,7 +322,7 @@ class ConfigTest(unittest.TestCase):
             prompts.mkdir()
             for filename in (
                 "Soul.md", "SubAgent.md", "Consolidator.md",
-                "WorkspaceMemory.md", "SessionTitle.md",
+                "WorkspaceMemory.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
 
@@ -669,99 +601,6 @@ class ConfigTest(unittest.TestCase):
             with patch.dict("os.environ", {}, clear=True):
                 with self.assertRaises(ValueError):
                     load_config(path)
-
-
-class ProviderResolutionTest(unittest.TestCase):
-    """Provider resolution follows role → subagent → main."""
-
-    def write(self, directory: str, **blocks: object) -> Path:
-        path = Path(directory) / "config.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "main_agent": {"provider": "main"},
-                    "providers": {
-                        "main": {"model": "openai/main"},
-                        "shared": {"model": "openai/shared"},
-                        "special": {"model": "openai/special"},
-                        **blocks.pop("providers", {}),
-                    },
-                    **blocks,
-                }
-            ),
-            encoding="utf-8",
-        )
-        return path
-
-    def test_role_override_wins_over_subagent_and_main(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                subagent={"provider": "shared"},
-                subagent_roles={"coder": {"provider": "special"}},
-            )
-
-            self.assertEqual(
-                load_config(path, role="coder").model, "openai/special"
-            )
-            self.assertEqual(
-                load_config(path, role="researcher").model, "openai/shared"
-            )
-            self.assertEqual(load_config(path).model, "openai/main")
-
-    def test_empty_role_override_falls_through_the_chain(self) -> None:
-        """"" means inherit, so the chain keeps walking past it."""
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                subagent={"provider": "shared"},
-                subagent_roles={"coder": {"provider": ""}},
-            )
-
-            self.assertEqual(
-                load_config(path, role="coder").model, "openai/shared"
-            )
-
-    def test_rejects_a_blank_override(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                subagent_roles={"coder": {"provider": "   "}},
-            )
-
-            with self.assertRaisesRegex(
-                ValueError, "subagent_roles.coder.provider"
-            ):
-                load_config(path, role="coder")
-
-    def test_rejects_a_non_object_role_block(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(directory, subagent_roles={"coder": "invalid"})
-
-            with self.assertRaisesRegex(
-                ValueError, "subagent_roles.coder.*object"
-            ):
-                load_config(path)
-
-    def test_reports_the_roles_that_override_a_provider(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = self.write(
-                directory,
-                subagent_roles={
-                    "coder": {"provider": "special"},
-                    "writer": {"provider": "shared"},
-                },
-            )
-
-            self.assertEqual(
-                configured_role_names(path), frozenset({"coder", "writer"})
-            )
-
-    def test_reports_no_roles_when_the_block_is_absent(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(
-                configured_role_names(self.write(directory)), frozenset()
-            )
 
 
 if __name__ == "__main__":

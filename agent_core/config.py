@@ -55,7 +55,6 @@ class AgentConfig:
     tools: ToolConfig
     workspace_instruction_files: tuple[str, ...]
     max_generation_tokens: int | None = None
-    generate_session_title: bool = True
     provider: ProviderRequestConfig = field(default_factory=ProviderRequestConfig)
     skills: SkillConfig = field(default_factory=SkillConfig)
     context: ContextCompressionConfig = field(
@@ -94,10 +93,6 @@ def load_agent_config(path: Path) -> AgentConfig:
     context = _context_config(data.get("context"))
     mcp = load_mcp_config(data.get("mcp"))
     memory = _memory_config(data.get("memory"))
-    generate_session_title = data.get("generate_session_title", True)
-    if not isinstance(generate_session_title, bool):
-        raise ValueError("config field 'generate_session_title' must be a boolean")
-
     return AgentConfig(
         max_same_tool_calls=max_same_tool_calls,
         output_reserve_tokens=output_reserve_tokens,
@@ -110,7 +105,6 @@ def load_agent_config(path: Path) -> AgentConfig:
         context=context,
         mcp=mcp,
         memory=memory,
-        generate_session_title=generate_session_title,
     )
 
 

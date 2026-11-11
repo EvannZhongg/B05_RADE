@@ -51,7 +51,6 @@ with tempfile.TemporaryDirectory() as directory:
     root = Path(directory)
     open_session_message(root, provider_config={
         "main_agent": {"provider": "native"},
-        "fast_model": {"provider": "native"}, "subagent": {"provider": "native"},
         "providers": {"native": ({"model": "deepseek/deepseek-flash", "key": "test-key"}
                                  if "--deepseek" in sys.argv else
                                  {"model": "gpt-6-astra", "key": "test-key", "api": "responses"})},

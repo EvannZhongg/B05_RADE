@@ -50,16 +50,6 @@ const RUNTIME_READY = {
   plan: null,
 };
 
-it('updates a session picker title from a structured title event', () => {
-  const state: State = { ...initialState, picker: { kind: 'sessions',
-    list: [{ session_id: 's', title: 'initial' }], selectedIndex: 0,
-  } };
-  const updated = reducer(state, { type: 'message', message: {
-    type: 'session_title_updated', session_id: 's', title: 'Generated title', title_source: 'generated',
-  } });
-  expect(updated.picker).toMatchObject({ list: [{ title: 'Generated title' }] });
-});
-
 describe('plan', () => {
   it('restores and updates the current plan outside the transcript', () => {
     let state = reducer(initialState, {
@@ -551,8 +541,8 @@ describe('sessions', () => {
       message: {
         type: 'sessions_listed',
         sessions: [
-          { session_id: 'newer', title: 'about the parser' },
-          { session_id: 'older', title: 'about the tests' },
+          { session_id: 'newer', input_preview: 'about the parser', started_at: null },
+          { session_id: 'older', input_preview: 'about the tests', started_at: null },
         ],
       },
     });
@@ -574,7 +564,7 @@ describe('sessions', () => {
         type: 'message',
         message: {
           type: 'sessions_listed',
-          sessions: [{ session_id: 'newer', title: 'about the parser' }],
+          sessions: [{ session_id: 'newer', input_preview: 'about the parser', started_at: null }],
         },
       }),
     ).toBe(state);

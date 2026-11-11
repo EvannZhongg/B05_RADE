@@ -17,9 +17,7 @@ export type Session = {
 export type EditableUserMessage = { anchor_id: string; item_index: number };
 export type WorkspaceOption = { workspace: string; scratch?: boolean };
 export type WorkspaceSessions = WorkspaceOption & { sessions: SessionSummary[] };
-export type SessionSearchMatch = {
-  session_id: string;
-  title: string;
+export type SessionSearchMatch = SessionSummary & {
   workspace: string;
   scratch: boolean;
   item_index: number;

@@ -185,15 +185,15 @@ def benchmark(args):
                 provider_document = original
             else:
                 agent = json.loads((config / "agent_config.json").read_text(encoding="utf-8"))
-                agent.update(generate_session_title=False, max_generation_tokens=256, subagent_roles={})
+                agent.update(max_generation_tokens=256, subagent_roles={})
                 agent["provider"] = {"request_timeout_seconds": 60, "max_retries": 0}
                 agent["memory"]["enabled"] = False
                 agent["mcp"]["enabled"] = False
                 agent["skills"] = {"global_paths": [], "workspace_paths": []}
                 agent["main_agent"]["tools"] = {name: False for name in agent["main_agent"]["tools"]}
                 provider_document = {
-                    "main_agent": {"provider": provider}, "fast_model": {"provider": provider},
-                    "subagent": {"provider": provider}, "providers": {provider: chosen},
+                    "main_agent": {"provider": provider},
+                    "providers": {provider: chosen},
                 }
             (config / "agent_config.json").write_text(json.dumps(agent), encoding="utf-8")
             (config / "provider_config.json").write_text(json.dumps(provider_document), encoding="utf-8")

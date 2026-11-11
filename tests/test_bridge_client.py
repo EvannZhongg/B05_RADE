@@ -278,7 +278,6 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
         agent_path = config / "agent_config.json"
         agent = json.loads(agent_path.read_text(encoding="utf-8"))
         agent["memory"]["enabled"] = False
-        agent["generate_session_title"] = False
         agent["mcp"]["enabled"] = False
         agent["provider"]["max_retries"] = 0
         agent["skills"] = {"global_paths": [], "workspace_paths": []}
@@ -346,15 +345,14 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
             (self.external / name).mkdir(exist_ok=True)
         config = self.config
         (config / "provider_config.json").write_text(json.dumps({
-            "main_agent": {"provider": "fixture"}, "subagent": {"provider": "fixture"},
-            "fast_model": {"provider": "fixture"}, "providers": {"fixture": {
+            "main_agent": {"provider": "fixture"},
+            "providers": {"fixture": {
                 "model": "gpt-5", "api": "chat_completions", "key": "fixture-key",
                 "url": f"http://127.0.0.1:{http.server_port}/v1",
             }},
         }), encoding="utf-8")
         path = config / "agent_config.json"
         agent = json.loads(path.read_text(encoding="utf-8"))
-        agent["generate_session_title"] = False
         agent["memory"]["enabled"] = False
         agent["mcp"]["enabled"] = False
         agent["provider"]["max_retries"] = 0

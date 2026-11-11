@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowLeft, Boxes, Check, ChevronRight, CircleAlert, FolderKanban, KeyRound, Plus, RefreshCw, Save, Search, ServerCog } from "lucide-react";
+import { ArrowLeft, Boxes, Check, ChevronRight, CircleAlert, FolderKanban, KeyRound, Plus, RefreshCw, Save, Search } from "lucide-react";
 import { get, put, type MemoryDocument, type MemorySnapshot, type SettingsSnapshot } from "./api";
 
 export type SettingsSection = "providers" | "agent" | "memory" | "skills" | "plugins" | "mcp";
@@ -62,19 +62,6 @@ export function Settings({ section, onClose, onChanged }: { section: SettingsSec
     }
   }
 
-  async function saveRouting(payload: unknown) {
-    setSaving(true);
-    try {
-      setSettings(await put<SettingsSnapshot>("/api/settings/routing", { ...(payload as object), expected_revision: settings?.revision }));
-      setError("");
-      onChanged();
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setSaving(false);
-    }
-  }
-
   return <section className="settings-shell">
     <header className="settings-header">
       <h1>{sectionLabels[section]}</h1>
@@ -82,7 +69,7 @@ export function Settings({ section, onClose, onChanged }: { section: SettingsSec
     </header>
     {error && <div className="settings-error" role="alert"><CircleAlert size={15} /><span>{error}</span></div>}
     <div className="settings-layout"><main className="settings-content">
-        {!settings && section !== "memory" ? <LoadingState /> : section === "memory" ? <MemorySettings refreshVersion={memoryRefresh} /> : section === "providers" ? <ProviderSettings settings={settings!} selected={selected} onSelect={setSelected} saving={saving} onSave={saveProvider} onSaveRouting={saveRouting} />
+        {!settings && section !== "memory" ? <LoadingState /> : section === "memory" ? <MemorySettings refreshVersion={memoryRefresh} /> : section === "providers" ? <ProviderSettings settings={settings!} selected={selected} onSelect={setSelected} saving={saving} onSave={saveProvider} />
           : section === "agent" ? <AgentSettingsForm key={settings!.revision} settings={settings!} saving={saving} onSave={saveAgent} />
           : section === "skills" ? <DetailCollection eyebrow="Skill library" items={settings!.skills.map((item) => ({ id: item.id, title: item.name, subtitle: `${item.source} · ${item.path}`, body: item.content, status: "Available" }))} selected={selected} onSelect={setSelected} empty="没有发现 Skill。" />
           : section === "plugins" ? <DetailCollection eyebrow="Plugin catalog" items={settings!.plugins.map((item) => ({ id: item.name, title: item.name, subtitle: item.description ?? item.path, status: item.enabled ? "Enabled" : "Disabled", body: JSON.stringify({ version: item.version, capabilities: item.capabilities, components: item.components, path: item.path }, null, 2) }))} selected={selected} onSelect={setSelected} empty="没有发现 Plugin。" />
@@ -165,17 +152,11 @@ function SettingsCard({ title, description, action, children, className = "" }: 
   return <section className={`settings-card ${className}`}><header className="settings-card-header"><div><h3>{title}</h3>{description && <p>{description}</p>}</div>{action}</header><div className="settings-card-body">{children}</div></section>;
 }
 
-function ProviderSettings({ settings, selected, onSelect, saving, onSave, onSaveRouting }: { settings: SettingsSnapshot; selected: string; onSelect: (id: string) => void; saving: boolean; onSave: (id: string, payload: unknown) => Promise<void>; onSaveRouting: (payload: unknown) => Promise<void> }) {
+function ProviderSettings({ settings, selected, onSelect, saving, onSave }: { settings: SettingsSnapshot; selected: string; onSelect: (id: string) => void; saving: boolean; onSave: (id: string, payload: unknown) => Promise<void> }) {
   const provider = settings.providers.find((item) => item.id === selected) ?? settings.providers[0];
   const [creating, setCreating] = useState(false);
   const editKey = creating ? "__new__" : provider?.id ?? "";
-  return <div className="provider-layout"><aside className="provider-catalog"><button className="provider-add" onClick={() => { setCreating(true); onSelect(""); }}><Plus size={15} /><span>New provider</span></button><div className="provider-count">{settings.providers.length} configured</div><div className="provider-list">{settings.providers.map((item) => <button key={item.id} className={!creating && item.id === provider?.id ? "selected" : ""} onClick={() => { setCreating(false); onSelect(item.id); }}><span className={`provider-status ${item.credential.configured || item.url?.includes("localhost") ? "ready" : ""}`} /><span className="provider-list-copy"><strong>{item.id}</strong><small>{item.model}</small></span>{item.id === settings.default_provider && <span className="default-badge">Default</span>}</button>)}</div></aside><div className="provider-editor"><ProviderForm key={`${settings.revision}:${editKey}`} provider={creating ? undefined : provider} isDefault={!creating && provider?.id === settings.default_provider} saving={saving} onSave={async (id, payload) => { await onSave(id, payload); setCreating(false); }} /><RoutingForm key={`routes:${settings.revision}`} settings={settings} saving={saving} onSave={onSaveRouting} /></div></div>;
-}
-
-function RoutingForm({ settings, saving, onSave }: { settings: SettingsSnapshot; saving: boolean; onSave: (payload: unknown) => Promise<void> }) {
-  const [routing, setRouting] = useState(() => structuredClone(settings.routing));
-  const providerOptions = (optional: boolean) => <>{optional && <option value="">Inherit / Not configured</option>}{settings.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.id} · {provider.model}</option>)}</>;
-  return <form onSubmit={(event) => { event.preventDefault(); void onSave(routing); }}><SettingsCard title="Provider routing" description="Choose the defaults used by new sessions, fast tasks, and sub-agents." action={<button className="secondary-button" disabled={saving}><Save size={14} /> Save routing</button>}><div className="settings-fields-grid"><Field label="Main agent"><select value={routing.main_agent} onChange={(event) => setRouting({ ...routing, main_agent: event.target.value })}>{providerOptions(false)}</select></Field><Field label="Fast model"><select value={routing.fast_model ?? ""} onChange={(event) => setRouting({ ...routing, fast_model: event.target.value || null })}>{providerOptions(true)}</select></Field><Field label="Sub-agent"><select value={routing.subagent ?? ""} onChange={(event) => setRouting({ ...routing, subagent: event.target.value || null })}>{providerOptions(true)}</select></Field></div>{Object.entries(routing.roles).map(([name, route]) => <div className="routing-role" key={name}><div className="routing-role-name"><ServerCog size={14} />{name}</div><div className="settings-fields-grid"><Field label="Provider"><select value={route.provider ?? ""} onChange={(event) => setRouting({ ...routing, roles: { ...routing.roles, [name]: { ...route, provider: event.target.value } } })}>{providerOptions(true)}</select></Field></div></div>)}</SettingsCard></form>;
+  return <div className="provider-layout"><aside className="provider-catalog"><button className="provider-add" onClick={() => { setCreating(true); onSelect(""); }}><Plus size={15} /><span>New provider</span></button><div className="provider-count">{settings.providers.length} configured</div><div className="provider-list">{settings.providers.map((item) => <button key={item.id} className={!creating && item.id === provider?.id ? "selected" : ""} onClick={() => { setCreating(false); onSelect(item.id); }}><span className={`provider-status ${item.credential.configured || item.url?.includes("localhost") ? "ready" : ""}`} /><span className="provider-list-copy"><strong>{item.id}</strong><small>{item.model}</small></span>{item.id === settings.default_provider && <span className="default-badge">Default</span>}</button>)}</div></aside><div className="provider-editor"><ProviderForm key={`${settings.revision}:${editKey}`} provider={creating ? undefined : provider} isDefault={!creating && provider?.id === settings.default_provider} saving={saving} onSave={async (id, payload) => { await onSave(id, payload); setCreating(false); }} /></div></div>;
 }
 
 function ProviderForm({ provider, isDefault, saving, onSave }: { provider?: SettingsSnapshot["providers"][number]; isDefault: boolean; saving: boolean; onSave: (id: string, payload: unknown) => Promise<void> }) {

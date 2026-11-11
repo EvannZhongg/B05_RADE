@@ -40,7 +40,7 @@ COMMAND_TYPES = frozenset({
     "open_session", "user_turn", "user_steer", "cancel",
     "provider_set", "workspace_set",
     "list_sessions", "list_workspaces", "load_session", "session_snapshot", "settings_get",
-    "settings_provider_save", "settings_agent_save", "settings_routing_save",
+    "settings_provider_save", "settings_agent_save",
     "runtime_refresh",
 })
 
@@ -237,15 +237,6 @@ def sessions_listed_message(
 
 def workspaces_listed_message(workspaces: list[str]) -> dict[str, object]:
     return {"type": "workspaces_listed", "workspaces": workspaces}
-
-
-def session_title_updated_message(
-    session_id: str, title: str, title_source: str,
-) -> dict[str, object]:
-    return {
-        "type": "session_title_updated", "session_id": session_id,
-        "title": title, "title_source": title_source,
-    }
 
 
 def session_items_message(

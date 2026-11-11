@@ -60,7 +60,7 @@ class PluginManagerTest(unittest.TestCase):
             )
             source = write_agent(
                 manifest.parent,
-                fields="model: inherit\ncolor: green\n",
+                fields="color: green\n",
                 body="Inspect the diff and report findings.",
             )
 
@@ -75,7 +75,6 @@ class PluginManagerTest(unittest.TestCase):
             "Inspect the diff and report findings.",
         )
         self.assertIsNone(agents[0].tools)
-        self.assertEqual(agents[0].model, "inherit")
         self.assertEqual(agents[0].source, source.resolve())
 
     def test_loads_explicit_agent_tools_in_canonical_order(self) -> None:

@@ -30,20 +30,19 @@ class HookInteropTest(BridgeTestCase):
             entries[0]["command"] = sys.executable
         self.hook_path.write_text(json.dumps(self.hook_config), encoding="utf-8")
         self.main = MockProvider([])
-        self.child = MockProvider([])
-        self.enterContext(patch.object(ExecutionPlaneManager, "_provider_for", side_effect=lambda config, *_:
-            None if config is None else self.child if config.model == "child" else self.main))
+        self.enterContext(patch.object(
+            ExecutionPlaneManager, "_provider_for", side_effect=lambda *_: self.main,
+        ))
 
     def open(self):
         bridge, stdout = self.make_bridge([], self.root)
         bridge.open_session(open_session_message(self.root, agent_config={
-            "max_same_tool_calls": 5, "output_reserve_tokens": 100, "generate_session_title": False,
+            "max_same_tool_calls": 5, "output_reserve_tokens": 100,
             "workspace_instruction_files": [], "memory": {"enabled": False},
             "main_agent": {"tools": {"subagent": True, "shell": True, "read_file": True, "write_file": True}},
         }, provider_config={
-            "main_agent": {"provider": "main"}, "subagent": {"provider": "child"},
-            "providers": {"main": {"model": "main", "max_context_tokens": 1000},
-                          "child": {"model": "child", "max_context_tokens": 1000}},
+            "main_agent": {"provider": "main"},
+            "providers": {"main": {"model": "main", "max_context_tokens": 1000}},
         }))
         return bridge, stdout
 
@@ -65,9 +64,10 @@ class HookInteropTest(BridgeTestCase):
         self.main = MockProvider([
             calls(ToolCall("skill", "read_skill", {"name": "repo-review-kit:writing-rules"})),
             calls(ToolCall("delegate", "subagent", {"role": "repo-review-kit:conversation-analyzer", "task": "Read sample.txt; supplied excerpt: avoid debug output."})),
+            calls(ToolCall("read", "read_file", {"path": "sample.txt"})),
+            "Suggested rule",
             "Done",
         ])
-        self.child = MockProvider([calls(ToolCall("read", "read_file", {"path": "sample.txt"})), "Suggested rule"])
         (self.root / "sample.txt").write_text("source")
         bridge, stdout = self.open()
         bridge.run_turn({"turn_id": "review", "text": "Use hookify"})
@@ -77,7 +77,7 @@ class HookInteropTest(BridgeTestCase):
         parent_id = bridge.host.sessions.session.session_id
         child_ids = {message["session_id"] for message in hook_events} - {parent_id}
         self.assertEqual(len(child_ids), 1)
-        self.assertEqual(len(self.child.requests), 2)
+        self.assertEqual(len(self.main.requests), 5)
         self.assertNotIn("_hook_command", bridge.host.planes.current.catalog.names)
         self.assertTrue(all(tool.name != "_hook_command" for request in self.main.requests for tool in request.tools))
         journals = list((self.root / "sessions").rglob("subagents/*/*.jsonl"))

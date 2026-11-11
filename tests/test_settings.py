@@ -15,16 +15,12 @@ from agent_runtime.settings import (
 
 PROVIDERS = {
     "main_agent": {"provider": "first"},
-    "fast_model": {"provider": ""},
-    "subagent": {"provider": ""},
-    "subagent_roles": {},
     "providers": {"first": {"model": "openai/first", "key": "${FIRST_KEY}"}},
 }
 
 AGENT = {
     "max_same_tool_calls": 5,
     "output_reserve_tokens": 100,
-    "generate_session_title": False,
     "max_generation_tokens": None,
     "provider": {"request_timeout_seconds": 300, "max_retries": 2},
     "scratch_workspace_root": "workspaces/scratch",
@@ -149,11 +145,7 @@ class SettingsStoreTest(unittest.TestCase):
         document = json.loads(self.store.provider_path.read_text(encoding="utf-8"))
         document["extra"] = {"enabled": False}
         document["providers"]["first"]["extra"] = "metadata"
-        for field in ("main_agent", "subagent", "fast_model"):
-            document[field]["extra"] = []
-        document["subagent_roles"] = {
-            "researcher": {"provider": "first", "extra": True},
-        }
+        document["main_agent"]["extra"] = []
         self.store.provider_path.write_text(json.dumps(document), encoding="utf-8")
 
         snapshot = self.store.save_provider("first", {"model": "openai/updated"})
@@ -163,13 +155,6 @@ class SettingsStoreTest(unittest.TestCase):
         self.assertEqual(
             json.loads(self.store.provider_path.read_text(encoding="utf-8")), document,
         )
-        routing = self.store.snapshot()["routing"]
-        routing["roles"] = {"researcher": {"provider": "first"}}
-        self.store.save_routing(routing)
-        self.assertEqual(
-            json.loads(self.store.provider_path.read_text(encoding="utf-8")), document,
-        )
-
     def test_user_anchor_budget_survives_settings_round_trip(self) -> None:
         agent = self.store.snapshot()["agent"]
         self.assertEqual(agent["context"]["compression"]["user_anchor_token_budget"], 2000)
@@ -293,29 +278,6 @@ class SettingsStoreTest(unittest.TestCase):
         self.assertIn("# local values", content)
         self.assertIn("OTHER=value", content)
         self.assertIn("FIRST_KEY=new", content)
-
-    def test_updates_provider_routing(self) -> None:
-        snapshot = self.store.snapshot()
-        updated = self.store.save_routing({
-            "main_agent": "first",
-            "subagent": "first",
-            "roles": {},
-        }, snapshot["revision"])
-        self.assertEqual(updated["routing"]["subagent"], "first")
-
-    def test_updates_fast_model_routing(self) -> None:
-        document = json.loads(self.store.provider_path.read_text(encoding="utf-8"))
-        document["providers"]["second"] = {"model": "openai/second"}
-        self.store.provider_path.write_text(json.dumps(document), encoding="utf-8")
-        routing = self.store.snapshot()["routing"]
-        self.assertIsNone(routing["fast_model"])
-        routing["fast_model"] = "second"
-        snapshot = self.store.save_routing(routing)
-        self.assertEqual(snapshot["routing"]["fast_model"], "second")
-        self.assertEqual(json.loads(self.store.provider_path.read_text())["fast_model"], {"provider": "second"})
-        routing["fast_model"] = "missing"
-        with self.assertRaisesRegex(ValueError, "fast_model.provider"):
-            self.store.save_routing(routing)
 
 class EnvironmentReloaderTest(unittest.TestCase):
     def test_environment_references_require_an_exact_variable_name(self) -> None:

@@ -62,7 +62,10 @@ svg { flex-shrink: 0; }
 .session-list { flex: 1; margin-right: calc(-1 * var(--sessions-panel-gutter)); padding-right: var(--sessions-panel-gutter); overflow-y: auto; }
 .session-row { display: flex; align-items: center; margin-bottom: 4px; border-radius: 6px; }
 .session-button { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; width: 100%; padding: 11px 10px; border: 0; border-radius: 6px; background: transparent; color: #737b8b; text-align: left; font-size: 12px; }
-.session-button span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.session-button > svg { flex: none; }
+.session-input { display: grid; min-width: 0; gap: 3px; }
+.session-input > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.session-input time { font-size: 10px; color: #737b8b; }
 .session-row:hover, .session-row.selected { background: #eceef3; }
 .session-row.selected { background: #e9edf6; }
 .session-row:hover .session-button, .session-row.selected .session-button { color: #40568a; }
@@ -401,9 +404,8 @@ pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-famil
 .tool-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .settings-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; width: 100%; }
 .settings-toolbar p { margin: 0; color: #8d96a5; font-size: 10px; }
-.settings-role + .settings-role, .routing-role { margin-top: 18px; padding-top: 18px; border-top: 1px solid #edf0f3; }
+.settings-role + .settings-role { margin-top: 18px; padding-top: 18px; border-top: 1px solid #edf0f3; }
 .role-heading { margin-bottom: 13px; }
-.routing-role-name { display: flex; align-items: center; gap: 7px; margin-bottom: 11px; color: #596477; font-size: 10px; font-weight: 650; }
 .detail-list { align-self: start; }
 .detail-list button > svg { color: #aab1bd; }
 .settings-code { max-height: calc(100dvh - 230px); margin: 13px 0 0; padding: 15px; border: 1px solid #e3e6eb; border-radius: 7px; background: #f7f8fa; color: #596273; }

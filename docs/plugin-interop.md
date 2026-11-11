@@ -8,7 +8,7 @@
 1. `PluginSkillSource → SkillLoader → SkillRegistry`，注册 `<plugin>:<skill>`。
 2. MCP server map 经 Core 配置解析与 namespace 处理，合并进执行面的 `McpClientManager`；
    Manager 持有进程与连接，`wait_ready()` 返回过滤后的 `McpTool`。
-3. Agent Markdown 解析为 `PluginAgent`，Runtime 选 Provider 并创建 `SubagentRoleRegistry`。
+3. Agent Markdown 解析为 `PluginAgent`，Runtime 复用当前主 Provider 并创建 `SubagentRoleRegistry`。
 4. Hook 声明解析为 `HookDefinition`，由 Core 在输入、工具执行前后和正常结束前应用决策。
 
 当前实现保持 Plugin 声明解析、Catalog 完成后的角色校验、MCP 名称冲突诊断及 Creator
@@ -65,7 +65,6 @@ Skill/Agent 文件变化不会单独触发自动重建，重新打开 Session �
 
 Plane 持有独立的 MCP Manager；关闭或重新装配时关闭其连接与 stdio 子进程。
 重新装配会重新启动 MCP Server 并发现工具，其他 Runtime 的连接不受影响。
-禁用或删除角色时，还需删除 `provider_config.json` 中指向该角色的显式路由。
 
 ## 验证
 

@@ -13,7 +13,7 @@ class AuxiliaryCallTracker:
         self,
         on_call: Callable[[AuxiliaryModelCall], None] | None,
         *,
-        task: Literal["compression", "memory", "session_title"],
+        task: Literal["compression", "memory"],
         scope: str | None = None,
         attempt: int = 1,
     ) -> None:

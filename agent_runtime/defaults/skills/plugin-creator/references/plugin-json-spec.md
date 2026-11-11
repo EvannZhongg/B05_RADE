@@ -68,7 +68,6 @@ tools:
   - read_file
   - search_files
   - mcp__example-plugin_analyzer__analyze_code
-model: inherit
 ---
 
 Read the requested files, then report findings ordered by severity.
@@ -89,10 +88,8 @@ Read the requested files, then report findings ordered by severity.
   Referenced tools must be available after MCP discovery and `tools.enabled` filtering;
   unavailable references prevent that role from loading.
   `subagent` and other main-agent-only tools remain disallowed.
-- `model` (optional, string): `inherit`, or a provider name from `provider_config.json`. A name that
-  is not a configured provider falls back to the role's configured provider.
 
-Enable `main_agent.tools.subagent` in `agent_config.json` to use Plugin roles.
+Plugin roles use the main agent’s selected provider. Enable `main_agent.tools.subagent` in `agent_config.json` to use Plugin roles.
 
 ### `mcp`
 

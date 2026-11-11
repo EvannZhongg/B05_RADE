@@ -73,7 +73,6 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 | `session_store.py` | append-only JSONL、Session 元数据、列表与全文搜索、恢复 |
 | `session_paths.py` | Session 与 Workspace 存储路径规则 |
 | `plan.py` | 计划状态、更新与序列化 |
-| `session_title.py` | 首条输入生成初始标题、首个完成单元后异步生成标题 |
 | `tool_result.py` | Tool 输出预算、预览和 Artifact 落盘 |
 
 ## Tool 系统
@@ -125,7 +124,7 @@ Session 在应用普通模型和压缩事件时累计 `CacheUsage`，只计入�
 
 `ModelProvider` 共享媒体序列化、模型信息缓存和可取消的流读取。原生 OpenAI 模型的输入上限、输出上限和视觉能力来自 `providers/openai_models.py` 的本地资料，只维护经官方模型页核验的规范模型名，不维护日期快照、chat 别名或预览条目。资料使用官方公布的总上下文窗口，输出预留由 Runtime 扣除；token 估算使用 `tiktoken` 与随包分发的词表，不联网下载或导入 LiteLLM。工具 schema 按完整 JSON 计入，图片沿用共享尺寸估算，加密推理沿用服务端 usage。清单外的模型（含日期快照和别名）必须显式配置 `max_context_tokens`，按文本模型处理且不提供自动输出上限；未知别名和上游尚未公布 tokenizer 映射的 GPT-6 使用 `cl100k_base` 做本地估算，不能视为服务端精确计数。资料表与词表随软件发布维护，条目清单以该模块为准。
 
-原生文本计数器只缓存编码对象，每次对请求文本与完整 JSON 工具定义重新分词。ContextManager 使用最近一次成功普通模型调用的输入 usage，加上当前请求与锚点请求的本地估算差量；压缩判断和上下文展示共享这个值。锚点随 `model_completed` 写入 Journal，可恢复；压缩事件直接清除锚点，不将压缩状态重复写入指纹；端点、模型、协议、推理参数、系统提示、工具定义、计数策略或压缩状态变化时失效。缓存 token 已包含在输入 usage 中，不再相加；压缩、记忆和标题等辅助调用不替换普通请求锚点。首次请求及失效后的请求仍为本地估算，增量误差仍可能累积。DeepSeek 原生 Chat 在无工具时忽略历史 reasoning；Responses 只回传原生 reasoning 项，展示摘要不计入输入，加密 reasoning 按原生回传状态和 usage 计入。
+原生文本计数器只缓存编码对象，每次对请求文本与完整 JSON 工具定义重新分词。ContextManager 使用最近一次成功普通模型调用的输入 usage，加上当前请求与锚点请求的本地估算差量；压缩判断和上下文展示共享这个值。锚点随 `model_completed` 写入 Journal，可恢复；压缩事件直接清除锚点，不将压缩状态重复写入指纹；端点、模型、协议、推理参数、系统提示、工具定义、计数策略或压缩状态变化时失效。缓存 token 已包含在输入 usage 中，不再相加；压缩和记忆调用不替换普通请求锚点。首次请求及失效后的请求仍为本地估算，增量误差仍可能累积。DeepSeek 原生 Chat 在无工具时忽略历史 reasoning；Responses 只回传原生 reasoning 项，展示摘要不计入输入，加密 reasoning 按原生回传状态和 usage 计入。
 
 DeepSeek Flash 与 V4 Pro 默认使用 Chat Completions，模型资料和文本计数在本地处理。其他带服务商前缀的模型可使用 LiteLLM 的元数据和 token 估算。所有模型请求由 OpenAI SDK 发送。
 

@@ -6,7 +6,7 @@ import { SessionSearch } from "../src/SessionSearch";
 import type { SessionSearchMatch } from "../src/api";
 
 const match: SessionSearchMatch = {
-  session_id: "history", title: "历史会话", workspace: "F:\\Project", scratch: false,
+  session_id: "history", input_preview: "历史会话", started_at: null, workspace: "F:\\Project", scratch: false,
   item_index: 4, role: "assistant", timestamp_utc: "2026-10-26T01:00:00Z",
   has_more_in_session: false,
   snippet: "找到 needle 正文", match_start: 3, match_end: 9,
@@ -74,16 +74,18 @@ describe("session search popover", () => {
   });
 
   it("groups matching messages and uses keyboard selection to open the exact source item", async () => {
-    const second = { ...match, item_index: 9, role: "user" };
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ matches: [match, second], has_more: true }) });
+    const first = { ...match, input_preview: "history.json", started_at: "2026-10-26T00:00:00Z" };
+    const second = { ...first, item_index: 9, role: "user" };
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ matches: [first, second], has_more: true }) });
     await open();
     await search();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/sessions/search?q=needle&limit=50&per_session_limit=3");
     expect(container.querySelectorAll('[role="group"]')).toHaveLength(1);
     expect(container.querySelectorAll('[role="option"]')).toHaveLength(2);
-    expect(Array.from(container.querySelectorAll(".session-search-source"), (source) => source.textContent)).toEqual(["Project/历史会话"]);
-    expect(container.querySelector(".session-search-source")!.getAttribute("title")).toBe("F:\\Project / 历史会话");
+    const time = new Date(first.started_at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
+    expect(container.querySelector(".session-search-source")!.textContent).toBe(`Project/${time} · history.json`);
+    expect(container.querySelector(".session-search-source")!.getAttribute("title")).toBe(`F:\\Project / ${time} · history.json`);
     expect(container.querySelector("mark")!.textContent).toBe("needle");
     expect(container.textContent).toContain("Project");
     expect(container.textContent).toContain("前 50 条");
@@ -111,7 +113,7 @@ describe("session search popover", () => {
 
   it("shows one heading per session and navigates between capped previews across groups", async () => {
     const previews = [0, 1, 2].map((item_index) => ({ ...match, item_index, has_more_in_session: true }));
-    const other = { ...match, session_id: "other", title: "另一个会话", scratch: true };
+    const other = { ...match, session_id: "other", input_preview: "另一个会话", scratch: true };
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ matches: [...previews, other], has_more: false }) });
     await open();
     await search();

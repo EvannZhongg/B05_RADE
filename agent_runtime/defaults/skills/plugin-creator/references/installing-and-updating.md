@@ -46,8 +46,7 @@ see [the Hook contract](hooks.md).
 
 - `"enabled": false` keeps the package discovered but routes no component, including its MCP
   servers, agent roles and hooks.
-- To remove a plugin, delete `.RADE/plugins/<plugin-name>/` and run `/refresh` while idle. When disabling
-  or removing it, also remove any role routes for that plugin from `provider_config.json`.
+- To remove a plugin, delete `.RADE/plugins/<plugin-name>/` and run `/refresh` while idle.
 
 ## Verifying an installed plugin
 

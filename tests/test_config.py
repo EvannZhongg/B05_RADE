@@ -204,7 +204,7 @@ class ConfigTest(unittest.TestCase):
             agent_config = json.loads(created[1].read_text(encoding="utf-8"))
             self.assertEqual(
                 provider_config["main_agent"]["provider"],
-                "openai",
+                "qwen",
             )
             self.assertEqual(provider_config["subagent"]["provider"], "")
             self.assertEqual(provider_config["fast_model"]["provider"], "")
@@ -212,7 +212,7 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(
                 provider_config["providers"]["qwen"],
                 {
-                    "model": "qwen-plus",
+                    "model": "qwen3.8-27b",
                     "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                     "key": "${DASHSCOPE_API_KEY}",
                     "api": "chat_completions",

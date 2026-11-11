@@ -1,5 +1,5 @@
 {
-  "main_agent": {"provider": "openai"},
+  "main_agent": {"provider": "qwen"},
   "fast_model": {"provider": ""},
   "subagent": {"provider": ""},
   "subagent_roles": {},
@@ -17,7 +17,7 @@
       "api": "chat_completions"
     },
     "qwen": {
-      "model": "qwen-plus",
+      "model": "qwen3.8-27b",
       "url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "key": "${DASHSCOPE_API_KEY}",
       "api": "chat_completions",

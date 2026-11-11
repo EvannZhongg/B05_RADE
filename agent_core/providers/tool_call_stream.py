@@ -220,9 +220,10 @@ class ToolCallStreamAssembler:
 
     def _tool_call_id(self, call: object) -> str | None:
         value = get_field(call, "id")
-        if value is None:
+        # Chat endpoints may send an empty placeholder on argument deltas.
+        if value is None or value == "":
             return None
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str):
             self._raise(
                 "tool call id must be a non-empty string",
                 reason="invalid_id",

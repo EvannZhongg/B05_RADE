@@ -256,7 +256,8 @@ class OpenAIProviderTest(unittest.TestCase):
     def test_chat_protocol_assembles_fragments_and_requests_usage(self):
         events = [chat_chunk({"content": "Calling", "reasoning_content": "Thinking", "tool_calls": [
             {"index": 0, "id": "call_1", "type": "function", "function": {"name": "probe", "arguments": '{"value":'}}]}),
-            chat_chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"ping"}'}}]}, "tool_calls"),
+            chat_chunk({"tool_calls": [{"index": 0, "id": "", "function": {"arguments": '"ping"'}}]}),
+            chat_chunk({"tool_calls": [{"index": 0, "function": {"arguments": "}"}}]}, "tool_calls"),
             chat_chunk(usage={"prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17})]
         text, reasoning = [], []
         with self.transport(events) as requests:

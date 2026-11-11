@@ -74,7 +74,7 @@ class ProviderSelectionTest(unittest.TestCase):
         expected = {
             "openai": ("responses", "gpt-5"),
             "deepseek": ("chat_completions", "deepseek-flash"),
-            "qwen": ("chat_completions", "qwen-plus"),
+            "qwen": ("chat_completions", "qwen3.8-27b"),
             "openrouter": ("chat_completions", "openai/gpt-5"),
             "ollama": ("chat_completions", "llama3.1"),
         }

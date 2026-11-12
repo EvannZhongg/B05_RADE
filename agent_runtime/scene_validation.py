@@ -3,8 +3,10 @@
 import argparse
 import json
 import math
+from collections.abc import Sequence
 from io import BytesIO
 from pathlib import Path
+from statistics import fmean, median
 
 from agent_core import Workspace
 
@@ -13,6 +15,16 @@ from .attachments import store_attachment
 
 def _reject_json_constant(constant: str) -> None:
     raise ValueError(f"{constant} is not a valid JSON value")
+
+
+def _distribution(ordered: Sequence[int | float]) -> dict[str, int | float]:
+    """Summarize sorted observations using nearest-rank tail percentiles."""
+    count = len(ordered)
+    return {
+        "p10": round(ordered[(count - 1) // 10], 6),
+        "median": round(median(ordered), 6),
+        "p90": round(ordered[(9 * count - 1) // 10], 6),
+    }
 
 
 def extract_scene_features(text: str) -> dict[str, object]:
@@ -33,56 +45,73 @@ def extract_scene_features(text: str) -> dict[str, object]:
     if not isinstance(matrix, list) or not matrix:
         raise ValueError("P must be a non-empty matrix")
     columns = len(values)
+    workers = len(matrix)
+    workers_per_task = [0] * columns
+    best_probabilities = [0] * columns
+    tasks_per_worker = []
+    positive_probabilities = []
     for row_index, row in enumerate(matrix):
         if not isinstance(row, list) or len(row) != columns:
             raise ValueError(f"P[{row_index}] must be an array of length {columns}")
+        candidate_tasks = 0
         for column_index, value in enumerate(row):
             if type(value) not in (int, float) or not 0 <= value <= 1:
                 raise ValueError(f"P[{row_index}][{column_index}] must be a number in [0, 1]")
+            if value > 0:
+                positive_probabilities.append(value)
+                candidate_tasks += 1
+                workers_per_task[column_index] += 1
+                best_probabilities[column_index] = max(best_probabilities[column_index], value)
+        tasks_per_worker.append(candidate_tasks)
 
-    workers = len(matrix)
-    tasks_per_worker = [sum(map(bool, row)) for row in matrix]
-    workers_per_task = []
-    best_probabilities = []
-    for probabilities in zip(*matrix):
-        workers_per_task.append(sum(map(bool, probabilities)))
-        best_probabilities.append(max(probabilities))
+    positive_pairs = len(positive_probabilities)
+    ordered_best_probabilities = sorted(best_probabilities)
+    ordered_values = sorted(values)
+    value_distribution = _distribution(ordered_values)
+    total_value = sum(values)
+    unreachable_value = sum(
+        value for value, best in zip(values, best_probabilities) if best == 0
+    )
+    if any(
+        type(value) is float and not math.isfinite(value)
+        for value in (total_value, unreachable_value, value_distribution["median"])
+    ):
+        raise ValueError("Scene value statistics must be finite")
 
-    positive_pairs = sum(tasks_per_worker)
-    pair_count = workers * columns
-    top_tasks = sorted(range(columns), key=values.__getitem__, reverse=True)[:5]
+    top_count = (columns + 9) // 10
+    top_value_share = None
+    if ordered_values[0] >= 0 and total_value > 0:
+        top_value_share = round(sum(ordered_values[-top_count:]) / total_value, 6)
     return {
         "T": {
             "count": columns,
-            "without_positive_probability": workers_per_task.count(0),
-            "min_candidate_workers": min(workers_per_task),
-            "max_candidate_workers": max(workers_per_task),
-            "mean_candidate_workers": round(positive_pairs / columns, 6),
+            "tasks_without_candidates": workers_per_task.count(0),
+            "tasks_with_one_candidate": workers_per_task.count(1),
+            "candidate_workers_per_task": _distribution(sorted(workers_per_task)),
         },
         "W": {
             "count": workers,
-            "without_positive_probability": tasks_per_worker.count(0),
-            "min_candidate_tasks": min(tasks_per_worker),
-            "max_candidate_tasks": max(tasks_per_worker),
-            "mean_candidate_tasks": round(positive_pairs / workers, 6),
+            "workers_without_candidates": tasks_per_worker.count(0),
+            "candidate_tasks_per_worker": _distribution(sorted(tasks_per_worker)),
         },
         "P": {
-            "positive_fraction": round(positive_pairs / pair_count, 6),
-            "mean_probability": round(sum(map(sum, matrix)) / pair_count, 6),
-            "max_probability": max(best_probabilities),
+            "positive_fraction": round(positive_pairs / (workers * columns), 6),
+            "positive_probability_mean": (
+                round(fmean(positive_probabilities), 6) if positive_pairs else None
+            ),
+            "positive_probability_median": (
+                round(median(positive_probabilities), 6) if positive_pairs else None
+            ),
+            "best_probability_per_task": {
+                "min": ordered_best_probabilities[0],
+                **_distribution(ordered_best_probabilities),
+            },
         },
         "V": {
-            "min_value": min(values),
-            "max_value": max(values),
-            "top_tasks_by_value": [
-                {
-                    "task_id": index + 1,
-                    "value": values[index],
-                    "candidate_workers": workers_per_task[index],
-                    "best_probability": best_probabilities[index],
-                }
-                for index in top_tasks
-            ],
+            "total_value": total_value,
+            "unreachable_value": unreachable_value,
+            "value_distribution": value_distribution,
+            "top_10_percent_value_share": top_value_share,
         },
     }
 

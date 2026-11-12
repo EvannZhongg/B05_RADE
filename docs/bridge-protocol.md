@@ -223,6 +223,19 @@ the extracted `T`, `W`, `P`, and `V` features and a workspace-relative
 `source_path` for exact calculations. An invalid scene fails the turn before a
 model call.
 
+Candidates have `P[i][j] > 0`. The `T` and `W` features count tasks or
+units without candidates and summarize candidate counts across tasks or units,
+respectively. Distributions use nearest-rank `p10` and `p90` and the
+ordinary median. The positive probability mean and median are `null` when
+there are no positive entries. Per-task best probabilities include zero for
+unreachable tasks.
+
+`V.total_value` sums all task values, and `V.unreachable_value` sums the
+values of tasks without candidates. `V.top_10_percent_value_share` divides
+the sum of the highest `ceil(task_count / 10)` task values by the total.
+The share is defined for nonnegative values with a positive total and is
+`null` otherwise.
+
 ## Turn lifecycle
 
 ```text

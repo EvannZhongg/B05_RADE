@@ -1137,7 +1137,9 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(features["T"]["count"], 2)
         self.assertEqual(features["W"]["count"], 3)
         self.assertEqual(features["P"]["positive_fraction"], 0.5)
-        self.assertEqual(features["V"]["top_tasks_by_value"][0]["task_id"], 2)
+        self.assertAlmostEqual(features["P"]["positive_probability_mean"], 1.6 / 3, places=6)
+        self.assertEqual(features["V"]["total_value"], 35)
+        self.assertEqual(features["V"]["top_10_percent_value_share"], 0.714286)
         source = self.root / features["source_path"]
         self.assertEqual(source.read_bytes(), text.encode("utf-8"))
         self.assertEqual(list(source.parent.iterdir()), [source])

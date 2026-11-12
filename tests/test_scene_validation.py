@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -32,47 +33,67 @@ def test_contest_fixture_dimensions(filename, rows, columns):
     assert features["W"]["count"] == rows
     assert features["T"]["count"] == columns
     assert 0 < features["P"]["positive_fraction"] < 1
-    assert len(features["V"]["top_tasks_by_value"]) == 5
+    assert 0 < features["V"]["top_10_percent_value_share"] <= 1
 
 
-def test_extracts_axis_statistics_and_links_high_value_tasks_to_probabilities():
+def test_extracts_candidate_and_probability_distributions_and_unreachable_value():
     features = extract_scene_features(
         '\ufeff{"P":[[0.25,0,1,0],[0.5,0,0,0],[0,0,0,0]],"v":[8,12,8,1.5]}'
     )
     assert features == {
         "T": {
             "count": 4,
-            "without_positive_probability": 2,
-            "min_candidate_workers": 0,
-            "max_candidate_workers": 2,
-            "mean_candidate_workers": 0.75,
+            "tasks_without_candidates": 2,
+            "tasks_with_one_candidate": 1,
+            "candidate_workers_per_task": {"p10": 0, "median": 0.5, "p90": 2},
         },
         "W": {
             "count": 3,
-            "without_positive_probability": 1,
-            "min_candidate_tasks": 0,
-            "max_candidate_tasks": 2,
-            "mean_candidate_tasks": 1.0,
+            "workers_without_candidates": 1,
+            "candidate_tasks_per_worker": {"p10": 0, "median": 1, "p90": 2},
         },
-        "P": {"positive_fraction": 0.25, "mean_probability": 0.145833, "max_probability": 1},
+        "P": {
+            "positive_fraction": 0.25,
+            "positive_probability_mean": pytest.approx(7 / 12),
+            "positive_probability_median": 0.5,
+            "best_probability_per_task": {"min": 0, "p10": 0, "median": 0.25, "p90": 1},
+        },
         "V": {
-            "min_value": 1.5,
-            "max_value": 12,
-            "top_tasks_by_value": [
-                {"task_id": 2, "value": 12, "candidate_workers": 0, "best_probability": 0},
-                {"task_id": 1, "value": 8, "candidate_workers": 2, "best_probability": 0.5},
-                {"task_id": 3, "value": 8, "candidate_workers": 1, "best_probability": 1},
-                {"task_id": 4, "value": 1.5, "candidate_workers": 0, "best_probability": 0},
-            ],
+            "total_value": 29.5,
+            "unreachable_value": 13.5,
+            "value_distribution": {"p10": 1.5, "median": 8, "p90": 12},
+            "top_10_percent_value_share": 0.40678,
         },
     }
 
 
-def test_all_zero_probabilities():
-    features = extract_scene_features('{"P":[[0]],"v":[2]}')
-    assert features["T"]["without_positive_probability"] == 1
-    assert features["W"]["without_positive_probability"] == 1
-    assert features["P"] == {"positive_fraction": 0, "mean_probability": 0, "max_probability": 0}
+def test_all_zero_probabilities_and_value():
+    features = extract_scene_features('{"P":[[0]],"v":[0]}')
+    assert features["T"]["tasks_without_candidates"] == 1
+    assert features["W"]["workers_without_candidates"] == 1
+    assert features["P"] == {
+        "positive_fraction": 0,
+        "positive_probability_mean": None,
+        "positive_probability_median": None,
+        "best_probability_per_task": {"min": 0, "p10": 0, "median": 0, "p90": 0},
+    }
+    assert features["V"]["total_value"] == 0
+    assert features["V"]["top_10_percent_value_share"] is None
+
+
+@pytest.mark.parametrize("repeat", [1, 20])
+def test_top_decile_share_is_stable_under_replication(repeat):
+    values = list(range(1, 11)) * repeat
+    features = extract_scene_features(json.dumps({"P": [[1] * len(values)], "v": values}))
+    assert features["V"]["total_value"] == 55 * repeat
+    assert features["V"]["value_distribution"] == {"p10": 1, "median": 5.5, "p90": 9}
+    assert features["V"]["top_10_percent_value_share"] == 0.181818
+
+
+def test_top_decile_rounds_task_count_up():
+    values = [1] * 9 + [6, 9]
+    features = extract_scene_features(json.dumps({"P": [[1] * len(values)], "v": values}))
+    assert features["V"]["top_10_percent_value_share"] == 0.625
 
 
 @pytest.mark.parametrize(

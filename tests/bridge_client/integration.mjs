@@ -54,7 +54,9 @@ function handleMessage(message) {
     assert.equal(features.T.count, 2);
     assert.equal(features.W.count, 3);
     assert.equal(features.P.positive_fraction, 0.666667);
-    assert.equal(features.V.top_tasks_by_value[0].task_id, 2);
+    assert.equal(features.P.positive_probability_mean, 0.625);
+    assert.equal(features.P.best_probability_per_task.median, 0.875);
+    assert.equal(features.V.total_value, 37);
     sourcePath = features.source_path;
     stage = 'cancel';
     client.send({ type: 'user_turn', turn_id: 'cancel', text: 'Wait for cancellation' }, 'main');

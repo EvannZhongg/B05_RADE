@@ -1112,9 +1112,9 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertNotIn("transcript", delta)
         self.assertGreater(delta["event_sequence"], context["event_sequence"])
 
-    def test_json_input_is_stored_as_a_file_and_passed_to_the_agent(self) -> None:
+    def test_scene_features_are_passed_as_user_text(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
-        text = '{"name":"样例","number":9007199254740993}'
+        text = '\ufeff{"P":[[0.6,0],[0.2,0.8],[0,0]],"v":[10,25]}'
         with patch.object(
             plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
         ) as stream:
@@ -1124,20 +1124,32 @@ class InterruptedTurnTest(BridgeTestCase):
             })
             self.bridge.run_turn({
                 "turn_id": "invalid",
-                "json_input": {"filename": "bad.json", "text": '{"value":NaN}'},
+                "json_input": {"filename": "bad.json", "text": '{"P":[[0.1]],"v":[10,25]}'},
             })
 
         stream.assert_called_once()
+        request = stream.call_args.args[0]
+        user_message, = (message for message in request.messages if message.role == "user")
+        self.assertIsInstance(user_message.content, str)
+        features = json.loads(user_message.content)
+        self.assertEqual(set(features), {"filename", "source_path", "T", "W", "P", "V"})
+        self.assertEqual(features["filename"], "输入  样例.json")
+        self.assertEqual(features["T"]["count"], 2)
+        self.assertEqual(features["W"]["count"], 3)
+        self.assertEqual(features["P"]["positive_fraction"], 0.5)
+        self.assertEqual(features["V"]["top_tasks_by_value"][0]["task_id"], 2)
+        source = self.root / features["source_path"]
+        self.assertEqual(source.read_bytes(), text.encode("utf-8"))
+        self.assertEqual(list(source.parent.iterdir()), [source])
         messages = emitted(self.stdout)
         completed = next(event for event in messages if event["type"] == "turn_completed")
         item = next(item for item in completed["transcript"]["items"] if item["role"] == "user")
-        attachment = next(part for part in item["content"] if part["type"] == "file")
-        self.assertEqual(attachment["filename"], "输入  样例.json")
-        self.assertEqual((self.root / attachment["path"]).read_text(encoding="utf-8"), text)
+        self.assertEqual(item["content"], user_message.content)
         self.assertEqual(messages[-1]["type"], "turn_failed")
         self.assertEqual(messages[-1]["turn_id"], "invalid")
+        self.assertIn("must be an array of length 2", messages[-1]["error"]["message"])
         summary, = self.store.list_workspace_sessions(self.root)
-        self.assertEqual(summary["input_preview"], "输入  样例.json")
+        self.assertIn("输入 样例.json", summary["input_preview"])
         self.assertEqual(
             summary["started_at"],
             self.session.turns["json"].started_at.isoformat().replace("+00:00", "Z"),

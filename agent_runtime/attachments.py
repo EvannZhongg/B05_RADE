@@ -1,9 +1,7 @@
 """Store uploads and resolve attachments against the bound workspace."""
 
-import json
 import mimetypes
 import shutil
-from io import BytesIO
 from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
@@ -98,23 +96,3 @@ def parse_attachments(
                 )
             )
     return tuple(result)
-
-
-def _reject_json_constant(constant: str) -> None:
-    raise ValueError(f"{constant} is not a valid JSON value")
-
-
-def store_json_input(value: object, workspace: Workspace) -> tuple[AttachmentPart, ...]:
-    """Validate and snapshot a JSON file before adding it to a turn."""
-    if not isinstance(value, dict):
-        raise ValueError("user_turn.json_input must be an object")
-    filename = value.get("filename")
-    text = value.get("text")
-    if not isinstance(filename, str) or not filename.lower().endswith(".json"):
-        raise ValueError("json_input.filename must end in .json")
-    if not isinstance(text, str):
-        raise ValueError("json_input.text must be a string")
-    text = text.removeprefix("\ufeff")
-    json.loads(text, parse_int=str, parse_float=str, parse_constant=_reject_json_constant)
-    attachment = store_attachment(BytesIO(text.encode("utf-8")), workspace, filename, "application/json")
-    return parse_attachments([attachment], workspace)

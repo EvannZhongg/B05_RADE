@@ -61,7 +61,7 @@ class TurnRunner:
     def run_turn(
         self,
         turn_id: str,
-        text: str,
+        text: str | Callable[[], str],
         ensure_plane: Callable[[], ExecutionPlane],
         attachments: Callable[[], tuple[AttachmentPart, ...]],
     ) -> TurnResult:
@@ -90,7 +90,7 @@ class TurnRunner:
             if memory is not None:
                 memory.begin_turn()
             result = plane.agent.run(
-                text,
+                text() if callable(text) else text,
                 turn_id=turn_id,
                 turn_control=control,
                 attachments=attachments(),

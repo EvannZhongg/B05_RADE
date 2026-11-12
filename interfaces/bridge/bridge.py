@@ -11,7 +11,8 @@ if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
-from agent_runtime.attachments import parse_attachments, store_json_input
+from agent_runtime.attachments import parse_attachments
+from agent_runtime.scene_validation import prepare_scene_input
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
 from .protocol import (
@@ -401,8 +402,7 @@ class Bridge:
         workspace = self.host.sessions.workspace
         if "json_input" in message:
             result = self.host.run_turn(
-                turn_id, "",
-                attachments=lambda: store_json_input(message["json_input"], workspace),
+                turn_id, lambda: prepare_scene_input(message["json_input"], workspace),
             )
         else:
             result = self.host.run_turn(

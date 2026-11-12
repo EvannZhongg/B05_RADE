@@ -207,8 +207,8 @@ start chatting in a listed workspace, send `open_session` with its path and
 `session_id: null`, then wait for the ready/sync pair before sending `user_turn`.
 `workspace_set` instead moves the current session into the specified workspace.
 
-Session summaries include `session_id`, `input_preview` (the first JSON file
-name or text preview), and `started_at` (the first run time in UTC).
+Session summaries include `session_id`, `input_preview` (a preview of the first
+user input), and `started_at` (the first run time in UTC).
 
 Attachments are local descriptors `{type: "image" | "file", path, filename,
 mime_type, size_bytes}`. Paths reference files readable by the Runtime under its
@@ -216,9 +216,12 @@ Workspace and Session path rules; there is no binary upload transport. Runtime
 validates actual files and normalizes media metadata. Tool media events reference
 local images by the same convention.
 
-For JSON file input, send `json_input: {filename, text}` with the file's
-name and UTF-8 JSON text. Runtime validates the text and stores it as a file
-attachment in the bound workspace. The attachment is the turn's input.
+For a contest scene, send `json_input: {filename, text}` with the file's
+name and UTF-8 JSON text. Runtime validates `P` and `v` and derives processing
+units from the rows of `P` and tasks from its columns. The user message contains
+the extracted `T`, `W`, `P`, and `V` features and a workspace-relative
+`source_path` for exact calculations. An invalid scene fails the turn before a
+model call.
 
 ## Turn lifecycle
 

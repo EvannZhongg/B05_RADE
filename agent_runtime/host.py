@@ -93,7 +93,7 @@ class RuntimeHost:
         self.callbacks.on_event(event, turn_id)
 
     def run_turn(
-        self, turn_id: str, text: str, *,
+        self, turn_id: str, text: str | Callable[[], str], *,
         attachments: Callable[[], tuple[AttachmentPart, ...]] = lambda: (),
     ) -> TurnResult:
         return self.turns.run_turn(

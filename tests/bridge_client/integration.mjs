@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { BridgeClient } from '@rade/client';
 import { PROTOCOL_VERSION } from '@rade/protocol';
 
-const jsonText = '{"label":"中文","count":9007199254740993}';
+const jsonText = '{"P":[[0,0.5],[1,0],[0.25,0.75]],"v":[12,25]}';
 const messages = [];
-let attachmentPath;
+let sourcePath;
 const problems = [];
 let ready;
 let stage = 'open';
@@ -47,12 +47,15 @@ function handleMessage(message) {
     assert.equal(message.turn_id, 'complete');
     assert.ok(message.transcript.items.some(item => item.role === 'assistant' && item.content === '完成🙂'));
     assert.ok(messages.some(item => item.type === 'user_steer_applied' && item.steer_id === 'steer-1'));
-    const attachment = message.transcript.items
-      .filter(item => item.role === 'user' && Array.isArray(item.content))
-      .flatMap(item => item.content)
-      .find(part => part.type === 'file' && part.filename === 'example.json');
-    assert.ok(attachment);
-    attachmentPath = attachment.path;
+    const input = message.transcript.items.find(item => item.role === 'user').content;
+    assert.equal(typeof input, 'string');
+    const features = JSON.parse(input);
+    assert.equal(features.filename, 'example.json');
+    assert.equal(features.T.count, 2);
+    assert.equal(features.W.count, 3);
+    assert.equal(features.P.positive_fraction, 0.666667);
+    assert.equal(features.V.top_tasks_by_value[0].task_id, 2);
+    sourcePath = features.source_path;
     stage = 'cancel';
     client.send({ type: 'user_turn', turn_id: 'cancel', text: 'Wait for cancellation' }, 'main');
     client.cancel('cancel', 'main');
@@ -95,7 +98,7 @@ const result = await client.closed;
 clearTimeout(timeout);
 assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
 assert.deepEqual(problems, []);
-assert.equal(await readFile(attachmentPath, 'utf8'), jsonText);
+assert.equal(await readFile(sourcePath, 'utf8'), jsonText);
 assert.equal(result.code, 0);
 assert.equal(messages.filter(message => message.type === 'model_completed').length, 2);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));

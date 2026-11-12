@@ -271,6 +271,7 @@ export type Incoming = (
 
 export type JsonInput = {
   filename: string;
+  /** Contest scene JSON with P indexed by processing unit and task, and v indexed by task. */
   text: string;
 };
 

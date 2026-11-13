@@ -311,10 +311,12 @@ the public event order/checkpoint rules and are not available over this stdio AP
 
 ## Errors and close
 
-`turn_failed` and `fatal` contain `error: {type, message, details}`. Error class
-names and detail keys are diagnostic; branch on the event kind. `turn_failed`
-ends a turn and permits further valid commands; a startup failure has phase
-`failed`, while an execution failure can leave phase `idle`. A channel `fatal` makes that channel unusable and closes its Runtime, while other
+`scene_task_failed`, `scene_task_timed_out` and `fatal` contain
+`error: {type, message, details}`. Branch on the event kind and use error class
+names and detail keys for diagnostics. `scene_task_failed` and
+`scene_task_timed_out` end the task and permit further valid commands. A startup
+failure has phase `failed`, while an execution failure can leave phase `idle`.
+A channel `fatal` makes that channel unusable and closes its Runtime, while other
 channels continue. A top-level process `fatal` closes the process with exit code 1. It may occur before any session
 opens or before a protocol major is available. Malformed JSON/envelopes, unknown
 command kinds and out-of-order Session commands produce fatal `ProtocolError`;

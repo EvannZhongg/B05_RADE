@@ -1,8 +1,8 @@
-"""Compare per-session processes with the resident Bridge using real model calls.
+"""Compare a fresh Bridge per scene with a resident Bridge using real model calls.
 
 Run with the project's Python: scripts/benchmark_bridge_startup.py --provider deepseek.
 Credentials are read locally and copied only into temporary configuration files.
-The resident process runs a small scene with memory disabled.
+Both run the same small scene with memory disabled and require protocol 10.
 """
 
 import argparse
@@ -11,7 +11,6 @@ import json
 import os
 from pathlib import Path
 from queue import Queue
-import re
 import shutil
 import subprocess
 import sys
@@ -26,8 +25,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def child(args):
     sys.path.insert(0, str(args.source))
-    if args.multiplex:
-        os.chdir(args.config.parent)
     from interfaces.bridge.__main__ import _claim_stdout
     output = _claim_stdout()
     from agent_runtime import config
@@ -39,10 +36,8 @@ def child(args):
 
     native_client = module.OpenAI
 
-    def request_started(request):
-        marker = re.search(r"RADE-benchmark-[a-zA-Z0-9_-]+", request.content.decode())
-        if marker or args.multiplex:
-            bridge.emit(type="benchmark_request", at=time.perf_counter())
+    def request_started(_request):
+        bridge.emit(type="benchmark_request", at=time.perf_counter())
 
     def make_client(**kwargs):
         if "http_client" in kwargs:
@@ -51,12 +46,8 @@ def child(args):
         return native_client(**kwargs, http_client=httpx.Client(event_hooks={"request": [request_started]}))
 
     module.OpenAI = make_client
-    if args.multiplex:
-        from interfaces.bridge.server import BridgeServer
-        bridge = BridgeServer(sys.stdin, output, config_directory=args.config)
-    else:
-        from interfaces.bridge.bridge import Bridge
-        bridge = Bridge(sys.stdin, output)
+    from interfaces.bridge.server import BridgeServer
+    bridge = BridgeServer(sys.stdin, output, config_directory=args.config)
     try:
         bridge.serve()
     finally:
@@ -64,15 +55,12 @@ def child(args):
 
 
 class Peer:
-    def __init__(self, source, config, multiplex):
+    def __init__(self, source, config):
         command = [sys.executable, str(Path(__file__).resolve()), "--child", "--source", str(source), "--config", str(config)]
-        if multiplex:
-            command.append("--multiplex")
-        self.multiplex = multiplex
         self.events = Queue()
         self.started = time.perf_counter()
         self.process = subprocess.Popen(
-            command, cwd=source, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            command, cwd=config.parent, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, encoding="utf-8", env={
                 **os.environ, "PYTHONUTF8": "1",
                 "PYTHONPATH": os.pathsep.join(filter(None, (str(source), os.environ.get("PYTHONPATH")))),
@@ -94,7 +82,7 @@ class Peer:
             self.events.put((time.perf_counter(), None))
 
     def send(self, message, channel="sample"):
-        if self.multiplex and message["type"] != "shutdown":
+        if message["type"] != "shutdown":
             message = {"type": "channel_command", "channel_id": channel, "command": message}
         self.process.stdin.write(json.dumps(message) + "\n")
         self.process.stdin.flush()
@@ -106,7 +94,10 @@ class Peer:
             if event is None:
                 raise RuntimeError("Benchmark process exited before " + kind)
             collected.append((at, event))
-            if event["type"] in {"fatal", "turn_failed", "scene_task_failed", "scene_task_timed_out", "session_open_failed"}:
+            if event["type"] in {
+                "fatal", "scene_task_failed", "scene_task_timed_out", "scene_task_cancelled",
+                "session_open_failed", "runtime_refresh_failed",
+            }:
                 # Do not print upstream error bodies: some services echo credentials.
                 error = event.get("error", {})
                 details = error.get("details", {})
@@ -141,12 +132,8 @@ def sample(peer, marker, assembly_only=False):
             "mcp_ready": sum(event.get("status") == "ready" for _, event in events if event["type"] == "mcp_server_status"),
             "mcp_unavailable": sum(event.get("status") == "unavailable" for _, event in events if event["type"] == "mcp_server_status"),
         }
-    if peer.multiplex:
-        peer.send({"type": "scene_task_start", "turn_id": marker, "scene_input": "scene1_1.json"}, marker)
-        finished, _, events = peer.until("scene_task_completed")
-    else:
-        peer.send({"type": "user_turn", "turn_id": marker, "text": f"{marker}\nReply exactly OK. Do not use tools."}, marker)
-        finished, _, events = peer.until("turn_completed")
+    peer.send({"type": "scene_task_start", "turn_id": marker, "scene_input": "scene1_1.json"}, marker)
+    finished, _, events = peer.until("scene_task_completed")
     request = next(event["at"] for _, event in events if event["type"] == "benchmark_request")
     first_text = next((at for at, event in events if event["type"] == "assistant_delta"), None)
     running = next((at for at, event in events if event["type"] == "runtime_state" and event["phase"] == "running"), None)
@@ -178,9 +165,9 @@ def benchmark(args):
         commit = subprocess.check_output(["git", "rev-parse", args.baseline], cwd=ROOT, text=True).strip()
         results = {"provider": provider, "model": chosen["model"], "baseline_commit": commit, "baseline": [], "resident": []}
         for mode, code in (("baseline", source), ("resident", ROOT)):
-            config = root / mode / "config"
-            config.mkdir(exist_ok=True)
-            if mode == "resident" and not args.assembly_only:
+            config = root / "runs" / mode / "config"
+            config.mkdir(parents=True)
+            if not args.assembly_only:
                 inputs = config.parent / "input"
                 inputs.mkdir()
                 (inputs / "scene1_1.json").write_text('{"P":[[0.8]],"v":[10]}', encoding="utf-8")
@@ -213,9 +200,12 @@ def benchmark(args):
             try:
                 for index in range(args.samples):
                     if mode == "baseline" or peer is None:
-                        peer = Peer(code, config, mode == "resident")
+                        peer = Peer(code, config)
+                        ready, event, _ = peer.until("bridge_ready")
+                        version = event["protocol_version"]
+                        if version != 10:
+                            raise ValueError(f"The {mode} Bridge uses protocol {version}; protocol 10 is required")
                         if mode == "resident":
-                            ready, _, _ = peer.until("bridge_ready")
                             results["resident_process_ready_ms"] = round((ready - peer.started) * 1000, 1)
                     record = sample(peer, f"RADE-benchmark-{mode}-{index}", args.assembly_only)
                     results[mode].append(record)
@@ -236,12 +226,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider")
     parser.add_argument("--samples", type=int, default=3)
-    parser.add_argument("--baseline", default="HEAD")
+    parser.add_argument("--baseline", default="HEAD", help="Git ref implementing Bridge protocol 10 (default: HEAD)")
     parser.add_argument("--assembly-only", action="store_true", help="Use configured tools/plugins/MCP without sending a model request")
     parser.add_argument("--config", type=Path, default=ROOT / ".RADE")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--source", type=Path, help=argparse.SUPPRESS)
-    parser.add_argument("--multiplex", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     child(args) if args.child else benchmark(args)

@@ -9,8 +9,8 @@
 ```text
 RuntimeHost
 ├── SessionRuntimeController   运行、Session、Provider 与计划
-├── ExecutionPlaneManager     Agent、Tool、MCP 连接、Memory、Job 等原子装配
-└── SceneTaskRunner                turn、steer、cancel 与结束结果
+├── ExecutionPlaneManager      Agent、Tool、MCP 连接、Memory、Job 等原子装配
+└── SceneTaskRunner            场景任务编排、控制与结果交付
 ```
 
 常驻 Bridge 为每个通道创建独立 `RuntimeHost`，在进程内共享 `RuntimeServices` 提供的环境重载与设置读取。各 Host 分别关闭自己的执行面和 Journal。
@@ -198,7 +198,7 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `execution_plane.py` | 一次原子装配的资源容器 |
 | `plane_manager.py` | Execution Plane 创建、复用、失效与关闭 |
 | `session_controller.py` | 运行、Session、Provider 与计划绑定 |
-| `scene_task_runner.py` | Turn、steer、cancel 和结果 |
+| `scene_task_runner.py` | 编排基线求解和反思，处理任务取消与超时，导出结果并持久化终态 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
 | `config.py` | 配置目录初始化、Provider 与 Prompt 读取 |
 | `settings.py` | 配置快照、校验、写入和 fingerprint |

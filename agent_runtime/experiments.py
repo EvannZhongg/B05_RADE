@@ -1,13 +1,15 @@
 """Submit scene experiments to the run's job manager and query their evaluations."""
 
 import json
+from collections.abc import Iterable
+from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
 from uuid import uuid4
 
 from agent_core import HostCommandExecutor, JobCancelled, JobContext, JobManager, JobResult, Workspace
-from agent_core.atomic import atomic_write_text
+from agent_core.atomic import atomic_write_bytes
 from agent_core.execution.process import MAX_COMMAND_TIMEOUT_SECONDS, CommandCancelled
 from agent_core.tools import JSONValue
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
@@ -60,8 +62,10 @@ class ExperimentRunner:
             "solver_elapsed_seconds": result.elapsed_seconds,
         }
         if result.status == "completed":
-            atomic_write_text(self._files.resolve_path(result_ref), json.dumps({"allocation": result.allocation}))
-            summary.update(valid=True, metrics=result.metrics, result_ref=result_ref)
+            data = json.dumps({"allocation": result.allocation}, allow_nan=False).encode("utf-8")
+            atomic_write_bytes(self._files.resolve_path(result_ref), data)
+            summary.update(valid=True, metrics=result.metrics, result_ref=result_ref,
+                           allocation_digest=sha256(data).hexdigest())
         elif result.status == "invalid":
             summary["valid"] = False
         if result.diagnostic is not None:
@@ -76,6 +80,18 @@ class ExperimentRunner:
 
     def get(self, experiment_id: str, baseline_experiment_id: str | None = None) -> dict[str, JSONValue]:
         return query_experiment(self._record, experiment_id, baseline_experiment_id)
+
+    def allocations(self, scene: SceneInput, experiment_ids: Iterable[str]) -> Iterable[tuple[str, object]]:
+        for experiment_id in experiment_ids:
+            record = self._record(experiment_id)
+            if record.scene_digest != scene.digest or not record.valid or record.result_ref is None:
+                continue
+            try:
+                data = self._files.resolve_path(record.result_ref).read_bytes()
+            except (OSError, ValueError):
+                continue
+            if sha256(data).hexdigest() == record.allocation_digest:
+                yield experiment_id, json.loads(data)["allocation"]
 
     def _record(self, experiment_id: str) -> ExperimentRecord:
         try:
@@ -107,6 +123,7 @@ class ExperimentRunner:
             metrics=cast(dict[str, int | float] | None, summary.get("metrics")),
             diagnostic=cast(str | None, summary.get("diagnostic", diagnostic)),
             result_ref=cast(str | None, summary.get("result_ref")),
+            allocation_digest=cast(str | None, summary.get("allocation_digest")),
         )
 
 

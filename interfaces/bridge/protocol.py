@@ -29,14 +29,14 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 9
+PROTOCOL_VERSION = 10
 
 
 class ProtocolError(ValueError):
     pass
 
 COMMAND_TYPES = frozenset({
-    "open_session", "user_turn", "user_steer", "cancel",
+    "open_session", "scene_task_start", "user_steer", "cancel",
     "provider_set",
     "list_sessions", "load_session", "session_snapshot", "settings_get",
     "settings_provider_save", "settings_agent_save",
@@ -56,6 +56,11 @@ def decode(line: str) -> dict[str, object]:
         raise ValueError("protocol message must have a string 'type'")
     if message["type"] not in COMMAND_TYPES:
         raise ValueError(f"unknown command type: {message['type']!r}")
+    if message["type"] == "scene_task_start":
+        if not isinstance(message.get("turn_id"), str) or not message["turn_id"]:
+            raise ValueError("scene_task_start requires a non-empty turn_id")
+        if not isinstance(message.get("scene_input"), str) or "text" in message:
+            raise ValueError("scene_task_start requires a scene filename")
     return message
 
 
@@ -158,6 +163,7 @@ def runtime_state_message(
     event_sequence: int | None = None,
     runtime_warnings: tuple[str, ...] = (),
     plan: PlanSnapshot | dict[str, object] | None = None,
+    scene_task: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Describe the execution plane independently from Session readiness.
 
@@ -175,6 +181,8 @@ def runtime_state_message(
         "runtime_warnings": list(runtime_warnings),
         "plan": _plan_payload(plan),
     }
+    if scene_task is not None:
+        message["scene_task"] = scene_task
     if event_sequence is not None:
         message["event_sequence"] = event_sequence
     return message
@@ -210,9 +218,9 @@ def attachment_replaced_message(*, phase: str) -> dict[str, object]:
     }
 
 
-def user_turn_received_message(turn_id: str) -> dict[str, object]:
+def scene_task_received_message(turn_id: str) -> dict[str, object]:
     return {
-        "type": "user_turn_received",
+        "type": "scene_task_received",
         "turn_id": turn_id,
     }
 

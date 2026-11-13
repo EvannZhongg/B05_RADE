@@ -110,7 +110,7 @@ class ActiveSession:
                     self._subscriber_detached = None
 
     def send(self, message: dict[str, object]) -> None:
-        if message.get("type") == "user_turn":
+        if message.get("type") == "scene_task_start":
             self._pending_turn = str(message["turn_id"])
             self._snapshot_ready.clear()
         elif message.get("type") == "runtime_refresh":
@@ -182,7 +182,10 @@ class ActiveSession:
                             self._snapshot_ready.set()
                     if "transcript" in message:
                         self.transcript = message["transcript"]
-                    if message["type"] in {"turn_completed", "turn_cancelled", "turn_failed", "fatal", "session_open_failed"}:
+                    if message["type"] in {
+                        "scene_task_completed", "scene_task_cancelled", "scene_task_failed", "scene_task_timed_out",
+                        "fatal", "session_open_failed",
+                    }:
                         self._pending_turn = None
                         self._snapshot_ready.set()
                     if message["type"] in {"runtime_refreshed", "runtime_refresh_failed", "fatal", "session_open_failed"}:

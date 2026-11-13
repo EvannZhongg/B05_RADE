@@ -138,11 +138,11 @@ describe("process folding in the live transcript", () => {
     expect(scrollTo).toHaveBeenCalled();
   });
 
-  it.each(["turn_completed", "turn_cancelled", "turn_failed"] as const)("folds a trailing process on %s without navigating", async (type) => {
+  it.each(["scene_task_completed", "scene_task_cancelled", "scene_task_failed"] as const)("folds a trailing process on %s without navigating", async (type) => {
     await receive(reasoning("reasoning without an answer"));
-    const terminal: Incoming = type === "turn_failed"
-      ? { type, turn_id: "t1", error: { type: "ProviderError", message: "failed", details: {} } }
-      : type === "turn_completed" ? { type, turn_id: "t1", usage: null } : { type, turn_id: "t1" };
+    const terminal: Incoming = type === "scene_task_failed"
+      ? { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'failed', elapsed_seconds: 1, error: { type: "ProviderError", message: "failed", details: {} } }, error: { type: "ProviderError", message: "failed", details: {} } }
+      : type === "scene_task_completed" ? { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null } : { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'cancelled', elapsed_seconds: 1 } };
     await receive(terminal, false);
     expect(processes()[0]?.open).toBe(false);
     expect(scrollIntoView).not.toHaveBeenCalled();

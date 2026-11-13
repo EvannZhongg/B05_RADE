@@ -72,6 +72,10 @@ RADE-server
 
 The GUI listens on <http://127.0.0.1:8736> by default.
 
+Select a JSON scene from `input/` in the GUI or use `/input` in the TUI.
+The `rethink` task evaluates the baseline, runs reflection, and saves the best
+valid allocation to `output/rethink/` using the input filename.
+
 `RADE-server` manages HTTP and the shared Session Host and Bridge. A configuration-directory process lock prevents duplicate servers.
 
 ## Module documentation

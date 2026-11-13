@@ -66,7 +66,7 @@ class ExecutionPlaneManager:
             or session.files is None
             or session.provider_name is None
         ):
-            raise RuntimeError("received 'user_turn' before 'open_session'")
+            raise RuntimeError("the execution plane requires an open session")
 
         self._environment.reload()
         agent_config = load_agent_config(self._agent_config_path)

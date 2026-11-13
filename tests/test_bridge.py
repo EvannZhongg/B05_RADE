@@ -348,7 +348,7 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 9,
+                "protocol_version": 10,
                 "session_id": "s1",
                 "provider": "test",
                 "model": "test/model",
@@ -549,7 +549,7 @@ class BridgeInteractionTest(BridgeTestCase):
     def test_routes_cancel_for_a_turn_queued_before_run_turn(self) -> None:
         bridge, stdout = self.make_bridge(
             [
-                '{"type": "user_turn", "turn_id": "t1", "text": "work"}',
+                '{"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}',
                 '{"type": "cancel", "turn_id": "t1"}',
             ]
         )
@@ -559,9 +559,9 @@ class BridgeInteractionTest(BridgeTestCase):
         bridge._reader.join(2)
         self.assertFalse(bridge._reader.is_alive())
 
-        self.assertIn("t1", bridge.host.turns._pending_cancels)
+        self.assertIn("t1", bridge.host.scene_tasks._pending_cancels)
         self.assertIn(
-            ("user_turn_received", "t1"),
+            ("scene_task_received", "t1"),
             [
                 (event["type"], event.get("turn_id"))
                 for event in emitted(stdout)
@@ -587,11 +587,12 @@ class BridgeCancellationTest(BridgeTestCase):
 
                 def run():
                     try:
-                        results.append(bridge.host.turns.run_turn(
-                            "t1", "work",
-                            lambda: SimpleNamespace(
-                                agent=WaitingAgent(), memory=None, computer=None, runtime_warnings=(),
-                            ),
+                        root = bridge.host.config_directory
+                        bridge.open_session(open_session_message(root))
+                        plane = bridge.host.planes.ensure(bridge.host.sessions)
+                        plane.agent = WaitingAgent()
+                        results.append(bridge.host.run_scene_task(
+                            "t1", "scene1_1.json", root / "input", root / "output",
                         ))
                     except BaseException as error:
                         errors.append(error)
@@ -602,7 +603,7 @@ class BridgeCancellationTest(BridgeTestCase):
                     thread.join(3)
                     self.assertFalse(thread.is_alive())
                     self.assertEqual(errors, [])
-                    self.assertEqual([result.status for result in results], ["cancelled"])
+                    self.assertEqual([result.task["status"] for result in results], ["cancelled"])
                 finally:
                     bridge.close()
                     thread.join(3)
@@ -613,16 +614,16 @@ class BridgeCancellationTest(BridgeTestCase):
         second, _ = self.make_bridge([])
         try:
             for bridge in (first, second):
-                bridge.host.turns.turn_id = "t1"
-                bridge.host.turns.control = TurnControl()
+                bridge.host.scene_tasks.turn_id = "t1"
+                bridge.host.scene_tasks.control = TurnControl()
             with patch.object(first, "_start_reader"), patch.object(second, "_start_reader"):
-                first.host.turns.enqueue("queued")
+                first.host.scene_tasks.enqueue("queued")
                 first.submit({"type": "cancel", "turn_id": "queued"})
                 first.submit({"type": "cancel", "turn_id": "stale"})
-                self.assertFalse(first.host.turns.control.cancelled)
+                self.assertFalse(first.host.scene_tasks.control.cancelled)
                 first.submit({"type": "cancel", "turn_id": "t1"})
-                self.assertTrue(first.host.turns.control.cancelled)
-                self.assertFalse(second.host.turns.control.cancelled)
+                self.assertTrue(first.host.scene_tasks.control.cancelled)
+                self.assertFalse(second.host.scene_tasks.control.cancelled)
         finally:
             first.close()
             second.close()
@@ -649,7 +650,7 @@ class BridgeServeTest(BridgeTestCase):
 
     def test_rejects_turn_before_open_session(self) -> None:
         bridge, _ = self.make_bridge(
-            ['{"type": "user_turn", "turn_id": "t1", "text": "hi"}']
+            ['{"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}']
         )
         with self.assertRaises(SystemExit):
             bridge.serve()
@@ -750,6 +751,7 @@ class ScriptedAgent:
         turn_id: str | None = None,
         turn_control: TurnControl | None = None,
         input_source: str = "user",
+        *, tools=None,
     ) -> None:
         self._session.begin_turn(turn_id)
         self._session.add_item("user", user_input)
@@ -777,6 +779,7 @@ class FailingAgent:
         turn_id: str | None = None,
         turn_control: TurnControl | None = None,
         input_source: str = "user",
+        *, tools=None,
     ) -> None:
         # A provider can fail only after the Runtime has durably opened a turn.
         self._session.begin_turn(turn_id)
@@ -795,6 +798,7 @@ class SuccessfulAgent:
         turn_id: str | None = None,
         turn_control: TurnControl | None = None,
         input_source: str = "user",
+        *, tools=None,
     ) -> object:
         self._session.begin_turn(turn_id)
         self._session.add_item("user", user_input)
@@ -837,10 +841,10 @@ class InterruptedTurnTest(BridgeTestCase):
         assert session is not None
         self.session = session
 
-    def start_turn(self, agent: object, text: str = "do the work") -> None:
+    def start_turn(self, agent: object) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         plane.agent = agent
-        self.bridge.run_turn({"turn_id": "t1", "text": text})
+        self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
     def stored_items(self) -> list[Message]:
         return self.store.load(self.session_id).items
@@ -849,19 +853,20 @@ class InterruptedTurnTest(BridgeTestCase):
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         plane.agent = SuccessfulAgent(self.session)
         for turn_id in ("t1", "t2"):
-            self.bridge.run_turn({"turn_id": turn_id, "text": turn_id})
+            self.bridge.run_scene_task({"turn_id": turn_id, "scene_input": "scene1_1.json"})
         messages = emitted(self.stdout)
         self.assertEqual(
             [message["event_sequence"] for message in messages],
             list(range(1, len(messages) + 1)),
         )
-        first, second = [message for message in messages if message["type"] == "turn_completed"]
+        first, second = [message for message in messages if message["type"] == "scene_task_completed"]
         for message in (first, second):
             self.assertEqual(message["transcript"]["event_sequence"], message["event_sequence"])
             self.assertEqual(message["runtime"]["phase"], "idle")
             self.assertIsNone(message["runtime"]["turn_id"])
-        self.assertEqual([item["content"] for item in second["transcript"]["items"]],
-                         ["t1", "done", "t2", "done"])
+        self.assertEqual([json.loads(item["content"])["filename"] if item["role"] == "user" else item["content"]
+                          for item in second["transcript"]["items"]],
+                         ["scene1_1.json", "done", "scene1_1.json", "done"])
         self.bridge.emit("fatal", error={"type": "TestError", "message": "failed", "details": {}})
         fatal = emitted(self.stdout)[-1]
         self.assertEqual(fatal["resume_after"], second["event_sequence"])
@@ -879,8 +884,8 @@ class InterruptedTurnTest(BridgeTestCase):
 
         def check_model_completion(type, **fields):
             if type == "model_completed":
-                self.assertEqual(self.session.turns["t1"].status, "running")
-                self.assertFalse(any(message["type"] == "turn_completed" for message in emitted(self.stdout)))
+                self.assertEqual(self.session.turns[self.bridge.host.scene_tasks.task_id].status, "running")
+                self.assertFalse(any(message["type"] == "scene_task_completed" for message in emitted(self.stdout)))
                 self.assertEqual(self.session.journal[-1].event_type, "model_completed")
             emit(type, **fields)
 
@@ -891,10 +896,10 @@ class InterruptedTurnTest(BridgeTestCase):
                 content="done", usage=TokenUsage(1000, 20, 1020, 800, None),
             )),
         ):
-            self.bridge.run_turn({"turn_id": "t1", "text": "do the work"})
+            self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         message = emitted(self.stdout)[-1]
-        self.assertEqual(message["type"], "turn_completed")
+        self.assertEqual(message["type"], "scene_task_completed")
         self.assertEqual(message["usage"], {
             "input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020,
             "cache_read_tokens": 800, "cache_write_tokens": None,
@@ -917,7 +922,7 @@ class InterruptedTurnTest(BridgeTestCase):
     def test_running_checkpoint_contains_new_user_input_and_prior_turns(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         plane.agent = SuccessfulAgent(self.session)
-        self.bridge.run_turn({"turn_id": "t1", "text": "first"})
+        self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
         previous_cursor = emitted(self.stdout)[-1]["event_sequence"]
         session = self.session
 
@@ -932,13 +937,14 @@ class InterruptedTurnTest(BridgeTestCase):
                 return AgentRunResult("done")
 
         plane.agent = StreamingAgent()
-        self.bridge.run_turn({"turn_id": "t2", "text": "second"})
+        self.bridge.run_scene_task({"turn_id": "t2", "scene_input": "scene1_1.json"})
         messages = emitted(self.stdout)
         context = next(message for message in messages if message["type"] == "context_window")
         self.assertGreater(context["transcript"]["event_sequence"], previous_cursor)
         self.assertEqual(context["runtime"]["phase"], "running")
-        self.assertEqual([item["content"] for item in context["transcript"]["items"]],
-                         ["first", "done", "second"])
+        self.assertEqual([json.loads(item["content"])["filename"] if item["role"] == "user" else item["content"]
+                          for item in context["transcript"]["items"]],
+                         ["scene1_1.json", "done", "scene1_1.json"])
         delta = next(message for message in messages if message["type"] == "assistant_delta")
         self.assertNotIn("transcript", delta)
         self.assertGreater(delta["event_sequence"], context["event_sequence"])
@@ -947,7 +953,7 @@ class InterruptedTurnTest(BridgeTestCase):
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         text = '\ufeff{"P":[[0.6,0],[0.2,0.8],[0,0]],"v":[10,25]}'
         input_directory = self.root / "input"
-        input_directory.mkdir()
+        input_directory.mkdir(exist_ok=True)
         (input_directory / "scene1_1.json").write_bytes(text.encode("utf-8"))
         (input_directory / "scene1_2.json").write_text('{"P":[[0.1]],"v":[10,25]}', encoding="utf-8")
         with (
@@ -956,12 +962,12 @@ class InterruptedTurnTest(BridgeTestCase):
                 plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
             ) as stream,
         ):
-            self.bridge.run_turn({
+            self.bridge.run_scene_task({
                 "turn_id": "json",
                 "scene_input": "scene1_1.json",
             })
-            self.bridge.run_turn({"turn_id": "outside", "scene_input": "../input/scene1_1.json"})
-            self.bridge.run_turn({
+            self.bridge.run_scene_task({"turn_id": "outside", "scene_input": "../input/scene1_1.json"})
+            self.bridge.run_scene_task({
                 "turn_id": "invalid",
                 "scene_input": "scene1_2.json",
             })
@@ -971,7 +977,7 @@ class InterruptedTurnTest(BridgeTestCase):
         user_message, = (message for message in request.messages if message.role == "user")
         self.assertIsInstance(user_message.content, str)
         features = json.loads(user_message.content)
-        self.assertEqual(set(features), {"filename", "source_path", "T", "W", "P", "V"})
+        self.assertEqual(set(features), {"filename", "source_path", "T", "W", "P", "V", "mode", "baseline", "objective"})
         self.assertEqual(features["filename"], "scene1_1.json")
         self.assertEqual(features["T"]["count"], 2)
         self.assertEqual(features["W"]["count"], 3)
@@ -983,24 +989,24 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(source.read_bytes(), text.encode("utf-8"))
         self.assertEqual(list(source.parent.iterdir()), [source])
         messages = emitted(self.stdout)
-        self.assertTrue(any(event["type"] == "turn_failed" and event["turn_id"] == "outside" for event in messages))
-        completed = next(event for event in messages if event["type"] == "turn_completed")
+        self.assertTrue(any(event["type"] == "scene_task_failed" and event["turn_id"] == "outside" for event in messages))
+        completed = next(event for event in messages if event["type"] == "scene_task_completed")
         item = next(item for item in completed["transcript"]["items"] if item["role"] == "user")
         self.assertEqual(item["content"], user_message.content)
-        self.assertEqual(messages[-1]["type"], "turn_failed")
+        self.assertEqual(messages[-1]["type"], "scene_task_failed")
         self.assertEqual(messages[-1]["turn_id"], "invalid")
         self.assertIn("must be an array of length 2", messages[-1]["error"]["message"])
         summary, = self.store.list_sessions()
         self.assertIn("scene1_1.json", summary["input_preview"])
         self.assertEqual(
             summary["started_at"],
-            self.session.turns["json"].started_at.isoformat().replace("+00:00", "Z"),
+            self.session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
         )
 
     def test_scene_tool_queries_only_the_current_scene_snapshot(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         input_directory = self.root / "input"
-        input_directory.mkdir()
+        input_directory.mkdir(exist_ok=True)
         first = input_directory / "scene1_1.json"
         first.write_text('{"P":[[0.6,0],[0.2,0.8]],"v":[10,25]}', encoding="utf-8")
         (input_directory / "scene1_2.json").write_text(
@@ -1016,7 +1022,6 @@ class InterruptedTurnTest(BridgeTestCase):
                 ToolCall("worker", "query_scene", {"statistic": "worker", "index": 0}),
             )),
             LLMResponse(content="Second scene queried"),
-            LLMResponse(content="Text turn completed"),
         ))
         requests = []
 
@@ -1030,14 +1035,12 @@ class InterruptedTurnTest(BridgeTestCase):
             patch.object(plane.provider, "count_input_tokens", return_value=1),
             patch.object(plane.provider, "stream_cancellable", side_effect=respond),
         ):
-            self.bridge.run_turn({"turn_id": "one", "scene_input": "scene1_1.json"})
-            self.bridge.run_turn({"turn_id": "two", "scene_input": "scene1_2.json"})
-            self.bridge.run_turn({"turn_id": "text", "text": "Continue"})
+            self.bridge.run_scene_task({"turn_id": "one", "scene_input": "scene1_1.json"})
+            self.bridge.run_scene_task({"turn_id": "two", "scene_input": "scene1_2.json"})
 
-        self.assertEqual(len(requests), 5)
-        for request in requests[:4]:
+        self.assertEqual(len(requests), 4)
+        for request in requests:
             self.assertIn("query_scene", {tool.name for tool in request.tools})
-        self.assertNotIn("query_scene", {tool.name for tool in requests[4].tools})
         results = {
             item.tool_call_id: json.loads(item.content)["output"]
             for item in self.stored_items() if item.role == "tool"
@@ -1064,7 +1067,7 @@ class InterruptedTurnTest(BridgeTestCase):
 
         def check_completion(type, **fields):
             if type == "compression_completed":
-                self.assertEqual(self.session.turns["t1"].status, "running")
+                self.assertEqual(self.session.turns[self.bridge.host.scene_tasks.task_id].status, "running")
                 stored = self.store.load(self.session_id, recover=False)
                 self.assertEqual(stored.journal[-1].event_type, "compression_completed")
                 self.assertEqual(stored.journal[-1].payload["attempt"], len([
@@ -1084,7 +1087,7 @@ class InterruptedTurnTest(BridgeTestCase):
                 LLMResponse(content="done", usage=TokenUsage(100, 10, 110, 50, None)),
             ]),
         ):
-            self.bridge.run_turn({"turn_id": "t1", "text": "continue"})
+            self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         attempts = [message for message in emitted(self.stdout) if message["type"] == "compression_completed"]
         self.assertEqual(len(attempts), 2)
@@ -1101,7 +1104,7 @@ class InterruptedTurnTest(BridgeTestCase):
                          [(1, "invalid_response"), (2, "completed")])
         self.assertEqual(stored.cache_usage, CacheUsage(1700, 1350))
         completed = emitted(self.stdout)[-1]
-        self.assertEqual(completed["type"], "turn_completed")
+        self.assertEqual(completed["type"], "scene_task_completed")
         self.assertEqual(completed["usage"]["input_tokens"], 100)
         self.bridge.open_session({"session_id": self.session_id})
         self.assertEqual(emitted(self.stdout)[-1]["cache_usage"],
@@ -1116,16 +1119,17 @@ class InterruptedTurnTest(BridgeTestCase):
             tail=(Message(role="assistant", content="half an answer"),),
             error=KeyboardInterrupt(),
         )
-        self.bridge.run_turn({"turn_id": "t1", "text": "do the work"})
+        self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         messages = emitted(self.stdout)
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
-        self.assertEqual(messages[-1]["type"], "turn_cancelled")
+        self.assertEqual(messages[-1]["type"], "scene_task_cancelled")
         self.assertEqual(memory.calls, ["begin", "discard"])
         self.assertEqual(
-            [message.content for message in self.stored_items()],
-            ["do the work", "half an answer"],
+            [json.loads(message.content)["filename"] if message.role == "user" else message.content
+             for message in self.stored_items()],
+            ["scene1_1.json", "half an answer"],
         )
 
     def test_reconciles_memory_only_after_a_successful_turn(self) -> None:
@@ -1134,13 +1138,39 @@ class InterruptedTurnTest(BridgeTestCase):
         plane.memory = memory
         plane.agent = SuccessfulAgent(self.session)
 
-        self.bridge.run_turn({"turn_id": "t1", "text": "remember this"})
+        self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         self.assertEqual(memory.calls, ["begin", "reconcile"])
         messages = emitted(self.stdout)
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
-        self.assertEqual(messages[-1]["type"], "turn_completed")
+        self.assertEqual(messages[-1]["type"], "scene_task_completed")
+
+    def test_export_failure_does_not_report_an_existing_output_as_complete(self) -> None:
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        plane.agent = SuccessfulAgent(self.session)
+        output = self.root / "output" / "rethink" / "scene1_1.json"
+        output.parent.mkdir(parents=True)
+        output.write_text('{"allocation": [null, null]}', encoding="utf-8")
+
+        with patch("agent_runtime.scene_task_runner.atomic_write_bytes", side_effect=OSError("disk full")):
+            self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
+
+        terminal = emitted(self.stdout)[-1]
+        self.assertEqual(terminal["type"], "scene_task_failed")
+        self.assertEqual(terminal["error"]["message"], "disk full")
+        self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"allocation": [None, None]})
+        self.assertNotIn("output_path", terminal["task"])
+        self.assertEqual(self.store.load(self.session_id).journal[-1].payload, terminal["task"])
+
+    def test_scene_task_budget_exhaustion_is_persisted(self) -> None:
+        with patch("agent_runtime.scene_task_runner.TASK_BUDGET_SECONDS", 0):
+            self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
+
+        terminal = emitted(self.stdout)[-1]
+        self.assertEqual(terminal["type"], "scene_task_timed_out")
+        self.assertFalse((self.root / "output").exists())
+        self.assertEqual(self.store.load(self.session_id).journal[-1].payload, terminal["task"])
 
     def test_discards_memory_candidates_when_a_turn_fails(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
@@ -1148,7 +1178,7 @@ class InterruptedTurnTest(BridgeTestCase):
         plane.memory = memory
         plane.agent = FailingAgent(self.session)
 
-        self.bridge.run_turn({"turn_id": "t1", "text": "do the work"})
+        self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         self.assertEqual(memory.calls, ["begin", "discard"])
 
@@ -1159,7 +1189,7 @@ class InterruptedTurnTest(BridgeTestCase):
         start = len(emitted(self.stdout))
 
         with patch.object(plane.memory, "reconcile_pending", side_effect=OSError("write failed")):
-            self.bridge.run_turn({"turn_id": "memory-warning", "text": "work"})
+            self.bridge.run_scene_task({"turn_id": "memory-warning", "scene_input": "scene1_1.json"})
 
         messages = emitted(self.stdout)[start:]
         phases = [message for message in messages if message["type"] == "runtime_state"]
@@ -1167,7 +1197,7 @@ class InterruptedTurnTest(BridgeTestCase):
         warnings = ["Long-term memory update failed: write failed"]
         self.assertEqual(phases[-1]["runtime_warnings"], warnings)
         self.assertIsNone(phases[-1]["turn_id"])
-        self.assertEqual(messages[-1]["type"], "turn_completed")
+        self.assertEqual(messages[-1]["type"], "scene_task_completed")
         self.assertEqual(messages[-1]["runtime"]["runtime_warnings"], warnings)
 
     def test_stores_a_failed_turn(self) -> None:
@@ -1182,11 +1212,12 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
         failure = messages[-1]
-        self.assertEqual(failure["type"], "turn_failed")
+        self.assertEqual(failure["type"], "scene_task_failed")
         self.assertEqual(failure["error"]["type"], "ValueError")
         self.assertEqual(
-            [message.content for message in self.stored_items()],
-            ["do the work"],
+            [json.loads(message.content)["filename"] if message.role == "user" else message.content
+             for message in self.stored_items()],
+            ["scene1_1.json"],
         )
 
     def test_journal_records_a_turn_that_produced_nothing(self) -> None:
@@ -1196,7 +1227,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
         failure = messages[-1]
-        self.assertEqual(failure["type"], "turn_failed")
+        self.assertEqual(failure["type"], "scene_task_failed")
         self.assertEqual(failure["error"]["type"], "ValueError")
         # The failed turn is a fact even though it produced no messages.
         self.assertEqual(self.stored_items(), [])
@@ -1327,21 +1358,21 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
         failure = messages[-1]
-        self.assertEqual(failure["type"], "turn_failed")
+        self.assertEqual(failure["type"], "scene_task_failed")
 
         # The bridge keeps serving turns once storage recovers.
         storage.stop()
         self.start_turn(
             ScriptedAgent(self.session, error=KeyboardInterrupt()),
-            text="second try",
         )
         messages = emitted(self.stdout)
         self.assertEqual(messages[-2]["type"], "runtime_state")
         self.assertEqual(messages[-2]["phase"], "idle")
-        self.assertEqual(messages[-1]["type"], "turn_cancelled")
+        self.assertEqual(messages[-1]["type"], "scene_task_cancelled")
         self.assertEqual(
-            [message.content for message in self.stored_items()],
-            ["second try"],
+            [json.loads(message.content)["filename"] if message.role == "user" else message.content
+             for message in self.stored_items()],
+            ["scene1_1.json"],
         )
 
 
@@ -1367,7 +1398,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         with patch.object(plane.jobs, "close", wraps=plane.jobs.close) as close_jobs:
             with patch.object(tui, "read_message", side_effect=[
                 opening, {"type": "load_session"},
-                {"type": "user_turn", "turn_id": "continued", "text": "continue TUI"}, None,
+                {"type": "scene_task_start", "turn_id": "continued", "scene_input": "scene1_1.json"}, None,
             ]):
                 tui.serve()
             close_jobs.assert_not_called()
@@ -1377,9 +1408,10 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertIs(tui.host.sessions.session, original)
         self.assertIs(tui.host.sessions.plan, plan)
         self.assertIs(tui.host.planes.current, plane)
-        self.assertEqual(emitted(output)[-1]["type"], "turn_completed")
-        self.assertEqual([item.content for item in tui.host.sessions.store.load("tui-session").items],
-                         ["TUI history", "continue TUI", "done"])
+        self.assertEqual(emitted(output)[-1]["type"], "scene_task_completed")
+        items = tui.host.sessions.store.load("tui-session").items
+        self.assertEqual([items[0].content, json.loads(items[1].content)["filename"], items[2].content],
+                         ["TUI history", "scene1_1.json", "done"])
         self.assertEqual([item.content for item in gui.host.sessions.store.load("gui-session").items], ["GUI history"])
         for session_id in ("gui-session", "tui-session"):
             with self.assertRaises(SessionInUseError):
@@ -2494,15 +2526,15 @@ class RuntimeRefreshTest(BridgeTestCase):
     def test_runtime_rejects_refresh_during_a_turn(self) -> None:
         host = self.bridge.host
         plane = host.planes.ensure(host.sessions)
-        host.turns.turn_id = "busy"
+        host.scene_tasks.turn_id = "busy"
         try:
-            with self.assertRaisesRegex(RuntimeError, "during a turn"):
+            with self.assertRaisesRegex(RuntimeError, "during a scene task"):
                 host.refresh_runtime()
             self.assertIs(host.planes.current, plane)
         finally:
-            host.turns.turn_id = None
+            host.scene_tasks.turn_id = None
 
-    def test_refresh_command_is_dispatched_without_a_user_turn(self) -> None:
+    def test_refresh_command_is_dispatched_without_a_scene_task_start(self) -> None:
         with patch.object(self.bridge, "read_message", side_effect=[
             {"type": "open_session", "session_id": None},
             decode('{"type":"runtime_refresh"}'), None,

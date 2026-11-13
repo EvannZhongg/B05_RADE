@@ -191,7 +191,7 @@ export function App(props: AppProps): React.ReactElement {
           if (inputBusy) return;
           const filename = picker.list[picker.selectedIndex];
           const turnId = 'turn-' + ++turnCounter.current;
-          send({ type: 'user_turn', turn_id: turnId, scene_input: filename });
+          send({ type: 'scene_task_start', turn_id: turnId, scene_input: filename });
           dispatch({ type: 'picker_closed' });
           dispatch({ type: 'submit', turnId, text: filename });
         } else {
@@ -301,6 +301,12 @@ export function App(props: AppProps): React.ReactElement {
         ) : null}
 
         <Transcript state={state} />
+
+        {state.sceneTask?.status === 'completed' ? (
+          <Text>Result saved to {state.sceneTask.output_path} · Expected value {state.sceneTask.expected_value.toPrecision(8)}</Text>
+        ) : state.sceneTask?.status === 'interrupted' ? (
+          <Text color="yellow">{state.sceneTask.error.message}</Text>
+        ) : null}
 
         {state.plan ? <PlanView plan={state.plan} /> : null}
 

@@ -15,8 +15,8 @@ export type SessionSocketOptions = {
 
 /** What the browser may send: relayed bridge messages plus 'cancel'. */
 type Sendable =
-  Extract<Outgoing, { type: "user_turn" | "user_steer" | "provider_set" | "runtime_refresh" | "cancel" }>;
-type UserTurn = Extract<Sendable, { type: "user_turn" }>;
+  Extract<Outgoing, { type: "scene_task_start" | "user_steer" | "provider_set" | "runtime_refresh" | "cancel" }>;
+type SceneTask = Extract<Sendable, { type: "scene_task_start" }>;
 type QueuedCommand = {
   message: Sendable;
   acknowledgment?: {
@@ -34,7 +34,7 @@ type QueuedCommand = {
 export class SessionSocket {
   private socket: WebSocket;
   private queued: QueuedCommand[] = [];
-  private pendingUserTurns = new Map<string, QueuedCommand["acknowledgment"]>();
+  private pendingSceneTasks = new Map<string, QueuedCommand["acknowledgment"]>();
   private synchronized = false;
   private phase: RuntimePhase = initialRuntimeState().phase;
 
@@ -67,10 +67,10 @@ export class SessionSocket {
         this.phase = state.phase;
       }
       options.onMessage(message);
-      if (message.type === "user_turn_received") {
-        const acknowledgment = this.pendingUserTurns.get(message.turn_id);
+      if (message.type === "scene_task_received") {
+        const acknowledgment = this.pendingSceneTasks.get(message.turn_id);
         if (acknowledgment) {
-          this.pendingUserTurns.delete(message.turn_id);
+          this.pendingSceneTasks.delete(message.turn_id);
           acknowledgment.resolve();
         }
       }
@@ -104,7 +104,7 @@ export class SessionSocket {
   }
 
   /** Resolves only after the bridge confirms that it accepted the turn. */
-  sendUserTurn(message: UserTurn): Promise<void> {
+  sendSceneTask(message: SceneTask): Promise<void> {
     return new Promise((resolve, reject) => {
       const command = { message, acknowledgment: { resolve, reject } };
       if (this.socket.readyState === WebSocket.OPEN && this.synchronized) {
@@ -137,18 +137,18 @@ export class SessionSocket {
       this.options.onConfigurationRejected?.(message.type);
       return;
     }
-    if (message.type === "user_turn") {
+    if (message.type === "scene_task_start") {
       this.phase = "starting";
       if (acknowledgment) {
-        this.pendingUserTurns.set(message.turn_id, acknowledgment);
+        this.pendingSceneTasks.set(message.turn_id, acknowledgment);
       }
     }
     if (message.type === "runtime_refresh") this.phase = "starting";
     try {
       this.write(message);
     } catch (error) {
-      if (message.type === "user_turn" && acknowledgment) {
-        this.pendingUserTurns.delete(message.turn_id);
+      if (message.type === "scene_task_start" && acknowledgment) {
+        this.pendingSceneTasks.delete(message.turn_id);
         acknowledgment.reject(error instanceof Error ? error : new Error(String(error)));
       }
     }
@@ -157,10 +157,10 @@ export class SessionSocket {
   private rejectUnconfirmedTurns(error = new Error("session connection closed before confirming the turn")): void {
     for (const command of this.queued) command.acknowledgment?.reject(error);
     this.queued = [];
-    for (const acknowledgment of this.pendingUserTurns.values()) {
+    for (const acknowledgment of this.pendingSceneTasks.values()) {
       acknowledgment?.reject(error);
     }
-    this.pendingUserTurns.clear();
+    this.pendingSceneTasks.clear();
   }
 
   private write(message: object): void {

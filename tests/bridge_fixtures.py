@@ -94,6 +94,11 @@ class BridgeTestCase(unittest.TestCase):
             return_value=config_directory,
         ):
             bridge = Bridge(stdin, stdout)
+        inputs = config_directory / "input"
+        inputs.mkdir(exist_ok=True)
+        scene = inputs / "scene1_1.json"
+        if not scene.exists():
+            scene.write_text('{"P":[[0.5,0],[0.5,1]],"v":[10,3]}', encoding="utf-8")
         self.addCleanup(bridge.close)
         return bridge, stdout
 

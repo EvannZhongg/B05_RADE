@@ -582,6 +582,9 @@ class Session:
     ) -> None:
         self._event(f"hook_{status}", self._current_turn_id, payload, tool_call_id)
 
+    def record_application_event(self, name: str, payload: dict[str, object]) -> None:
+        self._event(f"application_{name}", None, payload)
+
     def _event(
         self,
         event_type: str,

@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 9
+# Public Bridge protocol, major 10
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -20,7 +20,11 @@ Protocol 7 selects contest scenes by filename from the Bridge process working di
 Protocol 9 restricts `SessionItem.content` to strings and `null`. It removes
 attachment and content-part arrays from transcript checkpoints and history.
 
-Every `session_ready` advertises `protocol_version: 9`. Clients must check this
+Protocol 10 starts scene tasks with `scene_task_start`. Scene task events report
+the persisted outcome of validation and export. Agent turns are internal to the
+task. The first mode is `rethink`.
+
+Every `session_ready` advertises `protocol_version: 10`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -33,7 +37,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":9}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":10}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -183,7 +187,7 @@ turn: it is emitted before the terminal event. The process may have queued input
 | Command | Payload / response |
 | --- | --- |
 | `open_session` | Above; `session_ready` then `runtime_state`, or opening failure. |
-| `user_turn` | `turn_id` and either `scene_input` or `text`; receipt and execution events below. |
+| `scene_task_start` | `turn_id` and `scene_input`; starts a `rethink` task. |
 | `user_steer` | Target `turn_id`, `steer_id`, `text`; received/rejected then applied if consumed. |
 | `cancel` | Target `turn_id`; matching queued/active turn is cancelled cooperatively. No immediate acknowledgment. |
 | `provider_set` | Configured `provider`; `provider_changed` with `provider`, `model`, `runtime`. |
@@ -208,9 +212,12 @@ file from `input/` relative to the Bridge process working directory. Filenames
 follow `scene<S>_<I>.json`, with `S` in 1–2 and `I` in 1–5. Runtime validates
 `P` and `v` and derives processing units from the rows of `P` and tasks from
 its columns. The user message contains
-the extracted `T`, `W`, `P`, and `V` features and a run-relative
-`source_path` for exact calculations. An invalid scene fails the turn before a
-model call.
+the extracted `T`, `W`, `P`, and `V` features, a run-relative `source_path`,
+and the evaluated baseline. An invalid scene fails the task before a model call.
+After the reflection Turn returns, Runtime evaluates this task's candidates
+against the original input, exports the highest-value allocation to
+`output/rethink/<scene_input>`, and records the task result in the Session journal.
+The latest task is available as `runtime_state.scene_task` after reopening.
 
 Candidates have `P[i][j] > 0`. The `T` and `W` features count tasks or
 units without candidates and summarize candidate counts across tasks or units,
@@ -225,19 +232,19 @@ the sum of the highest `ceil(task_count / 10)` task values by the total.
 The share is defined for nonnegative values with a positive total and is
 `null` otherwise.
 
-## Turn lifecycle
+## Scene task lifecycle
 
 ```text
-client → user_turn(turn_id)
-       ← user_turn_received(turn_id)
+client → scene_task_start(turn_id, scene_input)
+       ← scene_task_received(turn_id)
        ← runtime_state(starting/running), context/model/tool/... events
        ← runtime_state(idle or failed)
-       ← turn_completed | turn_cancelled | turn_failed  + transcript
+       ← scene_task_completed | scene_task_cancelled | scene_task_failed | scene_task_timed_out  + transcript
 ```
 
-`user_turn_received` acknowledges enqueueing, not model startup or persistence.
+`scene_task_received` acknowledges enqueueing, not model startup or persistence.
 Clients should submit one turn at a time and use `user_steer` for new input during
-execution. The transport does not convert `user_turn` into steering. Steering
+execution. The transport does not convert `scene_task_start` into steering. Steering
 receipt is `user_steer_received` or `user_steer_rejected`, identified by both IDs;
 only `user_steer_applied` means Core consumed it. Accepted steering can remain
 unapplied when the turn ends. Stale cancellation IDs have no effect.
@@ -252,8 +259,9 @@ operations remain applied. The same details are retained in Session tool results
 `cancel` addresses exactly the supplied queued/active turn. It can race completion;
 a completed terminal outcome remains valid. It has no separate response. On an
 ordinary continuing connection each processed turn produces one terminal outcome:
-`turn_completed` with last-call `usage`, `turn_cancelled`, or `turn_failed` with a
-structured `error`. During shutdown/EOF or process failure a terminal event is not
+`scene_task_completed` with a persisted `task` result and last-call `usage`,
+`scene_task_cancelled`, `scene_task_failed`, or `scene_task_timed_out`.
+The failure and timeout events carry a structured `error`. During shutdown/EOF or process failure a terminal event is not
 guaranteed; observe process exit and resume stored history if needed.
 
 ## Events, order and transcript checkpoints
@@ -283,7 +291,7 @@ concurrently and their results can interleave. Preserve actual wire order and
 correlate IDs, without imposing a fixed order between unrelated event families.
 `model_completed` can precede Tool execution; it does not end the turn.
 `cache_usage` is a complete Session total; replace it instead of summing repeated
-snapshots. Unknown token counts are `null`. `turn_completed.usage` is the last
+snapshots. Unknown token counts are `null`. `scene_task_completed.usage` is the last
 model call, not the sum of the turn.
 
 `transcript: {items: SessionItem[], event_sequence: N}` is an authoritative
@@ -331,11 +339,11 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 9
+receive bridge_ready; check protocol_version == 10
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 9; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 10; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
-send channel_command(chat-1, user_turn) with a fresh turn_id
+send channel_command(chat-1, scene_task_start) with a fresh turn_id
 receive/render events
 receive terminal event; apply checkpoint
 send close_channel(chat-1); receive channel_closed(chat-1)

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useExternalStoreRuntime } from "@assistant-ui/react";
-import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase } from "@rade/protocol";
+import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase, type SceneTask } from "@rade/protocol";
 import { releaseActiveSession, type ModelOption, type Session } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
@@ -39,6 +39,7 @@ export function useSessionRuntime({
   const [cacheUsage, setCacheUsage] = useState<CacheUsage | null>(session.cache_usage ?? null);
   const [pendingUserItem, setPendingUserItem] = useState<TranscriptItem | null>(null);
   const [runtimePhase, setRuntimePhase] = useState<RuntimePhase>(() => initialRuntimeState().phase);
+  const [sceneTask, setSceneTask] = useState<SceneTask | null>(session.scene_task ?? null);
   const [jobs, setJobs] = useState<Record<string, BackgroundJob>>({});
   const [attaching, setAttaching] = useState(false);
   const [attachmentReplaced, setAttachmentReplaced] = useState(false);
@@ -194,7 +195,7 @@ export function useSessionRuntime({
           applyRuntimePhase("inactive");
           eventCounterRef.current = 0;
         }
-        if (message.type === "user_turn_received" && message.turn_id === activeTurnIdRef.current && pendingUserItemRef.current) {
+        if (message.type === "scene_task_received" && message.turn_id === activeTurnIdRef.current && pendingUserItemRef.current) {
           // Opening checkpoints update history underneath the pending bubble.
           // Acceptance commits it once; later checkpoints replace it normally.
           showItems([...itemsRef.current, pendingUserItemRef.current]);
@@ -245,6 +246,7 @@ export function useSessionRuntime({
             onProviderChange(message.provider);
           }
           applyRuntimePhase(message.phase);
+          setSceneTask(message.scene_task ?? null);
           if (message.phase === "starting" && message.turn_id === null) setRefreshing(true);
           if (!pendingUserItemRef.current) activeTurnIdRef.current = message.turn_id;
           setJobs(Object.fromEntries(message.jobs.map((job) => [job.job_id, job])));
@@ -303,6 +305,13 @@ export function useSessionRuntime({
         if (awaitingSessionActivityRef.current && isTurnActivity(message)) {
           awaitingSessionActivityRef.current = false;
           onSessionAvailable();
+        }
+        if ("task" in message) {
+          if (!message.replayed) setSceneTask(message.task);
+          if (awaitingSessionActivityRef.current) {
+            awaitingSessionActivityRef.current = false;
+            onSessionAvailable();
+          }
         }
         const applied = applyMessage(itemsRef.current, message);
         showItems(applied.items);
@@ -368,7 +377,7 @@ export function useSessionRuntime({
     const socket = socketRef.current ?? connect();
     awaitingSessionActivityRef.current = startsSession;
     try {
-      await socket.sendUserTurn({ type: "user_turn", turn_id: activeTurnIdRef.current, scene_input: filename });
+      await socket.sendSceneTask({ type: "scene_task_start", turn_id: activeTurnIdRef.current, scene_input: filename });
     } catch (error) {
       showPendingUserItem(null);
       activeTurnIdRef.current = null;
@@ -420,6 +429,7 @@ export function useSessionRuntime({
     turnPreviews,
     running,
     runtimePhase,
+    sceneTask,
     jobs: Object.values(jobs),
     attaching,
     attachmentReplaced,

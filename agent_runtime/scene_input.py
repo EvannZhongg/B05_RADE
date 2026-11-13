@@ -43,10 +43,8 @@ def read_scene_input(input_directory: Path, filename: str) -> bytes:
     return path.read_bytes()
 
 
-def prepare_scene_input(input_directory: Path, filename: object, files: Workspace) -> SceneInput:
+def prepare_scene_input(input_directory: Path, filename: str, files: Workspace) -> SceneInput:
     """Build user message text and retain the exact scene input for file tools."""
-    if not isinstance(filename, str):
-        raise ValueError("user_turn.scene_input must be a scene filename")
     data = read_scene_input(input_directory, filename)
     state = SceneState(data.decode("utf-8"))
     source_path = f"scenes/{uuid4().hex}/{filename}"

@@ -22,7 +22,7 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 9 as const,
+  protocol_version: 10 as const,
   session_id: 'abc12345-0000',
   provider: 'deepseek',
   model: 'deepseek/deepseek-chat',
@@ -289,7 +289,7 @@ describe('reducer', () => {
     });
     state = reducer(state, {
       type: 'message',
-      message: { type: 'turn_completed', turn_id: 't1', usage: null },
+      message: { type: 'scene_task_completed', turn_id: 't1', task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null },
     });
     expect(state.entries.at(-1)).toMatchObject({ kind: 'reasoning', settled: true });
 
@@ -366,7 +366,7 @@ describe('reducer', () => {
     expect(reducer(state, { type: 'submit', turnId: 't2', text: 'continue' }).usage)
       .toEqual(state.usage);
     expect(reducer(state, {
-      type: 'message', message: { type: 'user_turn_received', turn_id: 't2' },
+      type: 'message', message: { type: 'scene_task_received', turn_id: 't2' },
     }).usage).toEqual(state.usage);
     const messages: Incoming[] = [
       { type: 'provider_changed', provider: 'next', model: 'next/model' },
@@ -461,7 +461,7 @@ describe('reducer', () => {
     });
     state = reducer(state, {
       type: 'message',
-      message: { type: 'turn_cancelled', turn_id: 't1' },
+      message: { type: 'scene_task_cancelled', turn_id: 't1', task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'cancelled', elapsed_seconds: 1 } },
     });
     expect(state.status).toBe('idle');
     expect(state.entries.at(-1)).toMatchObject({ text: 'Cancelled.' });
@@ -477,8 +477,8 @@ describe('reducer', () => {
     state = reducer(state, {
       type: 'message',
       message: {
-        type: 'turn_failed',
-        turn_id: 't1',
+        type: 'scene_task_failed',
+        turn_id: 't1', task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'failed', elapsed_seconds: 1, error: { type: 'TestError', message: 'failed', details: {} } },
         error: { type: 'ValueError', message: 'boom', details: {} },
       },
     });
@@ -496,8 +496,8 @@ describe('reducer', () => {
     state = reducer(state, {
       type: 'message',
       message: {
-        type: 'turn_failed',
-        turn_id: 't1',
+        type: 'scene_task_failed',
+        turn_id: 't1', task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'failed', elapsed_seconds: 1, error: { type: 'TestError', message: 'failed', details: {} } },
         error: { type: 'RuntimeError', message: 'startup failed', details: {} },
       },
     });

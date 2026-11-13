@@ -1,4 +1,4 @@
-import type { CacheUsage, ContextWindow, PlanSnapshot, SessionItem, SessionSummary } from "@rade/protocol";
+import type { CacheUsage, ContextWindow, PlanSnapshot, SceneTask, SessionItem, SessionSummary } from "@rade/protocol";
 import type { SettingsSnapshot } from "@rade/protocol/internal";
 
 export type { SessionItem, SessionSummary };
@@ -11,6 +11,7 @@ export type Session = {
   cache_usage?: CacheUsage | null;
   event_sequence?: number;
   plan?: PlanSnapshot | null;
+  scene_task?: SceneTask | null;
 };
 export type SessionSearchMatch = SessionSummary & {
   item_index: number;

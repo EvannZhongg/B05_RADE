@@ -117,7 +117,7 @@ Runtime 将 `HostCommandExecutor` 注入 `ToolExecutionContext`。Shell 和命�
 
 Session 在应用普通模型和压缩事件时累计 `CacheUsage`，只计入同时报告输入和缓存读取 token 的调用，包括格式校验失败的压缩尝试；记忆调用单独记录，不计入该口径。会话缓存命中率为 `Σcache_read_tokens / Σinput_tokens`，Journal 重载时恢复，跨 Turn、模型与工作区切换保持累计。
 
-每次调用落盘后，`ModelCompletedEvent` 经 Bridge 推送本次用量和会话累计快照，`CompressionCompletedEvent` 只推送会话累计缓存快照，两个前端立即更新，无需等待工具执行、压缩重试或 Turn 结束。`runtime_state.cache_usage` 与 GUI 历史读取提供相同累计快照，事件重放不会重复计数。Bridge 的 `turn_completed.usage` 表示最后一次普通模型调用的用量，不是整个 Turn 的累计用量。
+每次调用落盘后，`ModelCompletedEvent` 经 Bridge 推送本次用量和会话累计快照，`CompressionCompletedEvent` 只推送会话累计缓存快照，两个前端立即更新，无需等待工具执行、压缩重试或 Turn 结束。`runtime_state.cache_usage` 与 GUI 历史读取提供相同累计快照，事件重放不会重复计数。Bridge 的 `scene_task_completed.usage` 表示最后一次普通模型调用的用量，不是整个 Turn 的累计用量。
 
 `ModelProvider` 共享消息序列化、模型上限缓存和可取消的流读取。原生 OpenAI 模型的输入和输出上限来自 `providers/openai_models.py` 的本地资料，覆盖经官方模型页核验的规范模型名。Runtime 从总上下文窗口扣除输出预留。token 估算在本地使用 `tiktoken` 和随包词表，工具 schema 按完整 JSON 计入，加密推理按服务端 usage 计入。清单外的 OpenAI 模型（含日期快照和别名）需要显式配置 `max_context_tokens`。未知别名和上游尚未公布 tokenizer 映射的 GPT-6 使用 `cl100k_base` 做本地估算。资料表与词表随软件发布维护。
 

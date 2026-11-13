@@ -10,7 +10,7 @@
 RuntimeHost
 ├── SessionRuntimeController   运行、Session、Provider 与计划
 ├── ExecutionPlaneManager     Agent、Tool、MCP 连接、Memory、Job 等原子装配
-└── TurnRunner                turn、steer、cancel 与结束结果
+└── SceneTaskRunner                turn、steer、cancel 与结束结果
 ```
 
 常驻 Bridge 为每个通道创建独立 `RuntimeHost`，在进程内共享 `RuntimeServices` 提供的环境重载与设置读取。各 Host 分别关闭自己的执行面和 Journal。
@@ -27,7 +27,7 @@ RuntimeHost
 - 已装配的 Agent（含其 Tool）与执行路由
 - Memory、MCP Client Manager、后台 Job 和上下文窗口
 
-`ExecutionPlaneManager.ensure()` 在首个 `user_turn` 到来时延迟装配。复用条件是运行、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
+`ExecutionPlaneManager.ensure()` 在首个 `scene_task_start` 到来时延迟装配。复用条件是运行、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
 
 空闲时可调用 `RuntimeHost.refresh_runtime()` 显式强制重新装配，即使上述输入未变化也会重建执行面，重新读取 Prompt、Skill、Plugin Agent，并重连 MCP、重新发现工具。该操作保留当前 Session、Journal 和 Plan，不调用模型、不创建 Turn；结果通过 `starting → idle/failed` 反馈。装配失败不会发布半成品，可修正后再次刷新；旧执行面关闭后的失败不恢复旧资源。正常 Turn 仍沿用原有变更检测。
 
@@ -89,13 +89,14 @@ stdio 的相对 cwd 基于运行文件目录解析，未配置时使用该目录
 
 切换 Session 时先准备目标会话并取得 Journal 写入权，再由 `RuntimeHost` 释放原执行面的会话资源并提交新绑定。目标准备失败不会释放原会话的 Journal、计划或执行状态；重新选择当前 Session 则复用已持有的 Journal 写者。
 
-`TurnRunner` 保证一个 Host 同时只有一个活动 Turn，并统一处理：
+`SceneTaskRunner` 保证一个 Host 同时只有一个活动场景任务，并统一处理：
 
 - 尚在排队或已经运行的 steer
 - 排队取消、活动取消和 Host shutdown
 - Runtime phase 回调
-- 成功、取消、失败以及启动阶段失败的结构化结果
-- 成功 Turn 后的长期记忆 reconcile
+- 运行基线和反思 Turn，从本次实验选出期望值最高的合法分配
+- 原子写入 `output/rethink/<输入文件名>`，将任务终态写入 Session Journal
+- 成功交付后的长期记忆 reconcile
 
 `RuntimeCallbacks` 是 Runtime 对宿主的窄接口，用于发布事件、phase、计划与 MCP 状态，以及请求授权或向用户提问。
 
@@ -197,7 +198,7 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `execution_plane.py` | 一次原子装配的资源容器 |
 | `plane_manager.py` | Execution Plane 创建、复用、失效与关闭 |
 | `session_controller.py` | 运行、Session、Provider 与计划绑定 |
-| `turn_runner.py` | Turn、steer、cancel 和结果 |
+| `scene_task_runner.py` | Turn、steer、cancel 和结果 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
 | `config.py` | 配置目录初始化、Provider 与 Prompt 读取 |
 | `settings.py` | 配置快照、校验、写入和 fingerprint |

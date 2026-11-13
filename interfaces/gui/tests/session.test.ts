@@ -61,7 +61,7 @@ describe("SessionSocket synchronization", () => {
       sessionId: "occupied", attachmentId: "page", onMessage, onClose, onError: vi.fn(),
     });
     socket.send({ type: "provider_set", provider: "second" });
-    const pending = socket.sendUserTurn({ type: "user_turn", turn_id: "t1", text: "keep draft" });
+    const pending = socket.sendSceneTask({ type: "scene_task_start", turn_id: "t1", scene_input: "scene1_1.json" });
     const rejected = expect(pending).rejects.toThrow("already in use");
     const failed = FakeWebSocket.latest;
     failed.open();
@@ -77,10 +77,10 @@ describe("SessionSocket synchronization", () => {
     const next = new SessionSocket({
       sessionId: "available", attachmentId: "page", onMessage, onClose, onError: vi.fn(),
     });
-    next.send({ type: "user_turn", turn_id: "t2", text: "next" });
+    next.send({ type: "scene_task_start", turn_id: "t2", scene_input: "scene1_1.json" });
     FakeWebSocket.latest.open();
     FakeWebSocket.latest.receive(snapshot);
-    expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message).type)).toEqual(["open_session", "user_turn"]);
+    expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message).type)).toEqual(["open_session", "scene_task_start"]);
   });
 
   it("sends open_session first and holds commands until runtime_state", () => {
@@ -92,7 +92,7 @@ describe("SessionSocket synchronization", () => {
       onClose: () => {},
       onError: () => {},
     });
-    socket.send({ type: "user_turn", turn_id: "turn-1", text: "hello" });
+    socket.send({ type: "scene_task_start", turn_id: "turn-1", scene_input: "scene1_1.json" });
 
     FakeWebSocket.latest.open();
     expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message))).toEqual([{
@@ -102,7 +102,7 @@ describe("SessionSocket synchronization", () => {
     }]);
 
     FakeWebSocket.latest.receive({
-      type: "session_ready", protocol_version: 9,
+      type: "session_ready", protocol_version: 10,
       session_id: "session-1",
       provider: "default",
       model: "test/model",
@@ -114,9 +114,9 @@ describe("SessionSocket synchronization", () => {
     FakeWebSocket.latest.receive(snapshot);
     expect(received).toEqual(["session_ready", "runtime_state"]);
     expect(FakeWebSocket.latest.sent.map((message) => JSON.parse(message))[1]).toEqual({
-      type: "user_turn",
+      type: "scene_task_start",
       turn_id: "turn-1",
-      text: "hello",
+      scene_input: "scene1_1.json",
     });
   });
 
@@ -129,10 +129,10 @@ describe("SessionSocket synchronization", () => {
       onError: () => {},
     });
     const confirmed = vi.fn();
-    const delivery = socket.sendUserTurn({
-      type: "user_turn",
+    const delivery = socket.sendSceneTask({
+      type: "scene_task_start",
       turn_id: "turn-1",
-      text: "edited prompt",
+      scene_input: "scene1_1.json",
     }).then(confirmed);
 
     FakeWebSocket.latest.open();
@@ -141,7 +141,7 @@ describe("SessionSocket synchronization", () => {
     expect(confirmed).not.toHaveBeenCalled();
 
     FakeWebSocket.latest.receive({
-      type: "user_turn_received",
+      type: "scene_task_received",
       turn_id: "turn-1",
     });
     await delivery;
@@ -157,10 +157,10 @@ describe("SessionSocket synchronization", () => {
       onError: () => {},
     });
     const consumed = vi.fn();
-    const delivery = socket.sendUserTurn({
-      type: "user_turn",
+    const delivery = socket.sendSceneTask({
+      type: "scene_task_start",
       turn_id: "turn-1",
-      text: "keep this prompt",
+      scene_input: "scene1_1.json",
     }).then(consumed);
 
     FakeWebSocket.latest.open();
@@ -259,7 +259,7 @@ describe("SessionSocket synchronization", () => {
     socket.send({ type: "provider_set", provider: "second" });
     FakeWebSocket.latest.open();
     FakeWebSocket.latest.receive({ ...snapshot, replayed: true, event_sequence: 2 });
-    FakeWebSocket.latest.receive({ type: "turn_completed", turn_id: "old-turn", usage: null, replayed: true });
+    FakeWebSocket.latest.receive({ type: "scene_task_completed", turn_id: "old-turn", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null, replayed: true });
     expect(FakeWebSocket.latest.sent).toHaveLength(1);
     expect(rejected).not.toHaveBeenCalled();
 
@@ -280,13 +280,13 @@ describe("SessionSocket synchronization", () => {
     });
     FakeWebSocket.latest.open();
     FakeWebSocket.latest.receive(snapshot);
-    socket.send({ type: "user_turn", turn_id: "t1", text: "hello" });
+    socket.send({ type: "scene_task_start", turn_id: "t1", scene_input: "scene1_1.json" });
     socket.send({ type: "provider_set", provider: "second" });
     expect(rejected).toHaveBeenCalledWith("provider_set");
     expect(FakeWebSocket.latest.sent).toHaveLength(2);
 
     FakeWebSocket.latest.receive({
-      type: "turn_completed", turn_id: "t1", usage: null,
+      type: "scene_task_completed", turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null,
       runtime: { ...snapshot, phase: "idle" },
     });
     socket.send({ type: "provider_set", provider: "second" });

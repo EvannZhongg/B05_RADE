@@ -65,13 +65,13 @@ describe("process folding", () => {
       cache_read_tokens: 80, cache_write_tokens: null,
     };
     expect(applyMessage([], {
-      type: "turn_completed", turn_id: "t1", usage,
+      type: "scene_task_completed", turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage,
     }).cacheUsage).toBeUndefined();
     expect(applyMessage([], {
-      type: "turn_completed", turn_id: "t2", usage: null,
+      type: "scene_task_completed", turn_id: "t2", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null,
     }).cacheUsage).toBeUndefined();
     expect(applyMessage([], {
-      type: "user_turn_received", turn_id: "t3",
+      type: "scene_task_received", turn_id: "t3",
     }).cacheUsage).toBeUndefined();
     expect(applyMessage([], {
       type: "assistant_delta", turn_id: "t3", text: "working", model_call_index: 1,
@@ -105,7 +105,7 @@ describe("process folding", () => {
     expect(turnProcessPartIndexes(types.map((type) => ({ type })))).toEqual(expected);
   });
 
-  it.each(["turn_completed", "turn_cancelled", "turn_failed"] as const)(
+  it.each(["scene_task_completed", "scene_task_cancelled", "scene_task_failed"] as const)(
     "keeps an earlier answer visible through job continuation, %s and checkpoint replay",
     (type) => {
       const firstAnswer: Incoming[] = [
@@ -135,11 +135,11 @@ describe("process folding", () => {
         expect(visibleText(items)).toContain("first answer");
       }
 
-      const terminal: Incoming = type === "turn_failed"
-        ? { type, turn_id: "t1", error: { type: "ProviderError", message: "failed", details: {} } }
-        : type === "turn_completed"
-          ? { type, turn_id: "t1", usage: null }
-          : { type, turn_id: "t1" };
+      const terminal: Incoming = type === "scene_task_failed"
+        ? { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'failed', elapsed_seconds: 1, error: { type: "ProviderError", message: "failed", details: {} } }, error: { type: "ProviderError", message: "failed", details: {} } }
+        : type === "scene_task_completed"
+          ? { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null }
+          : { type, turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'cancelled', elapsed_seconds: 1 } };
       const stored: TranscriptItem[] = [
         { role: "assistant", content: "first answer", reasoning: "initial reasoning" },
         { role: "user", origin: "job_result", content: "background report" },
@@ -210,8 +210,8 @@ describe("isTurnActivity", () => {
 
   it("ignores lifecycle messages", () => {
     expect(isTurnActivity({
-      type: "turn_completed",
-      turn_id: "t1",
+      type: "scene_task_completed",
+      turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' },
       usage: null,
     })).toBe(false);
   });
@@ -269,7 +269,7 @@ describe("applyMessage", () => {
 
   it("keeps completion feedback while replacing transcript from a checkpoint", () => {
     const result = applyMessage([], {
-      type: "turn_completed", turn_id: "t1", usage: null,
+      type: "scene_task_completed", turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null,
       transcript: { items: [{ role: "assistant", content: "persisted" }], event_sequence: 20 },
     });
     expect(result.finished).toBe(true);
@@ -576,7 +576,7 @@ describe("applyMessage", () => {
   it("settles open text and reports a cancelled turn", () => {
     const { items, feedback, finished } = fold([
       { type: "assistant_delta", turn_id: "t1", text: "partial", model_call_index: 1 },
-      { type: "turn_cancelled", turn_id: "t1" },
+      { type: "scene_task_cancelled", turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'cancelled', elapsed_seconds: 1 } },
     ]);
 
     expect(items).toEqual([
@@ -604,8 +604,8 @@ describe("applyMessage", () => {
   it("reports a failed turn as a persistent alert", () => {
     const { feedback, finished } = fold([
       {
-        type: "turn_failed",
-        turn_id: "t1",
+        type: "scene_task_failed",
+        turn_id: "t1", task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'failed', elapsed_seconds: 1, error: { type: 'TestError', message: 'failed', details: {} } },
         error: { type: "ContextWindowExceededError", message: "too long", details: {} },
       },
     ]);
@@ -624,7 +624,7 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 9 as const,
+        protocol_version: 10 as const,
         session_id: "s1",
         provider: "test",
         model: "m",

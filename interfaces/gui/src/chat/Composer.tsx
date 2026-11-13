@@ -70,6 +70,8 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
       />}
     </div>
     <div className="composer">
+      {runtime.sceneTask?.status === "completed" && <p role="status">{runtime.sceneTask.output_path} · 期望值 {runtime.sceneTask.expected_value.toPrecision(8)}</p>}
+      {runtime.sceneTask?.status === "interrupted" && <p role="status">{runtime.sceneTask.error.message}</p>}
       <label className="json-file-row">
         <FileJson size={16} aria-hidden="true" />
         <select className="json-picker" aria-label="选择 input 场景" value={filename} onFocus={() => setListRevision((revision) => revision + 1)} onChange={(event) => {

@@ -10,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from agent_core import JsonlSessionStore, SessionInUseError, message_to_dict, plan_snapshot_to_dict
 from agent_core.session_paths import validate_session_id
 from agent_core.usage import cache_usage_to_dict
+from agent_runtime.scene_task_runner import latest_scene_task
 from agent_runtime.settings import SettingsStore
 from interfaces.bridge.protocol import (
     attachment_replaced_message,
@@ -27,7 +28,7 @@ from interfaces.session_host import (
 # is excluded because the server validates the run identifier and provider.
 RELAYED_MESSAGE_TYPES = frozenset(
     {
-        "user_turn",
+        "scene_task_start",
         "user_steer",
         "provider_set",
         "runtime_refresh",
@@ -144,6 +145,7 @@ def create_sessions_router(
                     "context_window": None,
                     "cache_usage": cache_usage_to_dict(session.cache_usage),
                     "event_sequence": 0,
+                    "scene_task": latest_scene_task(session, recover=True),
                     "plan": (
                         plan_snapshot_to_dict(session.plan)
                         if session.plan is not None

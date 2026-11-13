@@ -174,10 +174,10 @@ export function applyMessage(
     case "compression_completed":
       return { items, cacheUsage: message.cache_usage };
 
-    case "turn_completed":
+    case "scene_task_completed":
       return { items, finished: true };
 
-    case "turn_cancelled":
+    case "scene_task_cancelled":
       return {
         items: settle(items),
         finished: true,
@@ -188,7 +188,8 @@ export function applyMessage(
         },
       };
 
-    case "turn_failed":
+    case "scene_task_timed_out":
+    case "scene_task_failed":
     case "fatal":
       return {
         items: settle(items),

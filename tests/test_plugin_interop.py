@@ -111,9 +111,9 @@ class PluginInteropTest(BridgeTestCase):
         ])
         (self.root / "sample.py").write_text("print('hello')\n", encoding="utf-8")
         bridge, stdout = self.open()
-        bridge.run_turn({"turn_id": "review", "text": "Use the code review skill."})
+        bridge.run_scene_task({"turn_id": "review", "scene_input": "scene1_1.json"})
         messages = emitted(stdout)
-        completed = [message for message in messages if message["type"] == "turn_completed"]
+        completed = [message for message in messages if message["type"] == "scene_task_completed"]
         self.assertEqual(len(completed), 1, messages)
         self.assertEqual(len(self.main.requests), 6)
         child_requests = self.main.requests[2:5]
@@ -138,8 +138,8 @@ class PluginInteropTest(BridgeTestCase):
         self.write_mcp(other=other)
         self.main = MockProvider(["done", "reviewed", "reviewed without MCP"])
         bridge, stdout = self.open()
-        bridge.run_turn({"turn_id": "instructions", "text": "Review the workspace."})
-        self.assertTrue(any(message["type"] == "turn_completed" for message in emitted(stdout)))
+        bridge.run_scene_task({"turn_id": "instructions", "scene_input": "scene1_1.json"})
+        self.assertTrue(any(message["type"] == "scene_task_completed" for message in emitted(stdout)))
         plane = bridge.host.planes.current
         result = plane.agent._tools.execute(ToolCall(
             "review", "subagent", {"role": "review-kit:reviewer", "task": "Review"},

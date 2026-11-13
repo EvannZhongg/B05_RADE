@@ -8,6 +8,7 @@ build/
 .env
 /provider_config.json
 /.RADE/
+/output/
 tmp/
 node_modules/
 interfaces/tui/dist/

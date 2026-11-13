@@ -19,14 +19,13 @@ npm pack --workspace @rade/client
 npm install /path/to/rade-protocol-0.1.0.tgz /path/to/rade-client-0.1.0.tgz
 ```
 
-Run [`examples/chat.mjs`](examples/chat.mjs) with a prompt. The example
-uses the installed command on PATH, checks the advertised protocol major, waits
-for the initial Runtime snapshot and cancels unanswered
-questions. Real frontends should display those interactions and send the user's
-answer. Model turns require configured provider credentials.
+Run [`examples/scene.mjs`](examples/scene.mjs) with a scene filename from the
+working directory's `input/` folder. The example waits for the initial Runtime
+snapshot and prints the exported result path. The `rethink` task uses the
+configured provider.
 
 ```sh
-node node_modules/@rade/client/examples/chat.mjs "Hello"
+node node_modules/@rade/client/examples/scene.mjs scene1_1.json
 ```
 
 `new BridgeClient(options)` starts the process. Options:
@@ -57,8 +56,8 @@ reconstructing the Agent or disconnecting MCP.
 client.send({ type: 'open_session', session_id: null }, 'chat-a');
 client.send({ type: 'open_session', session_id: null }, 'chat-b');
 // After each channel's initial runtime_state:
-client.send({ type: 'user_turn', turn_id: 'turn-1', text: 'Inspect A' }, 'chat-a');
-client.send({ type: 'user_turn', turn_id: 'turn-1', text: 'Inspect B' }, 'chat-b');
+client.send({ type: 'scene_task_start', turn_id: 'turn-1', scene_input: 'scene1_1.json' }, 'chat-a');
+client.send({ type: 'scene_task_start', turn_id: 'turn-1', scene_input: 'scene1_2.json' }, 'chat-b');
 client.cancel('turn-1', 'chat-a');
 client.closeChannel('chat-a'); // chat-b and the process continue.
 ```

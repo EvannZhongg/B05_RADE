@@ -44,14 +44,16 @@ function handleMessage(message) {
   if (message.type === 'input_scenes_listed') {
     assert.deepEqual(message.filenames, ['scene1_1.json']);
     stage = 'complete';
-    client.send({ type: 'user_turn', turn_id: 'complete', scene_input: 'scene1_1.json' }, 'main');
+    client.send({ type: 'scene_task_start', turn_id: 'complete', scene_input: 'scene1_1.json' }, 'main');
   }
-  if (message.type === 'user_turn_received' && message.turn_id === 'complete') {
+  if (message.type === 'scene_task_received' && message.turn_id === 'complete') {
     client.send({ type: 'user_steer', turn_id: 'complete', steer_id: 'steer-1', text: 'Use this answer' }, 'main');
   }
-  if (message.type === 'turn_completed') {
+  if (message.type === 'scene_task_completed') {
     assert.equal(stage, 'complete');
     assert.equal(message.turn_id, 'complete');
+    assert.equal(message.task.mode, 'rethink');
+    assert.equal(message.task.expected_value, 33.875);
     assert.ok(message.transcript.items.some(item => item.role === 'assistant' && item.content === '完成🙂'));
     assert.ok(messages.some(item => item.type === 'user_steer_applied' && item.steer_id === 'steer-1'));
     const input = message.transcript.items.find(item => item.role === 'user').content;
@@ -66,19 +68,19 @@ function handleMessage(message) {
     assert.equal(features.V.total_value, 37);
     sourcePath = features.source_path;
     stage = 'cancel';
-    client.send({ type: 'user_turn', turn_id: 'cancel', text: 'Wait for cancellation' }, 'main');
+    client.send({ type: 'scene_task_start', turn_id: 'cancel', scene_input: 'scene1_1.json' }, 'main');
     client.cancel('cancel', 'main');
   }
-  if (message.type === 'turn_cancelled') {
+  if (message.type === 'scene_task_cancelled') {
     assert.equal(message.turn_id, 'cancel');
     assert.equal(message.runtime.phase, 'idle');
     assert.ok(message.transcript.items.length > 0);
     stage = 'failure';
     client.send({
-      type: 'user_turn', turn_id: 'failure', scene_input: 'scene1_2.json',
+      type: 'scene_task_start', turn_id: 'failure', scene_input: 'scene1_2.json',
     }, 'main');
   }
-  if (message.type === 'turn_failed') {
+  if (message.type === 'scene_task_failed') {
     assert.equal(stage, 'failure');
     assert.equal(message.turn_id, 'failure');
     assert.equal(typeof message.error.message, 'string');
@@ -108,6 +110,7 @@ assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: clien
 assert.deepEqual(problems, []);
 assert.equal(await readFile(`.RADE/runs/${ready.session_id}/files/${sourcePath}`, 'utf8'), jsonText);
 assert.equal(result.code, 0);
+assert.deepEqual(JSON.parse(await readFile('output/rethink/scene1_1.json', 'utf8')), { allocation: [1, 0, 1] });
 assert.equal(messages.filter(message => message.type === 'model_completed').length, 2);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));
 assert.ok(messages.some(message => message.type === 'tool_result' && message.name === 'shell' && message.ok));
@@ -119,7 +122,7 @@ for (const message of messages) {
 }
 for (const turn of ['complete', 'cancel', 'failure']) {
   const turnEvents = messages.filter(message => message.turn_id === turn);
-  assert.equal(turnEvents[0].type, 'user_turn_received');
-  assert.equal(turnEvents.filter(message => ['turn_completed', 'turn_cancelled', 'turn_failed'].includes(message.type)).length, 1);
+  assert.equal(turnEvents[0].type, 'scene_task_received');
+  assert.equal(turnEvents.filter(message => ['scene_task_completed', 'scene_task_cancelled', 'scene_task_failed'].includes(message.type)).length, 1);
 }
 console.log(JSON.stringify({ session_id: ready.session_id, events: messages.length }));

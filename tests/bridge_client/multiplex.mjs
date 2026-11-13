@@ -1,6 +1,11 @@
 // Installed SDK + real Bridge: one process, independent runtime channels.
 import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
+
+await mkdir('input', { recursive: true });
+for (const name of ['scene1_1.json', 'scene1_2.json', 'scene1_3.json']) {
+  await writeFile(`input/${name}`, '{"P":[[0.5,0],[0.5,1]],"v":[10,3]}');
+}
 import { BridgeClient } from '@rade/client';
 
 const queues = new Map();
@@ -45,7 +50,7 @@ async function until(channelId, kind) {
       waiters.set(channelId, { resolve, reject });
     });
     assert.notEqual(event.type, 'fatal', JSON.stringify(event));
-    assert.notEqual(event.type, 'turn_failed', JSON.stringify(event));
+    assert.notEqual(event.type, 'scene_task_failed', JSON.stringify(event));
     assert.notEqual(event.type, 'session_open_failed', JSON.stringify(event));
     if (event.type === kind) return event;
   }
@@ -63,13 +68,13 @@ try {
   open('one');
   open('two');
   await Promise.all([until('one', 'runtime_state'), until('two', 'runtime_state')]);
-  client.send({ type: 'user_turn', turn_id: 'same', text: 'blocked' }, 'one');
+  client.send({ type: 'scene_task_start', turn_id: 'same', scene_input: 'scene1_1.json' }, 'one');
   assert.equal((await until('one', 'assistant_delta')).text, 'waiting');
-  client.send({ type: 'user_turn', turn_id: 'same', text: 'second' }, 'two');
-  const second = await until('two', 'turn_completed');
-  assert.ok(second.transcript.items.some(item => item.content === 'reply:second'));
+  client.send({ type: 'scene_task_start', turn_id: 'same', scene_input: 'scene1_2.json' }, 'two');
+  const second = await until('two', 'scene_task_completed');
+  assert.ok(second.transcript.items.some(item => item.content === 'reply:scene1_2.json'));
   client.cancel('same', 'one');
-  const cancelled = await until('one', 'turn_cancelled');
+  const cancelled = await until('one', 'scene_task_cancelled');
   client.send({ type: 'session_snapshot' }, 'one');
   const original = await until('one', 'session_ready');
   const snapshot = await until('one', 'runtime_state');
@@ -79,16 +84,16 @@ try {
   client.closeChannel('one');
   await until('one', 'channel_closed');
   assert.equal(processEnded, false);
-  client.send({ type: 'user_turn', turn_id: 'next', text: 'after-close' }, 'two');
-  const continued = await until('two', 'turn_completed');
-  assert.ok(continued.transcript.items.some(item => item.content === 'reply:after-close'));
+  client.send({ type: 'scene_task_start', turn_id: 'next', scene_input: 'scene1_3.json' }, 'two');
+  const continued = await until('two', 'scene_task_completed');
+  assert.ok(continued.transcript.items.some(item => item.content === 'reply:scene1_3.json'));
   for (const channelId of ['one', 'two']) {
     const events = logs.get(channelId).filter(event => event.event_sequence !== undefined);
     assert.deepEqual(events.map(event => event.event_sequence), events.map((_, index) => index + 1));
   }
   open('one');
   const reopened = await until('one', 'session_ready');
-  assert.ok(reopened.transcript.items.some(item => item.role === 'user' && item.content === 'blocked'));
+  assert.ok(reopened.transcript.items.some(item => item.role === 'user' && JSON.parse(item.content).filename === 'scene1_1.json'));
   assert.equal((await until('one', 'runtime_state')).phase, 'inactive');
   assert.equal((await client.shutdown()).code, 0);
   assert.deepEqual(errors, []);

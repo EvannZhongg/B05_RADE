@@ -20,7 +20,7 @@ vi.mock("../src/session", () => ({
   SessionSocket: class {
     constructor(options: SessionSocketOptions) { connection = options; }
     send(message: Outgoing) { sent.push(message); }
-    async sendUserTurn(message: Outgoing) { sent.push(message); }
+    async sendSceneTask(message: Outgoing) { sent.push(message); }
     close() {}
   },
 }));
@@ -94,7 +94,7 @@ describe("Scene composer", () => {
     await receive(snapshot);
     await act(async () => run().click());
     expect(sent.at(-1)).toEqual({
-      type: "user_turn", turn_id: "turn-1",
+      type: "scene_task_start", turn_id: "turn-1",
       scene_input: "scene1_1.json",
     });
   });
@@ -109,7 +109,7 @@ describe("Scene composer", () => {
     await receive(snapshot);
     await act(async () => run().click());
     expect(sent).toEqual([{
-      type: "user_turn", turn_id: "turn-1",
+      type: "scene_task_start", turn_id: "turn-1",
       scene_input: "scene2_1.json",
     }]);
   });

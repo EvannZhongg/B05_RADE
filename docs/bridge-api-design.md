@@ -20,7 +20,7 @@ alone assembles execution planes; no new execution path is needed.
 | `open_session`, `session_ready`, `session_open_failed` | Channel Bridge + SessionRuntimeController | Open a lightweight control plane, acquire the journal writer, restore the run and its provider, publish ready then the initial runtime snapshot. Writer conflicts come back as recoverable `SessionInUseError`. Public. |
 | `session_snapshot` | Channel Bridge | Re-publish an already open channel's ready/snapshot pair without rebinding the Session, rebuilding the Agent or disconnecting MCP. Public. |
 | `runtime_state`, embedded `runtime` | Channel Bridge projection of Runtime callbacks | Authoritative state; the initial standalone snapshot is the synchronization barrier. Public. |
-| `user_turn`, `user_turn_received`, model/tool/context/plan/job events, terminal events | Channel Bridge + TurnRunner/Core | The transport acknowledges and enqueues; the channel thread runs turns sequentially. Public; execution stays in the Runtime/Core. |
+| `scene_task_start`, `scene_task_received`, model/tool/context/plan/job events, terminal events | Channel Bridge + SceneTaskRunner/Core | The transport acknowledges and enqueues; the channel thread runs scene tasks sequentially. Public; execution stays in the Runtime/Core. |
 | `user_steer`, `cancel`, question responses | Channel Bridge routing → existing Runtime controls | Routed while a turn runs; IDs address turns or outstanding interactions and are unique only within their channel. Public. |
 | `provider_set`, session listing/history | Channel serve loop → Runtime | Serialized with turns. Public. |
 | `settings_*` | Channel Bridge → Runtime SettingsStore | First-party configuration editor schema. Internal; not a stable configuration API. |
@@ -33,7 +33,7 @@ The transport thread decodes each newline-delimited packet and routes
 question responses, steer and cancel immediately; turns and the
 remaining commands queue behind the channel's serve loop. Channels execute
 concurrently, so one channel waiting on HTTP, MCP startup or user input does not
-block another. `user_turn_received` is receipt, not successful startup, and
+block another. `scene_task_received` is receipt, not successful startup, and
 `idle` may precede the terminal event; clients must not reconstruct completion
 from phase alone.
 

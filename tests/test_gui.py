@@ -72,10 +72,10 @@ class FakeBridge:
         self.sent.append(message)
         if message["type"] == "open_session":
             self.state.update(provider=message.get("provider"))
-        elif message["type"] == "user_turn":
+        elif message["type"] == "scene_task_start":
             self.state.update(phase="starting", turn_id=message["turn_id"])
-            self.items.append({"role": "user", "content": message["text"]})
-            if not self._replies.get("user_turn"):
+            self.items.append({"role": "user", "content": message["scene_input"]})
+            if not self._replies.get("scene_task_start"):
                 self.emit(dict(self.state))
         elif message["type"] == "cancel":
             self.cancel_turn()
@@ -100,11 +100,11 @@ class FakeBridge:
                 self.state["plan"] = message["plan"]
             elif kind == "assistant_message":
                 self.items.append({"role": "assistant", "content": message["content"]})
-            elif kind in {"turn_completed", "turn_failed", "turn_cancelled", "fatal"}:
+            elif kind in {"scene_task_completed", "scene_task_failed", "scene_task_cancelled", "fatal"}:
                 self.state.update(phase="failed" if kind == "fatal" else "idle", turn_id=None)
             self._messages.put_nowait(self._stream.publish(
                 message, state=None if kind == "session_open_failed" else dict(self.state),
-                items=list(self.items) if kind in {"session_ready", "turn_completed", "turn_failed", "turn_cancelled"} else None,
+                items=list(self.items) if kind in {"session_ready", "scene_task_completed", "scene_task_failed", "scene_task_cancelled"} else None,
             ))
 
     def cancel_turn(self) -> None:
@@ -216,11 +216,11 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
         await runtime.detach(queue, "page")
 
     async def test_client_commands_do_not_change_the_cached_runtime_snapshot(self) -> None:
-        bridge = FakeBridge(replies={"user_turn": [{"type": "assistant_delta", "text": "queued"}]})
+        bridge = FakeBridge(replies={"scene_task_start": [{"type": "assistant_delta", "text": "queued"}]})
         runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         before = dict(runtime.state)
-        runtime.send({"type": "user_turn", "turn_id": "t1", "text": "work"})
+        runtime.send({"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"})
         self.assertEqual(runtime.state, before)
         self.assertEqual(runtime.transcript, {"items": [], "event_sequence": 0})
         self.assertTrue(runtime.running)
@@ -683,7 +683,7 @@ class GuiTest(unittest.TestCase):
     def test_server_builds_open_session_from_browser_session_choices(self) -> None:
         bridge = FakeBridge(replies={
             "open_session": [{"type": "session_ready", "session_id": "resumed"}],
-            "user_turn": [{"type": "bye"}, None],
+            "scene_task_start": [{"type": "bye"}, None],
         })
         with self.client(bridge) as client:
             with client.websocket_connect("/api/session") as socket:
@@ -697,7 +697,7 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(socket.receive_json()["type"], "session_ready")
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(socket.receive_json()["type"], "bye")
 
@@ -708,7 +708,7 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(opening["type"], "open_session")
         self.assertEqual(opening["session_id"], "resumed")
         self.assertEqual(opening["provider"], "second")
-        self.assertEqual(bridge.sent[1]["text"], "hi")
+        self.assertEqual(bridge.sent[1]["scene_input"], "scene1_1.json")
 
     def test_rejects_unconfigured_provider_before_spawning(self) -> None:
         bridge = FakeBridge()
@@ -725,7 +725,7 @@ class GuiTest(unittest.TestCase):
         with self.client(bridge) as client:
             with client.websocket_connect("/api/session") as socket:
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 message = socket.receive_json()
 
@@ -747,8 +747,8 @@ class GuiTest(unittest.TestCase):
         bridge = FakeBridge(
             replies={
                 "open_session": [{"type": "session_ready", "session_id": "s1"}],
-                "user_turn": [
-                    {"type": "turn_completed", "turn_id": "done", "usage": None}
+                "scene_task_start": [
+                    {"type": "scene_task_completed", "turn_id": "done", "usage": None}
                 ],
             }
         )
@@ -759,17 +759,17 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(socket.receive_json()["type"], "session_ready")
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "one"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
-                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+                self.assertEqual(socket.receive_json()["type"], "scene_task_completed")
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t2", "text": "two"}
+                    {"type": "scene_task_start", "turn_id": "t2", "scene_input": "scene1_1.json"}
                 )
-                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+                self.assertEqual(socket.receive_json()["type"], "scene_task_completed")
 
             self.assertEqual(
                 [message["type"] for message in bridge.sent],
-                ["open_session", "user_turn", "user_turn"],
+                ["open_session", "scene_task_start", "scene_task_start"],
             )
             self.assertFalse(bridge.closed)
 
@@ -777,7 +777,7 @@ class GuiTest(unittest.TestCase):
         bridge = FakeBridge(
             replies={
                 "open_session": [{"type": "session_ready", "session_id": "s1"}],
-                "user_turn": [
+                "scene_task_start": [
                     {
                         "type": "assistant_delta",
                         "turn_id": "t1",
@@ -794,7 +794,7 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(first.receive_json()["type"], "session_ready")
                 first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hello"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 # Reading the delta proves the Runtime holds it for a page.
                 self.assertEqual(first.receive_json()["type"], "assistant_delta")
@@ -844,9 +844,9 @@ class GuiTest(unittest.TestCase):
         bridge = FakeBridge(
             replies={
                 "open_session": [{"type": "session_ready", "session_id": "s1"}],
-                "user_turn": [
+                "scene_task_start": [
                     {"type": "assistant_message", "turn_id": "t1", "content": "world"},
-                    {"type": "turn_completed", "turn_id": "t1", "usage": None}
+                    {"type": "scene_task_completed", "turn_id": "t1", "usage": None}
                 ],
             }
         )
@@ -857,14 +857,14 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(socket.receive_json()["type"], "session_ready")
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hello"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(socket.receive_json()["type"], "assistant_message")
-                self.assertEqual(socket.receive_json()["type"], "turn_completed")
+                self.assertEqual(socket.receive_json()["type"], "scene_task_completed")
 
             stored = Session("s1")
             stored.begin_turn("t1")
-            stored.add_item("user", "hello")
+            stored.add_item("user", "scene1_1.json")
             stored.add_item("assistant", "world")
             stored.finish_turn("completed", "t1")
             self.store.append_events("s1", stored.journal)
@@ -875,7 +875,7 @@ class GuiTest(unittest.TestCase):
             # 'ready' and the completion the journal already holds.
             self.assertEqual(
                 [item["content"] for item in session["items"]],
-                ["hello", "world"],
+                ["scene1_1.json", "world"],
             )
             self.assertEqual(session["event_sequence"], 3)
             self.assertEqual(active_sessions[0]["event_sequence"], 3)
@@ -1051,7 +1051,7 @@ class GuiTest(unittest.TestCase):
         bridge = FakeBridge(
             replies={
                 "open_session": [{"type": "session_ready"}],
-                "user_turn": [{"type": "bye"}, None],
+                "scene_task_start": [{"type": "bye"}, None],
             }
         )
         with self.client(bridge) as client:
@@ -1062,13 +1062,13 @@ class GuiTest(unittest.TestCase):
                 socket.send_json({"type": "shutdown"})
                 socket.send_json({"type": "open_session", "session_id": "other", "attachment_id": "page-1"})
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(socket.receive_json()["type"], "bye")
 
         self.assertEqual(
             [message["type"] for message in bridge.sent],
-            ["open_session", "user_turn"],
+            ["open_session", "scene_task_start"],
         )
 
     def test_cancel_is_forwarded_to_the_bridge(
@@ -1080,7 +1080,7 @@ class GuiTest(unittest.TestCase):
                 socket.send_json({"type": "open_session", "session_id": "s1", "attachment_id": "page-1"})
                 self.assertEqual(socket.receive_json()["type"], "session_ready")
                 socket.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 # The fake ends its stream on cancel, as an exiting
                 # bridge would.
@@ -1090,14 +1090,14 @@ class GuiTest(unittest.TestCase):
         self.assertEqual(bridge.cancelled, 1)
         self.assertEqual(
             [m["type"] for m in bridge.sent],
-            ["open_session", "user_turn", "cancel"],
+            ["open_session", "scene_task_start", "cancel"],
         )
 
 
     def test_idle_view_detach_reuses_bridge_for_the_next_turn(self) -> None:
         bridge = FakeBridge(replies={
             "open_session": [{"type": "session_ready", "session_id": "shared"}],
-            "user_turn": [{"type": "turn_completed", "turn_id": "t1", "usage": None}],
+            "scene_task_start": [{"type": "scene_task_completed", "turn_id": "t1", "usage": None}],
         })
         with self.client(bridge) as client:
             with client.websocket_connect("/api/session") as first:
@@ -1110,9 +1110,9 @@ class GuiTest(unittest.TestCase):
                     "after_event": 1,
                 })
                 self.assertEqual(second.receive_json()["type"], "runtime_state")
-                second.send_json({"type": "user_turn", "turn_id": "t1", "text": "continue"})
-                self.assertEqual(second.receive_json()["type"], "turn_completed")
-            self.assertEqual([m["type"] for m in bridge.sent], ["open_session", "user_turn"])
+                second.send_json({"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"})
+                self.assertEqual(second.receive_json()["type"], "scene_task_completed")
+            self.assertEqual([m["type"] for m in bridge.sent], ["open_session", "scene_task_start"])
             self.assertFalse(bridge.closed)
         self.assertTrue(bridge.closed)
 
@@ -1161,7 +1161,7 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(first.receive_json()["type"], "session_ready")
                 first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(first.receive_json()["phase"], "starting")
 
@@ -1207,7 +1207,7 @@ class GuiTest(unittest.TestCase):
                 )
                 self.assertEqual(first.receive_json()["type"], "session_ready")
                 first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(first.receive_json()["phase"], "starting")
 
@@ -1250,7 +1250,7 @@ class GuiTest(unittest.TestCase):
                 first.send_json({"type": "open_session", "session_id": "shared", "attachment_id": "page-1"})
                 self.assertEqual(first.receive_json()["type"], "session_ready")
                 first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "hi"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 self.assertEqual(first.receive_json()["phase"], "starting")
 
@@ -1262,7 +1262,7 @@ class GuiTest(unittest.TestCase):
                     "text": "done",
                     "model_call_index": 0,
                 },
-                {"type": "turn_completed", "turn_id": "t1", "usage": None},
+                {"type": "scene_task_completed", "turn_id": "t1", "usage": None},
             )
             _wait_for(
                 client,
@@ -1287,12 +1287,12 @@ class GuiTest(unittest.TestCase):
 
             self.assertEqual(state["phase"], "idle")
             self.assertEqual(delta["text"], "done")
-            self.assertEqual(completed["type"], "turn_completed")
+            self.assertEqual(completed["type"], "scene_task_completed")
             self.assertFalse(bridge.closed)
 
         self.assertEqual(
             [message["type"] for message in bridge.sent],
-            ["open_session", "user_turn"],
+            ["open_session", "scene_task_start"],
         )
 
     def test_reconnecting_marks_old_snapshots_as_replay_before_current_state(self) -> None:
@@ -1309,7 +1309,7 @@ class GuiTest(unittest.TestCase):
                     "type": "open_session", "session_id": "shared", "attachment_id": "page-1",
                 })
                 self.assertNotIn("replayed", first.receive_json())
-                first.send_json({"type": "user_turn", "turn_id": "t1", "text": "work"})
+                first.send_json({"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"})
                 _wait_for(client, lambda: len(bridge.sent) == 2)
 
             with client.websocket_connect("/api/session") as second:
@@ -1327,8 +1327,8 @@ class GuiTest(unittest.TestCase):
                 self.assertNotIn("replayed", current)
                 self.assertFalse(bridge.closed)
                 self.assertEqual(bridge.cancelled, 0)
-                bridge.emit({"type": "turn_completed", "turn_id": "t1", "usage": None})
-                self.assertEqual(second.receive_json()["type"], "turn_completed")
+                bridge.emit({"type": "scene_task_completed", "turn_id": "t1", "usage": None})
+                self.assertEqual(second.receive_json()["type"], "scene_task_completed")
 
     def test_replays_a_detached_fatal_then_allows_a_fresh_runtime(self) -> None:
         first = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
@@ -1419,7 +1419,7 @@ class GuiTest(unittest.TestCase):
                 first.send_json({"type": "open_session", "session_id": "one", "attachment_id": "page-1"})
                 self.assertEqual(first.receive_json()["type"], "session_ready")
                 first.send_json(
-                    {"type": "user_turn", "turn_id": "t1", "text": "one"}
+                    {"type": "scene_task_start", "turn_id": "t1", "scene_input": "scene1_1.json"}
                 )
                 _wait_for(client, lambda: len(bridges[0].sent) == 2)
                 self.assertEqual(first.receive_json()["phase"], "starting")
@@ -1432,7 +1432,7 @@ class GuiTest(unittest.TestCase):
                         "session_ready",
                     )
                     second.send_json(
-                        {"type": "user_turn", "turn_id": "t2", "text": "two"}
+                        {"type": "scene_task_start", "turn_id": "t2", "scene_input": "scene1_1.json"}
                     )
                     _wait_for(client, lambda: len(bridges[1].sent) == 2)
                     self.assertEqual(second.receive_json()["phase"], "starting")

@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 
 export type JSONValue =
   | string
@@ -118,6 +118,23 @@ export type BackgroundJob = {
   details: Record<string, string>;
 };
 
+export type SceneTask = {
+  task_id: string;
+  filename: string;
+  mode: 'rethink';
+  scene_digest?: string;
+} & (
+  | { status: 'running' }
+  | { status: 'cancelled'; elapsed_seconds: number }
+  | { status: 'failed' | 'timed_out'; elapsed_seconds: number; error: RuntimeFailure }
+  | { status: 'interrupted'; error: RuntimeFailure }
+  | {
+      status: 'completed'; elapsed_seconds: number; output_path: string;
+      expected_value: number; experiment_id: string;
+      baseline_experiment_id: string; baseline_expected_value: number;
+    }
+);
+
 export type RuntimeState = {
   /**
    * Authoritative execution snapshot. The first snapshot after open_session
@@ -134,6 +151,7 @@ export type RuntimeState = {
   jobs: BackgroundJob[];
   runtime_warnings?: string[];
   plan: PlanSnapshot | null;
+  scene_task?: SceneTask;
 };
 
 /** Local placeholder only; commands still await an authoritative Bridge snapshot. */
@@ -209,7 +227,7 @@ export type Incoming = (
     } & BackgroundJob)
   | { type: 'user_steer_received'; turn_id: string | null; steer_id: string; text: string }
   | { type: 'user_steer_rejected'; turn_id: string | null; steer_id: string; text: string }
-  | { type: 'user_turn_received'; turn_id: string }
+  | { type: 'scene_task_received'; turn_id: string }
   | {
       type: 'user_steer_applied';
       turn_id: string;
@@ -225,9 +243,9 @@ export type Incoming = (
   | { type: 'session_items'; items: SessionItem[] }
   | { type: 'plan_updated'; plan: PlanSnapshot }
   | { type: 'mcp_server_status'; server: string; status: string; tool_count?: number; error?: string }
-  | { type: 'turn_completed'; turn_id: string; usage: Usage | null }
-  | { type: 'turn_cancelled'; turn_id: string }
-  | { type: 'turn_failed'; turn_id: string; error: RuntimeFailure }
+  | { type: 'scene_task_completed'; turn_id: string; task: Extract<SceneTask, { status: 'completed' }>; usage: Usage | null }
+  | { type: 'scene_task_cancelled'; turn_id: string; task: Extract<SceneTask, { status: 'cancelled' }> }
+  | { type: 'scene_task_failed' | 'scene_task_timed_out'; turn_id: string; task: Extract<SceneTask, { status: 'failed' | 'timed_out' }>; error: RuntimeFailure }
   | { type: 'fatal'; error: RuntimeFailure }
   | { type: 'session_open_failed'; session_id: string | null; error: ProtocolError }
 ) & {
@@ -245,8 +263,7 @@ export type Outgoing =
       // Omitted to use the provider selected in the configuration file.
       provider?: string;
     }
-  | { type: 'user_turn'; turn_id: string; text: string }
-  | { type: 'user_turn'; turn_id: string; scene_input: string }
+  | { type: 'scene_task_start'; turn_id: string; scene_input: string }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
   | { type: 'provider_set'; provider: string }
   | { type: 'runtime_refresh' }

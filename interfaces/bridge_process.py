@@ -66,12 +66,13 @@ class BridgeProcess:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    async def spawn(cls, config_directory: Path) -> "BridgeProcess":
+    async def spawn(cls, config_directory: Path, *, cwd: Path | None = None) -> "BridgeProcess":
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "interfaces.bridge",
             "--config-directory", str(config_directory),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
+            cwd=cwd,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             start_new_session=os.name != "nt",
         )

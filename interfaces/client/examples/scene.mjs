@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { BridgeClient } from '@rade/client';
 import { PROTOCOL_VERSION } from '@rade/protocol';
 
-const [text] = process.argv.slice(2);
-if (!text) throw new Error('Usage: chat.mjs <prompt>');
+const [filename] = process.argv.slice(2);
+if (!filename) throw new Error('Usage: scene.mjs <scene-filename>');
 let opened = false;
 let submitted = false;
 const client = new BridgeClient({
@@ -19,16 +19,16 @@ const client = new BridgeClient({
     }
     if (message.type === 'runtime_state' && opened && !submitted) {
       submitted = true;
-      client.send({ type: 'user_turn', turn_id: randomUUID(), text }, 'main');
+      client.send({ type: 'scene_task_start', turn_id: randomUUID(), scene_input: filename }, 'main');
     }
     if (message.type === 'assistant_delta') process.stdout.write(message.text);
-    if (message.type === 'fatal' || message.type === 'turn_failed' || message.type === 'session_open_failed') {
+    if (message.type === 'fatal' || message.type === 'scene_task_failed' || message.type === 'scene_task_timed_out' || message.type === 'session_open_failed') {
       console.error(message.error);
       process.exitCode = 1;
       void client.shutdown();
     }
-    if (message.type === 'turn_completed' || message.type === 'turn_cancelled') {
-      console.log();
+    if (message.type === 'scene_task_completed' || message.type === 'scene_task_cancelled') {
+      if (message.type === 'scene_task_completed') console.log('\n' + message.task.output_path);
       void client.shutdown();
     }
   },

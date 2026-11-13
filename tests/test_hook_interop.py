@@ -70,9 +70,9 @@ class HookInteropTest(BridgeTestCase):
         ])
         bridge, stdout = self.open()
         (bridge.host.sessions.files.path / "sample.txt").write_text("source")
-        bridge.run_turn({"turn_id": "review", "text": "Use hookify"})
+        bridge.run_scene_task({"turn_id": "review", "scene_input": "scene1_1.json"})
         messages = emitted(stdout)
-        self.assertTrue(any(message["type"] == "turn_completed" for message in messages), messages)
+        self.assertTrue(any(message["type"] == "scene_task_completed" for message in messages), messages)
         hook_events = [message for message in messages if message["type"] == "hook_completed"]
         parent_id = bridge.host.sessions.session.session_id
         child_ids = {message["session_id"] for message in hook_events} - {parent_id}
@@ -93,11 +93,11 @@ class HookInteropTest(BridgeTestCase):
             "three",
         ])
         bridge, stdout = self.open()
-        bridge.run_turn({"turn_id": "one", "text": "write"})
+        bridge.run_scene_task({"turn_id": "one", "scene_input": "scene1_1.json"})
         plane = bridge.host.planes.current
         self.assertEqual((bridge.host.sessions.files.path / "project/.env").read_text(), "one")
         self.install_rule(bridge, "block-sensitive-file.json")
-        bridge.run_turn({"turn_id": "two", "text": "write again"})
+        bridge.run_scene_task({"turn_id": "two", "scene_input": "scene1_1.json"})
         self.assertIs(bridge.host.planes.current, plane)
         self.assertEqual((bridge.host.sessions.files.path / "project/.env").read_text(), "one")
         self.assertTrue(any(message["type"] == "tool_result" and message["error"] and message["error"]["type"] == "HookDenied" for message in emitted(stdout)))
@@ -118,21 +118,21 @@ class HookInteropTest(BridgeTestCase):
         bridge, stdout = self.open()
         self.install_rule(bridge, "require-tests.json")
         (bridge.host.sessions.files.path / "test_sample.py").write_text("import unittest\nclass Sample(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n")
-        bridge.run_turn({"turn_id": "test", "text": "test"})
-        self.assertTrue(any(message["type"] == "turn_completed" for message in emitted(stdout)), emitted(stdout))
-        bridge.run_turn({"turn_id": "next", "text": "new work"})
-        failures = [message for message in emitted(stdout) if message["type"] == "turn_failed"]
+        bridge.run_scene_task({"turn_id": "test", "scene_input": "scene1_1.json"})
+        self.assertTrue(any(message["type"] == "scene_task_completed" for message in emitted(stdout)), emitted(stdout))
+        bridge.run_scene_task({"turn_id": "next", "scene_input": "scene1_1.json"})
+        failures = [message for message in emitted(stdout) if message["type"] == "scene_task_failed"]
         self.assertEqual(failures[-1]["error"]["type"], "HookRejectedError")
 
     def test_run_rebinding_loads_definitions_without_turn_state(self):
         self.main = MockProvider(["first", "second"])
         bridge, _ = self.open()
-        bridge.run_turn({"turn_id": "first", "text": "first"})
+        bridge.run_scene_task({"turn_id": "first", "scene_input": "scene1_1.json"})
         plane = bridge.host.planes.current
         first = bridge.host.sessions.session
         bridge.host.open_session(session_id="other")
-        result = bridge.host.run_turn("second", "second")
-        self.assertEqual(result.status, "completed")
+        result = bridge.host.run_scene_task("second", "scene1_1.json", self.root / "input", self.root / "output")
+        self.assertEqual(result.task["status"], "completed")
         self.assertIsNot(bridge.host.planes.current, plane)
         second = bridge.host.sessions.session
         self.assertEqual(len([event for event in first.journal if event.event_type == "hook_finished"]), 2)

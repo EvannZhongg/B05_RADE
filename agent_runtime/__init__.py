@@ -9,12 +9,12 @@ os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 from .host import RuntimeHost
 from .plane_manager import ExecutionPlaneManager
 from .session_controller import SessionRuntimeController
-from .turn_runner import TurnResult, TurnRunner
+from .scene_task_runner import SceneTaskOutcome, SceneTaskRunner
 
 __all__ = [
     "ExecutionPlaneManager",
     "RuntimeHost",
     "SessionRuntimeController",
-    "TurnResult",
-    "TurnRunner",
+    "SceneTaskOutcome",
+    "SceneTaskRunner",
 ]

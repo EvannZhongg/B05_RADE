@@ -6,6 +6,7 @@ import type {
   PlanSnapshot,
   ProtocolError,
   SessionItem,
+  SceneTask,
   SessionSummary,
   SettingsSnapshot,
   Usage,
@@ -55,6 +56,7 @@ export type State = {
   picker: NavigationPicker | null;
   settings: SettingsSnapshot | null;
   turnId: string | null;
+  sceneTask: SceneTask | null;
   usage: Usage | null;
   cacheUsage: CacheUsage | null;
   contextWindow: ContextWindow | null;
@@ -86,6 +88,7 @@ export const initialState: State = {
   picker: null,
   settings: null,
   turnId: initialRuntime.turn_id,
+  sceneTask: null,
   usage: null,
   cacheUsage: initialRuntime.cache_usage,
   contextWindow: initialRuntime.context_window,
@@ -344,6 +347,7 @@ function applyMessage(state: State, message: Incoming): State {
         ...state,
         status,
         turnId: message.turn_id,
+        sceneTask: message.scene_task ?? null,
         contextWindow: message.context_window,
         cacheUsage: message.cache_usage,
         plan: visiblePlan(message.plan),
@@ -478,7 +482,7 @@ function applyMessage(state: State, message: Incoming): State {
     case 'plan_updated':
       return { ...state, plan: visiblePlan(message.plan) };
 
-    case 'user_turn_received':
+    case 'scene_task_received':
     case 'user_steer_received':
       return state;
 
@@ -549,10 +553,10 @@ function applyMessage(state: State, message: Incoming): State {
     case 'compression_completed':
       return { ...state, cacheUsage: message.cache_usage };
 
-    case 'turn_completed':
-      return { ...state, turnId: null, usage: message.usage };
+    case 'scene_task_completed':
+      return { ...state, turnId: null, sceneTask: message.task, usage: message.usage };
 
-    case 'turn_cancelled':
+    case 'scene_task_cancelled':
       return {
         ...state,
         turnId: null,
@@ -567,7 +571,8 @@ function applyMessage(state: State, message: Incoming): State {
         ],
       };
 
-    case 'turn_failed':
+    case 'scene_task_timed_out':
+    case 'scene_task_failed':
       return {
         ...state,
         turnId: null,

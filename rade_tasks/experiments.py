@@ -20,6 +20,7 @@ class ExperimentRecord:
     metrics: dict[str, int | float] | None
     diagnostic: str | None
     result_ref: str | None
+    allocation_digest: str | None
 
 
 def query_experiment(
@@ -28,6 +29,7 @@ def query_experiment(
     experiment = lookup(experiment_id)
     result = asdict(experiment)
     del result["scene_digest"]
+    del result["allocation_digest"]
     if baseline_experiment_id is None:
         return result
 

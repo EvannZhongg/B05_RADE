@@ -60,11 +60,14 @@ with tempfile.TemporaryDirectory() as directory:
                      "main_agent": {"tools": {"read_file": True}}})
     host = RuntimeHost(root)
     host.open_session()
+    inputs = root / "input"
+    inputs.mkdir()
+    (inputs / "scene1_1.json").write_text('{"P":[[0.8]],"v":[10]}', encoding="utf-8")
     turn_start = time.perf_counter()
     try:
         with patch("agent_core.providers.openai_provider.OpenAI", side_effect=client):
-            result = host.run_turn("benchmark", "Reply OK without using tools.")
-        assert result.status == "completed", result
+            result = host.run_scene_task("benchmark", "scene1_1.json", inputs, root / "output")
+        assert result.task["status"] == "completed", result
         provider = host.planes.current.provider
         tools = (ToolDefinition("probe", "Read a file.", {"type": "object", "properties": {"path": {"type": "string"}}}),)
         samples = [provider.count_input_tokens(LLMRequest("Instructions", (Message("user", text),), tools))

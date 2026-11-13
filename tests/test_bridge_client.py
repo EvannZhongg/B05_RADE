@@ -138,6 +138,8 @@ class ExternalBridgeClientTest(unittest.TestCase):
         shutil.copyfile(ROOT / "tests/bridge_client/multiplex.mjs", cls.external / "multiplex.mjs")
 
     def setUp(self):
+        for filename in ("scene1_1.json", "scene1_2.json", "scene1_3.json"):
+            (self.external / "input" / filename).unlink(missing_ok=True)
         self.config = self.external / ".RADE"
         if self.config.exists():
             shutil.rmtree(self.config)
@@ -157,7 +159,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
     def open(self, peer, session_id=None):
         peer.send({"type": "open_session", "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 9)
+        self.assertEqual(ready["protocol_version"], 10)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 
@@ -317,6 +319,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
                 text = next(message["content"] for message in reversed(body["messages"]) if message["role"] == "user")
                 if isinstance(text, list):
                     text = "".join(part.get("text", "") for part in text)
+                text = json.loads(text)["filename"]
                 requests.append(text)
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -330,7 +333,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
                     self.wfile.flush()
 
                 try:
-                    if text == "blocked":
+                    if text == "scene1_1.json":
                         chunk("waiting")
                         released.wait(30)
                     chunk("reply:" + text, "stop")
@@ -365,7 +368,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(json.loads(result.stdout)["reused_process"])
-            self.assertEqual(requests, ["blocked", "second", "after-close"])
+            self.assertEqual(requests, ["scene1_1.json", "scene1_2.json", "scene1_3.json"])
         finally:
             released.set()
             http.shutdown()

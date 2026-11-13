@@ -23,7 +23,7 @@ def strategy(tmp_path, monkeypatch):
         "from pathlib import Path\n"
         "from time import sleep\n"
         "def solve(scene, parameters, *, seed):\n"
-        "    assert scene.P == ((0.5, 0), (0.5, 1)) and scene.v == (10, 3)\n"
+        "    assert scene.P == ((0.8, 0.7), (1, 0)) and scene.v == (10, 10)\n"
         "    assert seed == 42\n"
         "    mode = parameters['mode']\n"
         "    if mode in ('timeout', 'cancel'):\n"
@@ -31,7 +31,7 @@ def strategy(tmp_path, monkeypatch):
         "        sleep(60)\n"
         "    if mode == 'error':\n"
         "        raise RuntimeError('solver error')\n"
-        "    return [0, {'baseline': 0, 'candidate': 1, 'invalid': True}[mode]]\n",
+        "    return [{'baseline': 0, 'candidate': 1, 'invalid': True}[mode], 0]\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(tmp_path), prepend=os.pathsep)
@@ -61,7 +61,7 @@ def experiment_run(tmp_path, strategy):
     files_path.mkdir(parents=True)
     files = Workspace(files_path)
     source = tmp_path / "scene1_1.json"
-    source.write_text('{"P":[[0.5,0],[0.5,1]],"v":[10,3]}', encoding="utf-8")
+    source.write_text('{"P":[[0.8,0.7],[1,0]],"v":[10,10]}', encoding="utf-8")
     with store.open_journal("run") as sink:
         session = Session("run")
         session.attach_journal_sink(sink)
@@ -152,16 +152,16 @@ def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run)
     runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
     strategy, = runner.registry.discover()
     assert strategy["strategy_id"] == "marginal_greedy"
-    profile, = strategy["configs"]
+    profile = strategy["configs"][0]
     assert profile["config_id"] == "default"
 
     experiment_id = runner.submit(strategy["strategy_id"], profile["config_id"], scene, turn_id)["experiment_id"]
     jobs.wait_for_turn(turn_id)
     result = runner.get(experiment_id)
     assert result["valid"] is True, result
-    assert result["metrics"]["expected_value"] == 8.0
+    assert result["metrics"]["expected_value"] == 10.0
     allocation = json.loads((files.path / result["result_ref"]).read_text(encoding="utf-8"))
-    assert allocation == {"allocation": [0, 1]}
+    assert allocation == {"allocation": [0, 0]}
 
 
 class TestExperimentBridge(BridgeTestCase):
@@ -180,9 +180,9 @@ class TestExperimentBridge(BridgeTestCase):
         })
         bridge.open_session(message)
         inputs = root / "input"
-        inputs.mkdir()
+        inputs.mkdir(exist_ok=True)
         source = inputs / "scene1_1.json"
-        source.write_text('{"P":[[0.5,0],[0.5,1]],"v":[10,3]}', encoding="utf-8")
+        source.write_text('{"P":[[0.8,0.7],[1,0]],"v":[10,10]}', encoding="utf-8")
 
         def respond(request, *_):
             names = {tool.name for tool in request.tools}
@@ -215,22 +215,22 @@ class TestExperimentBridge(BridgeTestCase):
                 "baseline_experiment_id": baseline_id,
             }),))
 
-        with patch("agent_runtime.plane_manager.BUILTIN_STRATEGIES", (self.strategy,)):
+        with patch("agent_runtime.plane_manager.BUILTIN_STRATEGIES", (*BUILTIN_STRATEGIES, self.strategy)):
             plane = bridge.host.planes.ensure(bridge.host.sessions)
             with (
                 patch.object(plane.provider, "count_input_tokens", return_value=1),
                 patch.object(plane.provider, "stream_cancellable", side_effect=respond),
             ):
-                bridge.run_turn({"turn_id": "scene", "scene_input": source.name})
+                bridge.run_scene_task({"turn_id": "scene", "scene_input": source.name})
 
         events = emitted(stdout)
-        assert events[-1]["type"] == "turn_completed", events[-1]
+        assert events[-1]["type"] == "scene_task_completed", events[-1]
         session = bridge.host.sessions.session
         results = {
             item.tool_call_id: json.loads(item.content)["output"]
             for item in session.items if item.role == "tool"
         }
-        assert results["discover"]["strategies"][0]["strategy_id"] == "fixture"
+        assert [strategy["strategy_id"] for strategy in results["discover"]["strategies"]] == ["marginal_greedy", "fixture"]
         assert results["candidate"] == {
             "experiment_id": results["candidate"]["experiment_id"], "status": "submitted", "elapsed_seconds": 0.0,
         }
@@ -238,18 +238,26 @@ class TestExperimentBridge(BridgeTestCase):
         assert comparison["valid"] is True
         assert comparison["seed"] == 42
         assert comparison["version"] == "1.2.3"
-        assert comparison["metrics"] == {"expected_value": 8.0, "total_value": 13, "assigned_workers": 2}
-        assert comparison["comparison"]["baseline_expected_value"] == 7.5
-        assert comparison["comparison"]["expected_value_delta"] == 0.5
+        assert comparison["metrics"] == {"expected_value": 17.0, "total_value": 20, "assigned_workers": 2}
+        assert comparison["comparison"]["baseline_expected_value"] == 10.0
+        assert comparison["comparison"]["expected_value_delta"] == 7.0
         result_ref = comparison["result_ref"]
         assert result_ref.startswith("experiments/")
-        assert json.loads((plane.files.path / result_ref).read_text(encoding="utf-8")) == {"allocation": [0, 1]}
+        assert json.loads((plane.files.path / result_ref).read_text(encoding="utf-8")) == {"allocation": [1, 0]}
         assert not (plane.files.path.parent / "experiments").exists()
         assert results["read-allocation"]["path"] == result_ref
-        assert '1| {"allocation": [0, 1]}' in results["read-allocation"]["content"]
-        assert not (root / "output").exists()
+        assert '1| {"allocation": [1, 0]}' in results["read-allocation"]["content"]
+        result = events[-1]["task"]
+        assert result["status"] == "completed"
+        assert result["baseline_expected_value"] == 10.0
+        assert result["expected_value"] == 17.0
+        assert result["experiment_id"] == comparison["experiment_id"]
+        output_path = root / "output" / "rethink" / source.name
+        assert Path(result["output_path"]) == output_path
+        assert json.loads(output_path.read_text(encoding="utf-8")) == {"allocation": [1, 0]}
 
         restored = bridge.host.sessions.store.load(session.session_id)
+        assert restored.journal[-1].payload == result
         jobs = JobManager(restored)
         self.addCleanup(jobs.close)
         runner = ExperimentRunner((), jobs, plane.files)

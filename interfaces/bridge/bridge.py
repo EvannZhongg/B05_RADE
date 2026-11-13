@@ -11,7 +11,8 @@ if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
-from agent_runtime.scene_input import list_scene_inputs, prepare_scene_input
+from agent_runtime.scene_input import list_scene_inputs
+from agent_runtime.scene_task_runner import latest_scene_task
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
 from .protocol import (
@@ -26,7 +27,7 @@ from .protocol import (
     sessions_listed_message,
     settings_snapshot_message,
     settings_update_failed_message,
-    user_turn_received_message,
+    scene_task_received_message,
 )
 from .event_stream import EventStream
 
@@ -37,9 +38,9 @@ class Bridge:
                  send: Callable[[dict[str, object]], None]) -> None:
         self._send = send
         self._input_directory = input_directory
+        self._output_directory = input_directory.parent / "output"
         self._event_lock = RLock()
         self._messages: Queue[dict[str, object] | BaseException | None] = Queue()
-        self._shutdown_requested = False
         self._stream = EventStream()
         self._phase = "inactive"
         self._runtime_warnings: tuple[str, ...] = ()
@@ -78,13 +79,13 @@ class Bridge:
             elif type in {
                 "provider_changed",
                 "plan_updated", "context_window", "model_completed", "compression_completed", "job_status", "fatal",
-                "turn_completed", "turn_cancelled", "turn_failed",
+                "scene_task_completed", "scene_task_cancelled", "scene_task_failed", "scene_task_timed_out",
                 "runtime_refreshed", "runtime_refresh_failed",
             }:
                 state = self._runtime_snapshot()
             items = None
             if type == "session_ready" or type in {
-                "turn_completed", "turn_cancelled", "turn_failed",
+                "scene_task_completed", "scene_task_cancelled", "scene_task_failed", "scene_task_timed_out",
             } or (type == "context_window" and self._checkpoint_turn == fields.get("turn_id")):
                 session = self.host.sessions.session
                 if session is not None:
@@ -113,11 +114,11 @@ class Bridge:
         if message_type == "cancel":
             self._route_cancel(message)
             return
-        if message_type == "user_turn":
+        if message_type == "scene_task_start":
             turn_id = message.get("turn_id")
             if isinstance(turn_id, str):
-                self.host.turns.enqueue(turn_id)
-                self.emit(**user_turn_received_message(turn_id))
+                self.host.scene_tasks.enqueue(turn_id)
+                self.emit(**scene_task_received_message(turn_id))
         self._messages.put(message)
 
     def stop(self) -> None:
@@ -132,7 +133,7 @@ class Bridge:
             return
         accepted = (
             isinstance(turn_id, str) and isinstance(text, str) and bool(text.strip())
-            and self.host.turns.steer(turn_id, steer_id, text.strip())
+            and self.host.scene_tasks.steer(turn_id, steer_id, text.strip())
         )
         self.emit(
             "user_steer_received" if accepted else "user_steer_rejected",
@@ -145,11 +146,10 @@ class Bridge:
     def _route_cancel(self, message: dict[str, object]) -> None:
         turn_id = message.get("turn_id")
         if isinstance(turn_id, str):
-            self.host.turns.cancel(turn_id)
+            self.host.scene_tasks.cancel(turn_id)
 
     def _route_shutdown(self, *, notify_commands: bool = True) -> None:
-        self._shutdown_requested = True
-        self.host.turns.shutdown()
+        self.host.scene_tasks.shutdown()
         if notify_commands:
             self._messages.put(None)
 
@@ -169,7 +169,8 @@ class Bridge:
         session = self.host.sessions.session
         return runtime_state_message(
             phase=self._phase,
-            turn_id=self.host.turns.turn_id,
+            scene_task=latest_scene_task(session) if session is not None else None,
+            turn_id=self.host.scene_tasks.turn_id,
             provider=self.host.sessions.provider_name,
             cache_usage=cache_usage_to_dict(session.cache_usage) if session is not None else None,
             context_window=(
@@ -300,8 +301,8 @@ class Bridge:
                     self.emit(**session_open_failed_message(message.get("session_id"), error))
                     continue
                 opened = True
-            elif message["type"] == "user_turn":
-                self.run_turn(message)
+            elif message["type"] == "scene_task_start":
+                self.run_scene_task(message)
             elif message["type"] == "provider_set":
                 self._set_provider(message)
             elif message["type"] == "runtime_refresh":
@@ -372,28 +373,26 @@ class Bridge:
         else:
             self.emit("runtime_refreshed", provider=provider, model=model)
 
-    def run_turn(self, message: dict[str, object]) -> None:
-        turn_id = str(message["turn_id"])
+    def run_scene_task(self, message: dict[str, object]) -> None:
+        turn_id = message["turn_id"]
+        if not isinstance(turn_id, str) or not turn_id:
+            raise ValueError("scene_task_start requires a non-empty turn_id")
         self._checkpoint_turn = turn_id
-        files = self.host.sessions.files
-        if "scene_input" in message or "text" not in message:
-            result = self.host.run_turn(
-                turn_id,
-                lambda: prepare_scene_input(self._input_directory, message.get("scene_input"), files),
-            )
-        else:
-            result = self.host.run_turn(turn_id, str(message["text"]))
+        outcome = self.host.run_scene_task(
+            turn_id, message.get("scene_input"), self._input_directory, self._output_directory,
+        )
         self._jobs.clear()
         self._emit_runtime_state(
-            "failed" if result.startup_failed else "idle",
-            runtime_warnings=result.runtime_warnings,
+            "failed" if outcome.startup_failed else "idle",
+            runtime_warnings=outcome.runtime_warnings,
         )
-        if result.status == "failed":
-            self.emit("turn_failed", turn_id=turn_id, error=runtime_failure_to_dict(result.error))
-        elif result.status == "cancelled":
-            self.emit("turn_cancelled", turn_id=turn_id)
-        elif not self._shutdown_requested:
-            self.emit("turn_completed", turn_id=turn_id, usage=usage_to_dict(result.usage))
+        status = outcome.task["status"]
+        fields = {"turn_id": turn_id, "task": outcome.task}
+        if status == "completed":
+            fields["usage"] = usage_to_dict(outcome.usage)
+        elif status in {"failed", "timed_out"}:
+            fields["error"] = outcome.task["error"]
+        self.emit(f"scene_task_{status}", **fields)
 
     def close(self) -> None:
         self._route_shutdown(notify_commands=False)

@@ -11,14 +11,20 @@ from .base import Strategy, StrategyProfile
 BUILTIN_STRATEGIES = (
     Strategy(
         strategy_id="marginal_greedy",
-        version="1.0.0",
+        version="1.1.0",
         description=(
-            "Deterministic baseline. Visit processing units in their original row order "
+            "Visit processing units in original row order (default) or reverse row order "
             "and assign each to the task with the largest positive increase in expected value."
         ),
         entrypoint="rade_tasks.algorithms.implementations.marginal_greedy:solve",
-        parameter_schema={"type": "object", "additionalProperties": False},
-        profiles={"default": StrategyProfile(parameters={}, seed=0, timeout_seconds=30)},
+        parameter_schema={
+            "type": "object", "properties": {"reverse_workers": {"type": "boolean"}},
+            "additionalProperties": False,
+        },
+        profiles={
+            "default": StrategyProfile(parameters={}, seed=0, timeout_seconds=30),
+            "reverse": StrategyProfile(parameters={"reverse_workers": True}, seed=0, timeout_seconds=30),
+        },
     ),
 )
 

@@ -46,18 +46,19 @@ class ModelPeer(BaseHTTPRequestHandler):
         text = next(message["content"] for message in reversed(messages) if message["role"] == "user")
         if isinstance(text, list):
             text = "".join(part.get("text", "") for part in text)
-        if text == "blocked":
+        text = json.loads(text)["filename"]
+        if text == "scene1_1.json":
             self.server.entered.set()
             self.server.release.wait(15)
         tool_result = next((message for message in reversed(messages) if message["role"] == "tool"), None)
-        if text == "read-workspace" and tool_result is None:
+        if text == "scene2_1.json" and tool_result is None:
             name, arguments = "read_file", {"path": "marker.txt"}
             delta = {"tool_calls": [{"index": 0, "id": "call", "type": "function", "function": {
                 "name": name, "arguments": json.dumps(arguments),
             }}]}
             finish = "tool_calls"
         else:
-            delta = {"content": f"reply:{tool_result['content'] if text == 'read-workspace' else text}"}
+            delta = {"content": f"reply:{tool_result['content'] if text == 'scene2_1.json' else text}"}
             finish = "stop"
         chunks = [
             {"id": "chat", "object": "chat.completion.chunk", "created": 1, "model": "gpt-5",
@@ -101,7 +102,11 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         config["main_agent"]["tools"]["shell"] = True
         config["main_agent"]["tools"]["read_file"] = True
         path.write_text(json.dumps(config), encoding="utf-8")
-        self.bridge = await BridgeProcess.spawn(self.root)
+        inputs = self.root / "input"
+        inputs.mkdir()
+        for filename in ("scene1_1.json", "scene1_2.json", "scene1_3.json", "scene2_1.json"):
+            (inputs / filename).write_text('{"P":[[0.5,0],[0.5,1]],"v":[10,3]}', encoding="utf-8")
+        self.bridge = await BridgeProcess.spawn(self.root, cwd=self.root)
 
     async def asyncTearDown(self):
         self.http.release.set()
@@ -118,7 +123,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(event, events)
             events.append(event)
             self.assertNotEqual(event["type"], "fatal", event)
-            self.assertNotEqual(event["type"], "turn_failed", event)
+            self.assertNotEqual(event["type"], "scene_task_failed", event)
             if event["type"] == kind:
                 return event, events
 
@@ -126,28 +131,29 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         channel = self.bridge.open_channel(key)
         channel.send({**self.opening, "session_id": session_id or key})
         ready, _ = await self.until(channel, "session_ready")
-        self.assertEqual(ready["protocol_version"], 9)
+        self.assertEqual(ready["protocol_version"], 10)
         await self.until(channel, "runtime_state")
         return channel
 
     async def test_concurrent_requests_and_cancellation_are_isolated(self):
         first, second = await asyncio.gather(self.open("one"), self.open("two"))
-        first.send({"type": "user_turn", "turn_id": "same", "text": "blocked"})
+        first.send({"type": "scene_task_start", "turn_id": "same", "scene_input": "scene1_1.json"})
         self.assertTrue(await asyncio.to_thread(self.http.entered.wait, 10))
-        second.send({"type": "user_turn", "turn_id": "same", "text": "second"})
-        _, second_events = await self.until(second, "turn_completed")
-        self.assertTrue(any(event.get("text") == "reply:second" for event in second_events))
+        second.send({"type": "scene_task_start", "turn_id": "same", "scene_input": "scene1_2.json"})
+        _, second_events = await self.until(second, "scene_task_completed")
+        self.assertTrue(any(event.get("text") == "reply:scene1_2.json" for event in second_events))
         first.send({"type": "cancel", "turn_id": "same"})
-        await self.until(first, "turn_cancelled")
+        await self.until(first, "scene_task_cancelled")
         await first.close()
         self.assertIsNone(self.bridge.returncode)
-        second.send({"type": "user_turn", "turn_id": "next", "text": "still-alive"})
-        await self.until(second, "turn_completed")
+        second.send({"type": "scene_task_start", "turn_id": "next", "scene_input": "scene1_3.json"})
+        await self.until(second, "scene_task_completed")
         await second.close()
         store = JsonlSessionStore(self.root / "runs")
-        self.assertEqual(store.load("one").turns["same"].status, "cancelled")
-        self.assertEqual(store.load("two").turns["same"].status, "completed")
-        self.assertEqual([item.content for item in store.load("two").items if item.role == "user"], ["second", "still-alive"])
+        self.assertEqual(next(iter(store.load("one").turns.values())).status, "cancelled")
+        self.assertEqual(next(iter(store.load("two").turns.values())).status, "completed")
+        self.assertEqual([json.loads(item.content)["filename"] for item in store.load("two").items if item.role == "user"],
+                         ["scene1_2.json", "scene1_3.json"])
 
 
     async def test_writer_conflict_fails_only_the_contending_channel(self):
@@ -157,12 +163,12 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         error, _ = await self.until(contender, "session_open_failed")
         self.assertEqual(error["error"]["type"], "SessionInUseError")
         await contender.close()
-        owner.send({"type": "user_turn", "turn_id": "t", "text": "owner"})
-        await self.until(owner, "turn_completed")
+        owner.send({"type": "scene_task_start", "turn_id": "t", "scene_input": "scene1_2.json"})
+        await self.until(owner, "scene_task_completed")
         await owner.close()
         reopened = await self.open("owner", "shared")
-        reopened.send({"type": "user_turn", "turn_id": "next", "text": "reopened"})
-        await self.until(reopened, "turn_completed")
+        reopened.send({"type": "scene_task_start", "turn_id": "next", "scene_input": "scene1_3.json"})
+        await self.until(reopened, "scene_task_completed")
 
     async def test_process_failure_reaches_every_channel(self):
         first, second = await asyncio.gather(self.open("one"), self.open("two"))
@@ -183,10 +189,10 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
             channel = self.bridge.open_channel(name)
             channel.send({**self.opening, "session_id": name})
             await self.until(channel, "runtime_state")
-            channel.send({"type": "user_turn", "turn_id": "t", "text": "read-workspace"})
+            channel.send({"type": "scene_task_start", "turn_id": "t", "scene_input": "scene2_1.json"})
             channels.append(channel)
         for name, channel in zip(("alpha", "beta"), channels):
-            _, events = await self.until(channel, "turn_completed")
+            _, events = await self.until(channel, "scene_task_completed")
             answer = "".join(event.get("text", "") for event in events if event["type"] == "assistant_delta")
             self.assertIn(name, answer)
             self.assertNotIn("beta" if name == "alpha" else "alpha", answer)
@@ -197,8 +203,8 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         failed = await asyncio.wait_for(first.read(), 10)
         self.assertEqual(failed["type"], "fatal")
         await first.close()
-        second.send({"type": "user_turn", "turn_id": "t", "text": "unaffected"})
-        await self.until(second, "turn_completed")
+        second.send({"type": "scene_task_start", "turn_id": "t", "scene_input": "scene1_2.json"})
+        await self.until(second, "scene_task_completed")
         self.assertIsNone(self.bridge.returncode)
 
     async def test_cancel_during_mcp_startup_does_not_wait_for_its_timeout(self):
@@ -210,11 +216,11 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         }}}
         path.write_text(json.dumps(config), encoding="utf-8")
         channel = await self.open("slow")
-        channel.send({"type": "user_turn", "turn_id": "t", "text": "waiting"})
+        channel.send({"type": "scene_task_start", "turn_id": "t", "scene_input": "scene1_2.json"})
         await self.until(channel, "mcp_server_status")
         started = time.perf_counter()
         channel.send({"type": "cancel", "turn_id": "t"})
-        await self.until(channel, "turn_cancelled")
+        await self.until(channel, "scene_task_cancelled")
         await channel.close()
         self.assertLess(time.perf_counter() - started, 5)
         self.assertIsNone(self.bridge.returncode)

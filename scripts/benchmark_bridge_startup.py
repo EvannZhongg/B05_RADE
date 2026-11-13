@@ -2,7 +2,7 @@
 
 Run with the project's Python: scripts/benchmark_bridge_startup.py --provider deepseek.
 Credentials are read locally and copied only into temporary configuration files.
-Each sample requests a tiny reply with tools, memory and title generation disabled.
+The resident process runs a small scene with memory disabled.
 """
 
 import argparse
@@ -26,6 +26,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def child(args):
     sys.path.insert(0, str(args.source))
+    if args.multiplex:
+        os.chdir(args.config.parent)
     from interfaces.bridge.__main__ import _claim_stdout
     output = _claim_stdout()
     from agent_runtime import config
@@ -39,8 +41,8 @@ def child(args):
 
     def request_started(request):
         marker = re.search(r"RADE-benchmark-[a-zA-Z0-9_-]+", request.content.decode())
-        if marker:
-            bridge.emit(type="benchmark_request", marker=marker.group(), at=time.perf_counter())
+        if marker or args.multiplex:
+            bridge.emit(type="benchmark_request", at=time.perf_counter())
 
     def make_client(**kwargs):
         if "http_client" in kwargs:
@@ -71,7 +73,10 @@ class Peer:
         self.started = time.perf_counter()
         self.process = subprocess.Popen(
             command, cwd=source, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, encoding="utf-8", env={**os.environ, "PYTHONUTF8": "1"},
+            stderr=subprocess.PIPE, text=True, encoding="utf-8", env={
+                **os.environ, "PYTHONUTF8": "1",
+                "PYTHONPATH": os.pathsep.join(filter(None, (str(source), os.environ.get("PYTHONPATH")))),
+            },
         )
         self.stderr = []
         self.reader = Thread(target=self.read, daemon=True)
@@ -101,7 +106,7 @@ class Peer:
             if event is None:
                 raise RuntimeError("Benchmark process exited before " + kind)
             collected.append((at, event))
-            if event["type"] in {"fatal", "turn_failed", "session_open_failed"}:
+            if event["type"] in {"fatal", "turn_failed", "scene_task_failed", "scene_task_timed_out", "session_open_failed"}:
                 # Do not print upstream error bodies: some services echo credentials.
                 error = event.get("error", {})
                 details = error.get("details", {})
@@ -136,8 +141,12 @@ def sample(peer, marker, assembly_only=False):
             "mcp_ready": sum(event.get("status") == "ready" for _, event in events if event["type"] == "mcp_server_status"),
             "mcp_unavailable": sum(event.get("status") == "unavailable" for _, event in events if event["type"] == "mcp_server_status"),
         }
-    peer.send({"type": "user_turn", "turn_id": marker, "text": f"{marker}\nReply exactly OK. Do not use tools."}, marker)
-    finished, _, events = peer.until("turn_completed")
+    if peer.multiplex:
+        peer.send({"type": "scene_task_start", "turn_id": marker, "scene_input": "scene1_1.json"}, marker)
+        finished, _, events = peer.until("scene_task_completed")
+    else:
+        peer.send({"type": "user_turn", "turn_id": marker, "text": f"{marker}\nReply exactly OK. Do not use tools."}, marker)
+        finished, _, events = peer.until("turn_completed")
     request = next(event["at"] for _, event in events if event["type"] == "benchmark_request")
     first_text = next((at for at, event in events if event["type"] == "assistant_delta"), None)
     running = next((at for at, event in events if event["type"] == "runtime_state" and event["phase"] == "running"), None)
@@ -171,6 +180,10 @@ def benchmark(args):
         for mode, code in (("baseline", source), ("resident", ROOT)):
             config = root / mode / "config"
             config.mkdir(exist_ok=True)
+            if mode == "resident" and not args.assembly_only:
+                inputs = config.parent / "input"
+                inputs.mkdir()
+                (inputs / "scene1_1.json").write_text('{"P":[[0.8]],"v":[10]}', encoding="utf-8")
             shutil.copyfile(code / "agent_runtime/defaults/agent_config.json", config / "agent_config.json")
             if args.assembly_only:
                 agent = json.loads((args.config / "agent_config.json").read_text(encoding="utf-8"))

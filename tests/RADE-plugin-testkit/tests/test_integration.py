@@ -122,7 +122,7 @@ class ProcessJob:
 
 
 class BridgeProcess:
-    def __init__(self, project, workspace):
+    def __init__(self, project):
         self.log = (project / "bridge-stderr.log").open("w+b")
         self.process = subprocess.Popen(
             [sys.executable, "-m", "interfaces.bridge"],
@@ -143,8 +143,8 @@ class BridgeProcess:
         self.reader.start()
         try:
             self.until("bridge_ready")
-            self.send(type="open_session", workspace=str(workspace), session_id=None)
-            self.until("session_ready")
+            self.send(type="open_session", session_id=None)
+            self.run_id = self.until("session_ready")["session_id"]
         except BaseException:
             self.close()
             raise
@@ -175,13 +175,13 @@ class BridgeProcess:
             self.messages.append(message)
             if message["type"] == wanted:
                 return message
-            if message["type"] in ("fatal", "turn_failed", "turn_cancelled"):
+            if message["type"] in ("fatal", "scene_task_failed", "scene_task_cancelled", "scene_task_timed_out"):
                 raise AssertionError(message)
         raise AssertionError(f"Timed out waiting for {wanted}")
 
-    def turn(self, *, text="Review sample.py using the code-review Skill."):
-        self.send(type="user_turn", turn_id="review", text=text)
-        return self.until("turn_completed")
+    def turn(self):
+        self.send(type="scene_task_start", turn_id="review", scene_input="scene1_1.json")
+        return self.until("scene_task_completed")
 
     def close(self):
         try:
@@ -269,9 +269,9 @@ class McpServerTest(unittest.TestCase):
 class BridgeIntegrationTest(unittest.TestCase):
     def setUp(self):
         self.project = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        self.workspace = self.project / "workspace"
-        self.workspace.mkdir()
-        (self.workspace / "sample.py").write_text(SOURCE, encoding="utf-8")
+        inputs = self.project / "input"
+        inputs.mkdir()
+        self.json_file(inputs / "scene1_1.json", {"P": [[0.8]], "v": [10]})
         self.config = self.project / ".RADE"
         self.plugin = self.config / "plugins" / "repo-review-kit"
         shutil.copytree(ROOT, self.plugin, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
@@ -322,8 +322,10 @@ class BridgeIntegrationTest(unittest.TestCase):
         path.write_text(json.dumps(document), encoding="utf-8")
 
     def bridge(self):
-        bridge = BridgeProcess(self.project, self.workspace)
+        bridge = BridgeProcess(self.project)
         self.addCleanup(bridge.close)
+        self.workspace = self.config / "runs" / bridge.run_id / "files"
+        (self.workspace / "sample.py").write_text(SOURCE, encoding="utf-8")
         return bridge
 
     def install_rule(self, filename):
@@ -380,16 +382,16 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.assertFalse(any(message["type"] == "hook_completed" for message in bridge.messages))
 
     def test_input_hook_rejection_does_not_call_provider(self):
+        bridge = self.bridge()
         directory = self.workspace / ".RADE"
         directory.mkdir()
         self.json_file(directory / "hookify.input.json", {
             "name": "block-input", "event": "InputSubmitted", "action": "block",
-            "conditions": [{"field": "input.text", "operator": "contains", "value": "blocked"}],
+            "conditions": [{"field": "input.text", "operator": "contains", "value": "scene1_1.json"}],
             "message": "Input rejected by project rule.",
         })
-        bridge = self.bridge()
-        bridge.send(type="user_turn", turn_id="blocked", text="blocked")
-        failed = bridge.until("turn_failed")
+        bridge.send(type="scene_task_start", turn_id="blocked", scene_input="scene1_1.json")
+        failed = bridge.until("scene_task_failed")
         self.assertEqual(failed["error"]["type"], "HookRejectedError", failed)
         self.assertEqual(self.http.requests, [])
         self.assertTrue(any(message["type"] == "hook_completed" and message["decision"] == "deny" for message in bridge.messages))
@@ -397,16 +399,17 @@ class BridgeIntegrationTest(unittest.TestCase):
     def test_pre_hook_blocks_file_write_and_rules_reload_next_turn(self):
         self.http.scripts["gpt-4"] = [call("write_file", path=".env", content="first"), "Written."]
         bridge = self.bridge()
-        bridge.turn(text="Write .env")
+        bridge.turn()
         self.assertEqual((self.workspace / ".env").read_text(), "first")
         self.install_rule("block-sensitive-file.json")
         self.http.scripts["gpt-4"] = [call("write_file", path=".env", content="second", overwrite=True), "Blocked."]
-        bridge.send(type="user_turn", turn_id="protected", text="Write .env again")
-        bridge.until("turn_completed")
+        bridge.send(type="scene_task_start", turn_id="protected", scene_input="scene1_1.json")
+        bridge.until("scene_task_completed")
         self.assertEqual((self.workspace / ".env").read_text(), "first")
         self.assertTrue(any(message["type"] == "tool_result" and (message.get("error") or {}).get("type") == "HookDenied" for message in bridge.messages))
 
     def test_post_feedback_and_stop_correction_reach_provider(self):
+        bridge = self.bridge()
         directory = self.workspace / ".RADE"
         directory.mkdir()
         self.json_file(directory / "hookify.post.json", {
@@ -420,7 +423,6 @@ class BridgeIntegrationTest(unittest.TestCase):
             "message": "Include the findings before finishing.",
         })
         self.http.scripts["gpt-4"] = [call(TOOL, source=SOURCE), "Draft.", "Final findings."]
-        bridge = self.bridge()
         bridge.turn()
         self.assertIn("Check analyzer findings.", str(self.http.requests[1]["messages"]))
         self.assertIn("Include the findings before finishing.", str(self.http.requests[2]["messages"]))

@@ -40,7 +40,7 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 9,
+              type: 'session_ready', protocol_version: 10,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               provider: 'test',
               model: 'test/model',
@@ -117,7 +117,7 @@ function renderApp() {
 const waitForReady = (lastFrame: Frame) =>
   waitFor(() => expect(lastFrame()).toContain('test/model'));
 
-const turns = () => sent.filter((m) => m.type === 'user_turn');
+const turns = () => sent.filter((m) => m.type === 'scene_task_start');
 const steers = () => sent.filter((m) => m.type === 'user_steer');
 
 /** Types text and waits until Ink has parsed it into the draft. */
@@ -298,7 +298,7 @@ describe('App', () => {
     expect(lastFrame()).toContain('/input');
 
     emit({
-      type: 'session_ready', protocol_version: 9,
+      type: 'session_ready', protocol_version: 10,
       session_id: 'sess-1234',
       provider: 'test',
       model: 'test/model',
@@ -487,7 +487,7 @@ describe('App', () => {
     emit({ type: 'assistant_delta', turn_id: 'background', text: 'hidden second session', model_call_index: 1 }, secondChannel);
     await runScene(stdin, lastFrame);
     await waitFor(() => expect(turns()).toHaveLength(1));
-    expect(sentChannels[sent.findIndex(message => message.type === 'user_turn')]).toBe(firstChannel);
+    expect(sentChannels[sent.findIndex(message => message.type === 'scene_task_start')]).toBe(firstChannel);
     expect(lastFrame()).not.toContain('hidden second session');
     expect(bridgeCount).toBe(1);
     unmount();
@@ -513,7 +513,7 @@ describe('App', () => {
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 9, session_id: 'fresh',
+      type: 'session_ready', protocol_version: 10, session_id: 'fresh',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
@@ -534,7 +534,7 @@ describe('App', () => {
     expect(turns()[0].scene_input).toBe(sceneFilename);
 
     emit(snapshot);
-    emit({ type: 'turn_completed', turn_id: turns()[0].turn_id, usage: null });
+    emit({ type: 'scene_task_completed', turn_id: turns()[0].turn_id, task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null });
     await waitForReady(lastFrame);
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
@@ -601,7 +601,7 @@ describe('App', () => {
       expect(turns().at(-1).scene_input).toBe(sceneFilename);
       expect(sentChannels[sent.lastIndexOf(turns().at(-1))]).toBe('session-1');
       emit(snapshot);
-      emit({ type: 'turn_completed', turn_id: turns().at(-1).turn_id, usage: null });
+      emit({ type: 'scene_task_completed', turn_id: turns().at(-1).turn_id, task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null });
       await waitForReady(lastFrame);
     }
     expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(1);
@@ -794,7 +794,7 @@ describe('App', () => {
       jobs: [],
       plan: null,
     });
-    emit({ type: 'turn_completed', turn_id: 't1', usage: null });
+    emit({ type: 'scene_task_completed', turn_id: 't1', task: { task_id: 'task', filename: 'scene1_1.json', mode: 'rethink', status: 'completed', elapsed_seconds: 1, output_path: 'output/rethink/scene1_1.json', expected_value: 8, baseline_expected_value: 7.5, experiment_id: 'candidate', baseline_experiment_id: 'baseline' }, usage: null });
 
     await waitFor(() => {
       expect(lastFrame()).toContain('completed answer');
@@ -827,7 +827,7 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 9,
+      type: 'session_ready', protocol_version: 10,
       session_id: 'sess-1234',
       provider: 'test',
       model: 'test/model',

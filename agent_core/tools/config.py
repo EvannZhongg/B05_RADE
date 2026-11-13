@@ -13,7 +13,7 @@ TOOL_NAMES = (
     "job_control",
 )
 
-# Image and Skill tools are selected from the available capabilities.
+# Skill tools are selected when skills are available.
 # Subagents cannot delegate work or manage parent jobs.
 ROLE_TOOL_NAMES = tuple(name for name in TOOL_NAMES if name not in {"subagent", "job_control"})
 

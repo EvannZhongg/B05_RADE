@@ -6,7 +6,6 @@ import unittest
 from agent_core import (
     CacheUsage,
     FilePart,
-    ImagePart,
     JsonlSessionStore,
     Message,
     RuntimeErrorInfo,
@@ -251,7 +250,7 @@ class SessionJournalTest(unittest.TestCase):
             replayed.apply_event(event)
         self.assertEqual(replayed.turns["turn-1"].error, error)
 
-    def test_context_unit_keeps_parallel_tool_results_and_media_together(self):
+    def test_context_unit_keeps_parallel_tool_results_and_hook_feedback_together(self):
         calls = (
             ToolCall("call-a", "read", {}),
             ToolCall("call-b", "read", {}),
@@ -262,8 +261,8 @@ class SessionJournalTest(unittest.TestCase):
             Message("tool", "A", tool_call_id="call-a"),
             Message(
                 "user",
-                (ImagePart(path="result.png"),),
-                origin="tool_media",
+                "Review the result.",
+                origin="hook_feedback",
             ),
             Message("assistant", "next"),
         ]
@@ -276,7 +275,7 @@ class SessionJournalTest(unittest.TestCase):
              if message.role == "tool"],
             ["call-a", "call-b"],
         )
-        self.assertTrue(units[0].messages[-1].is_tool_media)
+        self.assertEqual(units[0].messages[-1].origin, "hook_feedback")
 
     def test_context_unit_places_interaction_after_its_tool_result(self):
         call = ToolCall("call-1", "ask_user", {})

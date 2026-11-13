@@ -252,16 +252,10 @@ class JobManager:
                     cleanup()
                 return output.output
             return output
-        if isinstance(output, ToolOutput) and output.attachments:
-            cleanup = output.artifact_cleanup
-            if cleanup is not None:
-                cleanup()
-            raise ValueError("background jobs cannot return image attachments")
         result = ToolResult(
             tool_call_id=job.job_id,
             name=job.kind,
             output=output.output if isinstance(output, ToolOutput) else output,
-            attachments=output.attachments if isinstance(output, ToolOutput) else (),
             artifact_writer=(
                 output.artifact_writer if isinstance(output, ToolOutput) else None
             ),

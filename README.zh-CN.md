@@ -24,7 +24,7 @@ RADE-server（常驻宿主）
 - **完整 Agent Loop**：支持流式响应、Tool 批次、上下文压缩、steer、取消、计划和后台 Job。
 - **可恢复 Session**：对话和执行事件写入 append-only JSONL Journal，TUI 与 GUI 可读取同一类 Session。
 - **长期记忆**按运行保存偏好、事实与决策。
-- **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。子 Agent、上下文压缩和记忆使用当前主 Agent 选中的 Provider。支持视觉输入的模型可以读取运行文件中的图片。
+- **模型**通过 OpenAI SDK 使用 Chat Completions 或 Responses。子 Agent、上下文压缩和记忆使用当前主 Agent 选中的 Provider。
 - **扩展系统**：支持 standalone Skill、Plugin 提供的 Skill / Agent / MCP / [Hook](docs/plugin-hooks.md) 组件，以及独立 MCP Server。
 - **两个交互入口**分别是终端中的 TUI 和浏览器中的 GUI。GUI 提供多会话管理、运行文件树、设置和记忆。
 
@@ -105,7 +105,7 @@ Runtime 层：
 | [`interfaces/protocol`](interfaces/protocol/README.md) | TypeScript 协议包：导出面、构建与改动清单 |
 | [`interfaces/client`](interfaces/client/README.md) | 公开 Node/TypeScript stdio 客户端、进程生命周期及集成示例 |
 | [`interfaces/tui`](interfaces/tui/README.md) | Ink 终端界面、命令、输入状态和 Bridge 子进程接入 |
-| [`interfaces/gui`](interfaces/gui/README.md) | FastAPI 服务、React 界面、多会话连接、HTTP / WebSocket API 与媒体访问 |
+| [`interfaces/gui`](interfaces/gui/README.md) | FastAPI 服务、React 界面、多会话连接、HTTP / WebSocket API 与运行文件浏览 |
 
 ## 配置与数据
 

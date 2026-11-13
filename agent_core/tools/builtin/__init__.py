@@ -2,7 +2,6 @@ from .apply_patch import ApplyPatchTool
 from .edit_file import EditFileTool
 from .list_directory import ListDirectoryTool
 from .read_file import ReadFileTool
-from .read_image import ReadImageTool
 from .read_skill import ReadSkillTool
 from .search_files import SearchFilesTool
 from .shell import ShellTool
@@ -31,7 +30,6 @@ def builtin_catalog():
             SearchFilesTool(),
             ListDirectoryTool(),
             ShellTool(),
-            ReadImageTool(),
             ReadSkillTool(),
             SubagentTool(),
             JobControlTool(),
@@ -46,7 +44,6 @@ __all__ = [
     "EditFileTool",
     "ListDirectoryTool",
     "ReadFileTool",
-    "ReadImageTool",
     "ReadSkillTool",
     "SearchFilesTool",
     "ShellTool",

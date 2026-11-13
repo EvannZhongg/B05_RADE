@@ -15,7 +15,6 @@ from agent_core import (
     SubagentRoleRegistry,
     SubagentRuntime,
     HostCommandExecutor,
-    Workspace,
     RuntimeInstructions,
     builtin_catalog,
     load_agent_config,
@@ -116,7 +115,7 @@ class ExecutionPlaneManager:
             skills = load_runtime_skills(self._config_directory, plugins)
             prompts = load_prompt_templates(self._config_directory / "prompts")
 
-            main_provider = self._provider_for(config, files, agent_config)
+            main_provider = self._provider_for(config, agent_config)
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
             catalog = builtin_catalog()
@@ -252,13 +251,10 @@ class ExecutionPlaneManager:
                 session=session.session,
                 run_directory=files.path.parent,
                 command_executor=plane.command_executor,
-                vision_input=(
-                    "image" in main_provider.capabilities.input_modalities
-                ),
                 mcp=mcp,
                 subagents=subagents,
                 jobs=jobs,
-                experiments=ExperimentRunner(BUILTIN_STRATEGIES, jobs, files.path.parent),
+                experiments=ExperimentRunner(BUILTIN_STRATEGIES, jobs, files),
                 skills=skills,
                 plan=session.plan,
                 memory=memory,
@@ -294,7 +290,6 @@ class ExecutionPlaneManager:
     def _provider_for(
         self,
         config: ModelConfig,
-        files: Workspace,
         agent_config,
     ) -> LLMProvider:
         from agent_core.providers import OpenAIProvider
@@ -305,7 +300,6 @@ class ExecutionPlaneManager:
             base_url=config.url,
             api_key=config.key,
             max_context_tokens=config.max_context_tokens,
-            media_root=files.path,
             request_timeout_seconds=(
                 agent_config.provider.request_timeout_seconds
             ),

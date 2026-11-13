@@ -84,23 +84,21 @@ class OpenAIStartupTest(unittest.TestCase):
             request = LLMRequest("你好", ())
             self.assertGreater(provider.count_input_tokens(request), 0)
 
-    def test_local_limits_and_vision_do_not_depend_on_endpoint_hostname(self):
+    def test_local_limits_do_not_depend_on_endpoint_hostname(self):
         for model in ("gpt-6-astra", "openai/gpt-6-astra", "gpt-6.1-sol"):
             provider = OpenAIProvider(model, base_url="https://relay.example/v1")
             self.assertEqual(provider.max_context_tokens, 1050000)
             self.assertEqual(provider.max_output_tokens, 128000)
-            self.assertIn("image", provider.capabilities.input_modalities)
         self.assertEqual(model_info("gpt-4o-2024-05-13"), {})
         self.assertEqual(model_info("gpt-4o")["max_output_tokens"], 16384)
 
-    def test_unknown_alias_requires_context_and_remains_text_only(self):
+    def test_unknown_alias_requires_context(self):
         for model in ("custom-alias", "gpt-4o-2024-05-13"):
             with self.subTest(model=model), self.assertRaisesRegex(ValueError, "configure 'max_context_tokens'"):
                 OpenAIProvider(model)
         provider = OpenAIProvider("custom-alias", max_context_tokens=32000)
         self.assertEqual(provider.max_context_tokens, 32000)
         self.assertIsNone(provider.max_output_tokens)
-        self.assertEqual(provider.capabilities.input_modalities, frozenset({"text"}))
         self.assertGreater(provider.count_input_tokens(LLMRequest("Hello", ())), 0)
 
     def test_nested_schema_and_tool_call_arguments_contribute_to_estimate(self):
@@ -124,10 +122,11 @@ class OpenAIStartupTest(unittest.TestCase):
     def test_namespaced_compatible_models_keep_their_existing_metadata_and_counter(self):
         with (
             patch("litellm.get_model_info", return_value={
-                "max_input_tokens": 100000, "supports_vision": True,
+                "max_input_tokens": 100000, "max_output_tokens": 8000,
             }),
             patch("litellm.token_counter", return_value=17),
         ):
             provider = OpenAIProvider("gateway/custom", api="chat_completions")
-            self.assertIn("image", provider.capabilities.input_modalities)
+            self.assertEqual(provider.max_context_tokens, 100000)
+            self.assertEqual(provider.max_output_tokens, 8000)
             self.assertEqual(provider.count_input_tokens(LLMRequest("Test", ())), 17)

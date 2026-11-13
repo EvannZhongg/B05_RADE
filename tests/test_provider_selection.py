@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_core import AgentConfig, ToolConfig, Workspace
+from agent_core import AgentConfig, ToolConfig
 from agent_core.providers import OpenAIProvider
 from agent_runtime.config import ModelConfig, initialize_config_directory, load_config, load_model_options
 from agent_runtime.plane_manager import ExecutionPlaneManager
@@ -14,7 +14,7 @@ class ProviderSelectionTest(unittest.TestCase):
         manager = ExecutionPlaneManager.__new__(ExecutionPlaneManager)
         return manager._provider_for(
             ModelConfig(model, url, "test-key", 100000, reasoning_effort="high", api=api),
-            Workspace(Path(__file__).parent), AgentConfig(
+            AgentConfig(
                 max_same_tool_calls=5, output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
             ),

@@ -4,7 +4,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Callable
 
-from .content import AttachmentPart, ImagePart
 from .hooks import append_hook_feedback
 from .session import Session, ToolExecutionStatus
 from .tool_result import ToolResultNormalizer
@@ -14,7 +13,6 @@ from .turn_control import AgentCancelled, TurnControl
 
 ToolCallCallback = Callable[[ToolCall, int, int], None]
 ToolResultCallback = Callable[[ToolResult, int, int], None]
-ToolMediaCallback = Callable[[tuple[AttachmentPart, ...]], None]
 
 
 class ToolBatchExecutor:
@@ -46,7 +44,6 @@ class ToolBatchExecutor:
         turn_control: TurnControl | None = None,
         on_call: ToolCallCallback | None = None,
         on_result: ToolResultCallback | None = None,
-        on_media: ToolMediaCallback | None = None,
     ) -> None:
         indexed_calls = tuple(enumerate(calls, start=1))
         completed: dict[int, tuple[ToolCall, ToolResult]] = {}
@@ -74,10 +71,6 @@ class ToolBatchExecutor:
                     on_result,
                 )
 
-            executed = tuple(
-                completed[index][1] for index, _call in indexed_calls
-            )
-            self._commit_media(executed, on_media)
             feedback = []
             for index, call in indexed_calls:
                 result = completed[index][1]
@@ -247,26 +240,6 @@ class ToolBatchExecutor:
             on_result(result, index, tool_count)
         return normalized_content
 
-    def _commit_media(
-        self,
-        results: tuple[ToolResult, ...],
-        on_media: ToolMediaCallback | None,
-    ) -> None:
-        # Attachments follow all tool messages. OpenAI-compatible providers reject
-        # a batch when another message interrupts its tool-result sequence.
-        attachments = tuple(part for result in results for part in result.attachments)
-        if not attachments:
-            return
-        self._session.add_item(
-            role="user",
-            content=_media_notice(attachments),
-            attachments=attachments,
-            timestamp_utc=self._now().astimezone(timezone.utc),
-            origin="tool_media",
-        )
-        if on_media is not None:
-            on_media(attachments)
-
     @staticmethod
     def _cleanup_results(
         completed: dict[int, tuple[ToolCall, ToolResult]],
@@ -284,16 +257,3 @@ def _failure_status(error: BaseException) -> ToolExecutionStatus:
         # tool returns, so completion cannot be inferred.
         return "unknown"
     return "failed"
-
-
-def _media_notice(attachments: tuple[AttachmentPart, ...]) -> str:
-    """Describe attachments as output rather than a new user instruction."""
-    listed = "\n".join(f"- {part.path}" for part in attachments)
-    if all(isinstance(part, ImagePart) for part in attachments):
-        noun = "image" if len(attachments) == 1 else "images"
-    else:
-        noun = "attachment" if len(attachments) == 1 else "attachments"
-    return (
-        f"[Tool output] The {noun} requested by the preceding tool "
-        f"call:\n{listed}"
-    )

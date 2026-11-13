@@ -11,13 +11,12 @@ import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI
 
 from agent_core import (
-    AgentCancelled, ImagePart, JsonlSessionStore, LLMRequest, Message,
+    AgentCancelled, FilePart, JsonlSessionStore, LLMRequest, Message,
     ProviderProtocolError, ProviderRequestError, ProviderStreamError, Session, TextPart,
     TokenUsage, ToolCall, ToolDefinition,
 )
 from agent_core.providers import OpenAIProvider
 from agent_core.session import message_to_dict
-from tests.image_fixtures import png_bytes
 
 
 TOOL = ToolDefinition(
@@ -162,18 +161,15 @@ class OpenAIProviderTest(unittest.TestCase):
         self.assertEqual(inputs[1], {"type": "function_call", "call_id": "call_1",
                                      "name": "probe", "arguments": "{}"})
 
-    def test_responses_images_use_native_content_types(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "image.png").write_bytes(png_bytes(32, 32))
-            request = LLMRequest("Test", (Message("user", (TextPart("inspect"), ImagePart("image.png"))),),
-                                 media_root=root)
-            with self.transport([response_event()]) as requests:
-                self.provider().stream(request, lambda _: None)
-        parts = json.loads(requests[0].content)["input"][0]["content"]
-        self.assertEqual(parts[0], {"type": "input_text", "text": "inspect"})
-        self.assertEqual(parts[1]["type"], "input_image")
-        self.assertTrue(parts[1]["image_url"].startswith("data:image/png;base64,"))
+    def test_responses_serializes_file_references_as_text(self):
+        attachment = FilePart(path="report.pdf", filename="report.pdf", mime_type="application/pdf", size_bytes=12)
+        request = LLMRequest("Test", (Message("user", (TextPart("summarize"), attachment)),))
+        with self.transport([response_event()]) as requests:
+            self.provider().stream(request, lambda _: None)
+        content = json.loads(requests[0].content)["input"][0]["content"]
+        self.assertIsInstance(content, str)
+        self.assertTrue(content.startswith("summarize\n\nAttached files"))
+        self.assertIn('path="report.pdf"', content)
 
     def test_does_not_accept_truncated_or_failed_responses(self):
         cases = [
@@ -434,7 +430,6 @@ class OpenAIProviderTest(unittest.TestCase):
         provider = self.provider()
         self.assertEqual(provider.max_context_tokens, 1050000)
         self.assertEqual(provider.max_output_tokens, 128000)
-        self.assertIn("image", provider.capabilities.input_modalities)
         with patch.object(provider._token_counter, "count", return_value=10) as counter:
             self.assertEqual(provider.count_input_tokens(self.request()), 10)
         self.assertEqual(counter.call_count, 1)

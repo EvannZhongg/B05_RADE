@@ -17,14 +17,10 @@ from agent_core import (
 )
 from agent_core.plan import MAX_PLAN_STEP_OUTCOME_CHARS
 from agent_core.config import ContextCompressionConfig
-from agent_core.llm import LLMProvider, LLMRequest, LLMResponse, ProviderCapabilities
+from agent_core.llm import LLMProvider, LLMRequest, LLMResponse
 
 
 class _Provider(LLMProvider):
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities(frozenset({"text"}))
-
     @property
     def max_context_tokens(self) -> int:
         return 1000

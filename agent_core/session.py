@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Callable, Literal
 from threading import Lock
 from uuid import uuid4
 
-from .content import AttachmentPart, Content, FilePart, ImagePart, TextPart, content_parts
+from .content import Content, FilePart, TextPart, content_parts
 from .errors import (
     RuntimeErrorInfo,
     runtime_error_from_dict,
@@ -22,8 +22,6 @@ if TYPE_CHECKING:
 MessageRole = Literal["system", "user", "assistant", "tool"]
 MessageOrigin = Literal[
     "conversation",
-    "tool_media",
-    "tool_delivery",
     "job_result",
     "user_interaction",
     "hook_feedback",
@@ -59,10 +57,6 @@ class Message:
     @property
     def parts(self):
         return content_parts(self.content)
-
-    @property
-    def is_tool_media(self) -> bool:
-        return self.origin == "tool_media"
 
     @property
     def is_user_authored(self) -> bool:
@@ -560,7 +554,7 @@ class Session:
         tool_calls: tuple[ToolCall, ...] = (),
         tool_call_id: str | None = None,
         reasoning: str | None = None,
-        attachments: tuple[AttachmentPart, ...] = (),
+        attachments: tuple[FilePart, ...] = (),
         origin: MessageOrigin = "conversation",
         user_source: UserAnchorSource = "user_input",
         provider_data: dict[str, object] | None = None,
@@ -656,7 +650,7 @@ def message_from_dict(data: dict[str, object]) -> Message:
                 raise ValueError("message content part must be an object")
             if part.get("type") == "text":
                 parts.append(TextPart(str(part.get("text", ""))))
-            elif part.get("type") in {"image", "file"}:
+            elif part.get("type") == "file":
                 path = part.get("path")
                 filename = part.get("filename")
                 mime_type = part.get("mime_type")
@@ -681,24 +675,14 @@ def message_from_dict(data: dict[str, object]) -> Message:
                     raise ValueError(
                         "attachment size_bytes must be a non-negative integer"
                     )
-                if part["type"] == "image":
-                    parts.append(
-                        ImagePart(
-                            path=path,
-                            mime_type=mime_type,
-                            filename=filename,
-                            size_bytes=size_bytes,
-                        )
+                parts.append(
+                    FilePart(
+                        path=path,
+                        filename=filename,
+                        mime_type=mime_type,
+                        size_bytes=size_bytes,
                     )
-                else:
-                    parts.append(
-                        FilePart(
-                            path=path,
-                            filename=filename,
-                            mime_type=mime_type,
-                            size_bytes=size_bytes,
-                        )
-                    )
+                )
             else:
                 raise ValueError("unknown message content part type")
         content = tuple(parts)
@@ -723,8 +707,6 @@ def message_from_dict(data: dict[str, object]) -> Message:
         origin=(
             data["origin"]
             if data.get("origin") in {
-                "tool_media",
-                "tool_delivery",
                 "job_result",
                 "user_interaction",
                 "hook_feedback",

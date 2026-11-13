@@ -11,7 +11,7 @@ from agent_core.llm import LLMRequest, LLMResponse
 from agent_core.tools import ToolCall
 from agent_core.usage import TokenUsage
 
-from .base import ModelProvider, _cancellable_chunks, _media_tokens, _request_messages, _request_tools
+from .base import ModelProvider, _cancellable_chunks, _request_messages, _request_tools
 from .openai_models import model_info, model_name
 from .openai_tokens import TokenCounter
 from .deepseek_models import is_deepseek, model_info as deepseek_model_info
@@ -31,7 +31,11 @@ class OpenAIProvider(ModelProvider):
         if name is None:
             from litellm import get_model_info
 
-            return get_model_info(model=model, api_base=base_url)
+            info = get_model_info(model=model, api_base=base_url)
+            return {
+                "max_input_tokens": info.get("max_input_tokens"),
+                "max_output_tokens": info.get("max_output_tokens"),
+            }
         return model_info(name)
 
     @classmethod
@@ -118,7 +122,7 @@ class OpenAIProvider(ModelProvider):
         arguments = {
             "model": self._wire_model,
             "instructions": request.system_prompt,
-            "input": _responses_input(request, self),
+            "input": _responses_input(request),
             "stream": True,
             "store": False,
         }
@@ -236,7 +240,7 @@ class OpenAIProvider(ModelProvider):
         )
 
     def count_input_tokens(self, request: LLMRequest) -> int:
-        messages = _request_messages(request, self, encode_media=False)
+        messages = _request_messages(request)
         tools = _request_tools(request)
         # Only the Chat serializer replays the display summary in
         # reasoning_content; Responses replays native reasoning items instead.
@@ -253,7 +257,6 @@ class OpenAIProvider(ModelProvider):
             tokens = token_counter(model=self._model, messages=messages, tools=tools or None)
         else:
             tokens = self._token_counter.count(messages, tools)
-        tokens += _media_tokens(request, self)
         if self._api == "responses" and not self._deepseek:
             # Encrypted reasoning cannot be counted by a text tokenizer.
             tokens += sum(message.provider_data.get("openai_reasoning_tokens", 0)
@@ -276,7 +279,7 @@ class OpenAIProvider(ModelProvider):
             reasoning["extra_body"] = extra_body
         arguments = {
             "model": self._wire_model,
-            "messages": _request_messages(request, self),
+            "messages": _request_messages(request),
             "stream": True,
             "stream_options": {"include_usage": True},
             **reasoning,
@@ -344,9 +347,9 @@ class OpenAIProvider(ModelProvider):
         )
 
 
-def _responses_input(request: LLMRequest, provider: OpenAIProvider) -> list[dict[str, object]]:
+def _responses_input(request: LLMRequest) -> list[dict[str, object]]:
     inputs = []
-    messages = _request_messages(request, provider)[1:]
+    messages = _request_messages(request)[1:]
     for message, rendered in zip(request.messages, messages):
         native_output = message.provider_data.get("openai_responses")
         if message.role == "assistant" and native_output:
@@ -357,13 +360,6 @@ def _responses_input(request: LLMRequest, provider: OpenAIProvider) -> list[dict
                            "output": rendered["content"] or ""})
             continue
         content = rendered["content"]
-        if isinstance(content, list):
-            content = [
-                {"type": "input_text", "text": part["text"]}
-                if part["type"] == "text" else
-                {"type": "input_image", "image_url": part["image_url"]["url"]}
-                for part in content
-            ]
         if content:
             inputs.append({"role": message.role, "content": content})
         for call in message.tool_calls:

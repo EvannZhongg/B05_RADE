@@ -77,8 +77,8 @@ Read the requested files, then report findings ordered by severity.
   `[A-Za-z0-9][A-Za-z0-9._-]*`. `description` is the text the parent model reads when it chooses
   a role, so state when the role applies, not only what it does.
 - `tools` (optional): Array of tool names, without duplicates. Omitted means every built-in role
-  tool, without implicitly granting MCP tools; `[]` selects no declared tools. Image and Skill
-  tools remain derived from Runtime capabilities. Allowed built-in values: `read_file`,
+  tool, without implicitly granting MCP tools; `[]` selects no declared tools. The Skill
+  tool is added when skills are available. Allowed built-in values: `read_file`,
   `apply_patch`, `edit_file`, `write_file`, `search_files`, `list_directory`,
   `shell`.
   Explicit MCP references use the full model-facing name, for example

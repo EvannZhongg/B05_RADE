@@ -16,15 +16,6 @@ class TextPart:
 
 
 @dataclass(frozen=True)
-class ImagePart:
-    path: str = ""
-    mime_type: str = "image/png"
-    filename: str = ""
-    size_bytes: int = 0
-    type: Literal["image"] = field(default="image", init=False)
-
-
-@dataclass(frozen=True)
 class FilePart:
     path: str = ""
     filename: str = ""
@@ -33,8 +24,7 @@ class FilePart:
     type: Literal["file"] = field(default="file", init=False)
 
 
-AttachmentPart: TypeAlias = ImagePart | FilePart
-ContentPart: TypeAlias = TextPart | AttachmentPart
+ContentPart: TypeAlias = TextPart | FilePart
 Content: TypeAlias = str | tuple[ContentPart, ...] | None
 
 
@@ -55,18 +45,11 @@ def text_content(content: Content) -> str | None:
 
 
 def historical_content(content: Content) -> str | None:
-    """Return text suitable for old turns and context compression.
-
-    Media is intentionally omitted: historical context must not cause the
-    same image bytes to be uploaded again on every model call.
-    """
+    """Return text and file references for old turns and context compression."""
     parts = content_parts(content)
     text = text_content(content)
-    has_image = any(isinstance(part, ImagePart) for part in parts)
     files = [part for part in parts if isinstance(part, FilePart)]
     sections = [text] if text else []
-    if has_image:
-        sections.append("[Image attachment omitted from historical context]")
     if files:
         sections.append(
             "Attached files:\n"

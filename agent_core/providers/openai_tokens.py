@@ -48,8 +48,6 @@ class TokenCounter:
             for field, value in message.items():
                 if isinstance(value, str):
                     total += self._text(value)
-                elif field == "content" and isinstance(value, list):
-                    total += sum(self._text(part["text"]) for part in value if part["type"] == "text")
                 elif field == "tool_calls":
                     total += sum(self._text(call["function"]["arguments"])
                                  + self._text(call["function"]["name"]) for call in value)

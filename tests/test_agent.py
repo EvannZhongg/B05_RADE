@@ -45,7 +45,7 @@ from agent_core import (
     ToolResultEvent,
     TurnControl,
     UserSteerAppliedEvent,
-    ImagePart,
+    FilePart,
     TextPart,
     ToolCatalog,
     ToolExecutionContext,
@@ -504,7 +504,6 @@ class AgentTest(unittest.TestCase):
         context = ContextManager(
             provider, session, system_prompt, CONSOLIDATOR_PROMPT,
             replace(AGENT_CONFIG, context=ContextCompressionConfig(keep_recent_units=2)),
-            media_root=TEST_WORKSPACE.path,
             memory_context=MemoryDocument(facts=("Persistent memory fact.",)),
         )
         tools = (
@@ -522,7 +521,6 @@ class AgentTest(unittest.TestCase):
             for message in compressed.messages
         ))
         self.assertIs(compressed.tools, original.tools)
-        self.assertEqual(compressed.media_root, original.media_root)
         self.assertEqual(compressed.messages[:-1], original.messages[:6])
         self.assertTrue(all(a is b for a, b in zip(compressed.messages[:-1], original.messages)))
         self.assertEqual(compressed.messages[-1], Message("user", CONSOLIDATOR_PROMPT))
@@ -1151,7 +1149,7 @@ class AgentTest(unittest.TestCase):
             ["old answer", "new request"],
         )
 
-    def test_archive_keeps_a_multi_tool_media_unit_whole(self) -> None:
+    def test_archive_keeps_a_multi_tool_unit_with_hook_feedback_whole(self) -> None:
         calls = (
             ToolCall("call-a", "read", {}),
             ToolCall("call-b", "read", {}),
@@ -1166,8 +1164,8 @@ class AgentTest(unittest.TestCase):
                 Message("tool", "A", tool_call_id="call-a"),
                 Message(
                     "user",
-                    (ImagePart(path="result.png"),),
-                    origin="tool_media",
+                    "Review the result.",
+                    origin="hook_feedback",
                 ),
             ],
         )
@@ -1201,9 +1199,9 @@ class AgentTest(unittest.TestCase):
             [message.tool_call_id for message in retained[1:3]],
             ["call-a", "call-b"],
         )
-        self.assertTrue(retained[3].is_tool_media)
+        self.assertEqual(retained[3].origin, "hook_feedback")
 
-    def test_archive_compresses_a_multi_tool_media_unit_whole(self) -> None:
+    def test_archive_compresses_a_multi_tool_unit_with_hook_feedback_whole(self) -> None:
         calls = (
             ToolCall("call-a", "read", {}),
             ToolCall("call-b", "read", {}),
@@ -1235,8 +1233,8 @@ class AgentTest(unittest.TestCase):
                 ),
                 Message(
                     "user",
-                    (ImagePart(path="result.png"),),
-                    origin="tool_media",
+                    "Review the result.",
+                    origin="hook_feedback",
                 ),
                 Message("assistant", "next"),
             ],
@@ -1862,17 +1860,17 @@ class AgentTest(unittest.TestCase):
         self.assertNotIn("assistant", history[0].content or "")
         self.assertNotIn("tool", history[0].content or "")
 
-    def test_recent_image_is_carried_into_next_request(self) -> None:
-        session = Session(session_id="images")
+    def test_recent_file_attachment_is_carried_into_next_request(self) -> None:
+        session = Session(session_id="files")
         session.add_item(
             "user",
             "look at this",
             REQUEST_TIME,
             attachments=(
-                ImagePart(
-                    path=".RADE/attachments/a1.png",
-                    mime_type="image/png",
-                    filename="a1.png",
+                FilePart(
+                    path=".RADE/attachments/report.pdf",
+                    mime_type="application/pdf",
+                    filename="report.pdf",
                     size_bytes=123,
                 ),
             ),
@@ -1885,17 +1883,16 @@ class AgentTest(unittest.TestCase):
         )
         agent.run("follow up")
 
-        self.assertEqual(provider.requests[0].media_root, TEST_WORKSPACE.path)
         historical = provider.requests[0].messages[1]
         self.assertEqual(historical.role, "user")
         self.assertEqual(
             historical.parts,
             (
                 TextPart(text="look at this"),
-                ImagePart(
-                    path=".RADE/attachments/a1.png",
-                    mime_type="image/png",
-                    filename="a1.png",
+                FilePart(
+                    path=".RADE/attachments/report.pdf",
+                    mime_type="application/pdf",
+                    filename="report.pdf",
                     size_bytes=123,
                 ),
             ),

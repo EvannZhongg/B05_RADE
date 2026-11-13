@@ -67,8 +67,7 @@ export function useSessionRuntime({
 
   const messages = useMemo(() => toMessages(
     pendingUserItem ? [...items, pendingUserItem] : items,
-    session.session_id,
-  ), [items, pendingUserItem, session.session_id]);
+  ), [items, pendingUserItem]);
   const turnPreviews = useMemo(() => messages
     .filter((message) => message.role === "user")
     .map((message) => userMessagePreview(message)), [messages]);

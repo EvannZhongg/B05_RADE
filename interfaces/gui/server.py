@@ -20,7 +20,6 @@ from agent_core import JsonlSessionStore
 from agent_runtime.scene_input import list_scene_inputs, read_scene_input
 from agent_runtime.settings import SettingsStore
 from interfaces.session_host import ActiveSessionRegistry
-from .routes.media import create_media_router
 from .routes.sessions import create_sessions_router
 from .routes.settings import create_settings_router
 from .routes.run_files import create_run_files_router
@@ -50,7 +49,6 @@ def create_app(
     )
     app.include_router(create_settings_router(settings))
     app.include_router(create_run_files_router(store))
-    app.include_router(create_media_router(store))
     app.include_router(
         create_sessions_router(
             store,

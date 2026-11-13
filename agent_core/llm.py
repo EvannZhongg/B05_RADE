@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
 from typing import Callable, Literal
 
 from .session import Message
@@ -15,9 +14,6 @@ class LLMRequest:
     messages: tuple[Message, ...]
     tools: tuple[ToolDefinition, ...] = ()
     max_generation_tokens: int | None = None
-    # Runtime-only root used to resolve relative media paths. It is not
-    # persisted in session logs or sent to the provider API.
-    media_root: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -41,11 +37,6 @@ class LLMResponse:
     provider_data: dict[str, object] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class ProviderCapabilities:
-    input_modalities: frozenset[str] = frozenset({"text"})
-
-
 class LLMProvider(ABC):
     @property
     def token_counting_identity(self) -> object:
@@ -57,9 +48,6 @@ class LLMProvider(ABC):
         """Model identifier, when supplied by the provider."""
         return None
 
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        return ProviderCapabilities()
     @property
     @abstractmethod
     def max_context_tokens(self) -> int:

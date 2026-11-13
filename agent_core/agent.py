@@ -11,7 +11,6 @@ from .llm import (
     with_generation_limit,
 )
 from .session import Session
-from .content import AttachmentPart
 from .errors import ProviderError, runtime_error_info
 from .tool_result import ToolResultNormalizer
 from .tool_batch import ToolBatchExecutor
@@ -98,13 +97,6 @@ class ToolResultEvent:
 
 
 @dataclass(frozen=True)
-class ToolMediaEvent:
-    """Tool attachments for model observation or explicit user delivery."""
-
-    attachments: tuple[AttachmentPart, ...]
-
-
-@dataclass(frozen=True)
 class ContextWindowEvent:
     window: ContextWindow
 
@@ -134,7 +126,6 @@ AgentEvent: TypeAlias = (
     | ToolBatchStartedEvent
     | ToolCallEvent
     | ToolResultEvent
-    | ToolMediaEvent
     | ContextWindowEvent
     | UserSteerAppliedEvent
     | JobStatusEvent
@@ -182,7 +173,6 @@ class Agent:
             memory_context=memory_context,
             jobs=context.jobs,
             config=config,
-            media_root=context.workspace.path,
         )
 
     def context_window(self, *, tools: ToolSet | None = None) -> ContextWindow:
@@ -411,17 +401,12 @@ class Agent:
                             )
                         )
 
-                def emit_media(media: tuple[AttachmentPart, ...]) -> None:
-                    if on_event is not None:
-                        on_event(ToolMediaEvent(attachments=media))
-
                 tool_batch_executor.execute(
                     response.tool_calls,
                     turn_id=turn_id,
                     turn_control=turn_control,
                     on_call=emit_call,
                     on_result=emit_result,
-                    on_media=emit_media,
                 )
                 if on_event is not None:
                     on_event(UnitCompletedEvent(unit_start, len(self._session.items)))

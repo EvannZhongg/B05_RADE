@@ -119,7 +119,7 @@ and optional non-empty `feedback`.
 
 `{}` is a valid passing response. `feedback` enters model context with origin
 `hook_feedback`; it is not a human input, user anchor or another Hook trigger.
-Tool Hook feedback is appended only after the complete Tool Batch's result/media
+Tool Hook feedback is appended only after the complete Tool Batch's result
 sequence. Provider context projection and compression preserve that sequence.
 
 An input denial fails the active Turn and records the original rejected input in

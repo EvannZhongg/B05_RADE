@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterable, Iterator, TextIO
 
 from .atomic import atomic_write_text
-from .content import FilePart, ImagePart, text_content
+from .content import FilePart, text_content
 from .file_lock import acquire_file_lock
 from .session import JournalEvent, JournalSink, Session, message_from_dict
 from .session_paths import default_runs_directory, session_directory, session_log_path, validate_session_id
@@ -404,7 +404,7 @@ def _record_session_activity(
             (
                 part.filename
                 for part in message.parts
-                if isinstance(part, (FilePart, ImagePart)) and part.filename
+                if isinstance(part, FilePart) and part.filename
             ),
             None,
         )

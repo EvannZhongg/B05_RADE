@@ -11,7 +11,6 @@ from threading import Event
 
 from agent_core import (
     FilePart,
-    ImagePart,
     JsonlSessionStore,
     HostCommandExecutor,
     PlanSnapshot,
@@ -181,7 +180,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
             first.add_item("assistant", "The NEEDLE is here")
             persist(store, first)
             second = Session("second")
-            second.add_item("user", (ImagePart(path="needle.png", filename="needle.png"), TextPart("中文 needle 正文")))
+            second.add_item("user", (FilePart(path="needle.txt", filename="needle.txt"), TextPart("中文 needle 正文")))
             persist(store, second)
 
             matches = store.search_messages(" needle ", limit=50, per_session_limit=3)
@@ -374,11 +373,11 @@ class JsonlSessionStoreTest(unittest.TestCase):
             session.begin_turn("t")
             session.add_item(
                 "user",
-                "分析这张图片",
+                "分析这份文件",
                 attachments=(
-                    ImagePart(
-                        path="attachments/image.png",
-                        filename="image.png",
+                    FilePart(
+                        path="attachments/report.pdf",
+                        filename="report.pdf",
                         size_bytes=12,
                     ),
                 ),
@@ -389,7 +388,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
             self.assertEqual(
                 store.list_sessions(),
                 [{
-                    "session_id": "attachment-session", "input_preview": "分析这张图片",
+                    "session_id": "attachment-session", "input_preview": "分析这份文件",
                     "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
                 }],
             )
@@ -404,9 +403,9 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 "user",
                 "",
                 attachments=(
-                    ImagePart(
-                        path="attachments/design.png",
-                        filename="design.png",
+                    FilePart(
+                        path="attachments/design.pdf",
+                        filename="design.pdf",
                         size_bytes=12,
                     ),
                 ),
@@ -426,9 +425,9 @@ class JsonlSessionStoreTest(unittest.TestCase):
                         mime_type="application/pdf",
                         size_bytes=24,
                     ),
-                    ImagePart(
-                        path="attachments/reference.png",
-                        filename="reference.png",
+                    FilePart(
+                        path="attachments/reference.txt",
+                        filename="reference.txt",
                         size_bytes=12,
                     ),
                 ),
@@ -440,7 +439,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 item["session_id"]: item["input_preview"]
                 for item in store.list_sessions()
             }
-            self.assertEqual(previews["single-attachment"], "design.png")
+            self.assertEqual(previews["single-attachment"], "design.pdf")
             self.assertEqual(
                 previews["multiple-attachments"],
                 "brief.pdf",

@@ -200,8 +200,6 @@ can be absent from that list.
 Session summaries include `session_id`, `input_preview` (a preview of the first
 user input), and `started_at` (the first run time in UTC).
 
-Tool media events reference files relative to the current run's `files/` directory.
-
 For a contest scene, send `scene_input: "scene1_1.json"`. Runtime reads the UTF-8
 file from `input/` relative to the Bridge process working directory. Filenames
 follow `scene<S>_<I>.json`, with `S` in 1–2 and `I` in 1–5. Runtime validates
@@ -271,7 +269,6 @@ restarting Bridge. Nested Runtime snapshots need not have a sequence of their ow
 | `context_window` | Current token limits and compression metrics. |
 | `tool_batch_started` | Tool declarations for a model call, with IDs/names/arguments. |
 | `tool_call`, `tool_result` | Call execution/status keyed by Tool call ID; indices are 1-based. Result has `ok` and nullable structured `error`. |
-| `tool_media` | Image or file attachment descriptors (`type`, `path`, `filename`, `mime_type`, `size_bytes`) emitted for tool observations. |
 | `plan_updated` | Full plan snapshot and revision. |
 | `job_status` | Background job ID, kind, status, opaque details. |
 | `hook_completed` | Hook invocation ID, Plugin-qualified hook ID, checkpoint, Session ID, outcome, decision, reason, timing and optional Tool call ID. See [Plugin Hooks](plugin-hooks.md). |

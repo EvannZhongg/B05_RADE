@@ -3,7 +3,6 @@ import { useAuiState } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
 import { CopyTextButton } from "../../CopyTextButton";
-import { MarkdownImage } from "./Attachments";
 
 const MARKDOWN_PLUGINS = [remarkGfm];
 
@@ -30,6 +29,10 @@ function CopyableTable({ node: _node, children, ...props }: ComponentPropsWithou
 
 function MarkdownLink({ node: _node, ...props }: ComponentPropsWithoutRef<"a"> & { node?: unknown }) {
   return <a {...props} target="_blank" rel="noopener noreferrer" />;
+}
+
+function MarkdownImage({ node: _node, src, alt, ...props }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
+  return src && /^https?:\/\//i.test(src) ? <img {...props} src={src} alt={alt ?? ""} /> : alt ?? null;
 }
 
 const MARKDOWN_COMPONENTS = { a: MarkdownLink, img: MarkdownImage, pre: CopyablePre, table: CopyableTable };

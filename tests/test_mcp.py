@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import tempfile
 import os
 import sys
@@ -12,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent_core import AgentCancelled, ImagePart, Session, ToolCall, ToolExecutionContext, ToolOutput, TurnControl, Workspace
+from agent_core import AgentCancelled, Session, ToolCall, ToolExecutionContext, TurnControl, Workspace
 from agent_core.mcp.config import (
     load_mcp_config,
     load_mcp_server_map,
@@ -21,7 +20,6 @@ from agent_core.mcp.config import (
 )
 from agent_core.mcp.tool import McpTool, qualified_tool_name
 from agent_core.mcp.manager import McpClientManager, McpServerInstructions
-from tests.image_fixtures import png_bytes
 
 
 class McpConfigTest(unittest.TestCase):
@@ -266,18 +264,20 @@ class McpToolTest(unittest.TestCase):
             )
         )
 
-    def test_converts_standard_image_content_to_tool_media(self) -> None:
+    def test_omits_image_content_and_preserves_text_and_structured_output(self) -> None:
         class Manager:
             def call_tool(self, server, tool, arguments, *, cancellation=None):
                 return {
                     "content": [
                         {
                             "type": "image",
-                            "data": base64.b64encode(png_bytes(12, 8)).decode(),
+                            "data": "aW1hZ2U=",
                             "mime_type": "image/png",
-                        }
+                        },
+                        {"type": "text", "text": "ready"},
                     ],
                     "is_error": False,
+                    "structured_content": {"status": "ready"},
                 }
 
         with tempfile.TemporaryDirectory() as directory:
@@ -289,14 +289,13 @@ class McpToolTest(unittest.TestCase):
                 "demo", "screenshot", "Capture", {"type": "object"}
             ).execute({}, context)
 
-            self.assertIsInstance(output, ToolOutput)
-            assert isinstance(output, ToolOutput)
-            self.assertEqual(len(output.attachments), 1)
-            self.assertIsInstance(output.attachments[0], ImagePart)
-            self.assertTrue(
-                (workspace.path / output.attachments[0].path).is_file()
-            )
-            self.assertNotIn("data", output.output["content"][0])
+            self.assertEqual(output, {
+                "content": [{"type": "text", "text": "ready"}],
+                "is_error": False,
+                "structured_content": {"status": "ready"},
+            })
+            self.assertEqual(list(workspace.path.iterdir()), [])
+
 
 class McpClientManagerTest(unittest.TestCase):
     def test_instructions_are_scoped_to_selected_tools_and_frozen_at_startup(self) -> None:

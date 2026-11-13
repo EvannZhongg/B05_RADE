@@ -24,7 +24,7 @@ RADE-server
 - **A complete agent loop**: streaming responses, tool batches, context compaction, steer, cancel, plans, and background jobs.
 - **Resumable sessions**: conversation and execution events are written to an append-only JSONL journal, and the TUI and GUI can read the same kind of session.
 - **Memory** stores long-term context for each run.
-- **Models and media** use Chat Completions or Responses through the OpenAI SDK. Subagents, context compression, and memory use the main agent’s selected provider. Models with image input can inspect images in the run files directory.
+- **Models** use Chat Completions or Responses through the OpenAI SDK. Subagents, context compression, and memory use the main agent’s selected provider.
 - **Extension system**: standalone skills, skills / agents / MCP / [command hooks](docs/plugin-hooks.md) provided by plugins, and standalone MCP servers.
 - **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, a run file tree, settings, and memory.
 
@@ -105,7 +105,7 @@ Frontends and SDK:
 | [`interfaces/protocol`](interfaces/protocol/README.md) | The TypeScript protocol package: exports, build, and change checklist |
 | [`interfaces/client`](interfaces/client/README.md) | Public Node/TypeScript stdio client, process lifecycle and integration example |
 | [`interfaces/tui`](interfaces/tui/README.md) | The Ink terminal interface, commands, input state, and Bridge subprocess attachment |
-| [`interfaces/gui`](interfaces/gui/README.md) | The FastAPI service, React interface, multi-session connections, HTTP / WebSocket API, and media access |
+| [`interfaces/gui`](interfaces/gui/README.md) | The FastAPI service, React interface, multi-session connections, HTTP / WebSocket API, and run file browsing |
 
 ## Configuration and data
 

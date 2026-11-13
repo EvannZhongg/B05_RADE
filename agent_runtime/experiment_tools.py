@@ -77,6 +77,7 @@ class ExperimentGetTool(Tool):
             name=self.name,
             description=(
                 "Get an experiment's status, validity, metrics, diagnostic and result reference in this run. "
+                "A successful experiment returns a result_ref relative to the run's files directory, usable with read_file. "
                 "Pass baseline_experiment_id to also compare expected values for the same scene snapshot."
             ),
             parameters={

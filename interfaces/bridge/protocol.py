@@ -18,7 +18,6 @@ from agent_core import (
     ContextWindowEvent,
     ToolBatchStartedEvent,
     ToolCallEvent,
-    ToolMediaEvent,
     ToolResultEvent,
     UserSteerAppliedEvent,
     JobStatusEvent,
@@ -357,22 +356,6 @@ def event_to_message(
             else result.error.to_dict(),
             "tool_index": event.tool_index,
             "tool_count": event.tool_count,
-        }
-
-    if isinstance(event, ToolMediaEvent):
-        return {
-            "type": "tool_media",
-            "turn_id": turn_id,
-            "attachments": [
-                {
-                    "type": part.type,
-                    "path": part.path,
-                    "mime_type": part.mime_type,
-                    "filename": part.filename,
-                    "size_bytes": part.size_bytes,
-                }
-                for part in event.attachments
-            ],
         }
 
     if isinstance(event, UserSteerAppliedEvent):

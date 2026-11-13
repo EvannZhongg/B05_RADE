@@ -649,7 +649,7 @@ describe('sessions', () => {
     ]);
   });
 
-  it.each(['tool_media', 'tool_delivery'] as const)('renders an interrupted tool call and %s images as a notice', (origin) => {
+  it('renders an interrupted tool call as an error', () => {
     const state = reducer(ready(), {
       type: 'message',
       message: {
@@ -660,21 +660,12 @@ describe('sessions', () => {
             content: null,
             tool_calls: [{ id: 'call-1', name: 'shell', arguments: { command: 'ls' } }],
           },
-          {
-            role: 'user',
-            origin,
-            content: [
-              { type: 'text', text: 'tool media' },
-              { type: 'image', path: '.RADE/a.png', mime_type: 'image/png' },
-            ],
-          },
         ],
       },
     });
 
     expect(state.entries).toMatchObject([
       { kind: 'tool', state: 'error' },
-      { kind: 'notice', text: 'Viewing 1 image(s): .RADE/a.png' },
     ]);
   });
 

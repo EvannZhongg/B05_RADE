@@ -37,7 +37,7 @@ RuntimeHost
 - 使用 OpenAI SDK 按配置装配 Chat Completions 或 Responses
 - 为执行面建立一个以当前运行的 `files/` 为工作目录的宿主命令执行器
 - 从内置 Catalog 按主 Agent 和子 Agent 角色选择 Tool
-- 注入 Session、Plan、Memory、命令执行器、图片和用户交互能力
+- 注入 Session、Plan、Memory、命令执行器和用户交互能力
 - 加载 standalone Skill、Plugin Skill、Plugin Agent 与 MCP Server
 - 构造子 Agent 角色注册表和后台 Job Manager
 - 启动 MCP Server 并汇总非致命 Runtime warning
@@ -121,7 +121,7 @@ Skill 仅从配置目录下的 `skills/` 和 `plugins/` 加载，默认分别为
 
 每个 `provider_config.json` 的 `providers.<name>` 条目可以配置 `api: "responses"` 或 `api: "chat_completions"`，按协议选择原生 OpenAI SDK；与中转域名无关，也不在失败后切换协议。显式选择协议时，除 `deepseek/` 路由前缀会移除外，`model` 是原样发送的服务端模型 ID，例如 `gpt-6-astra` 或 `openai/gpt-5`（后者适用于要求该 ID 的网关）。
 
-省略 `api` 时，DeepSeek 模型默认使用 Chat Completions，其余模型默认使用 Responses。自动选择时会移除 `openai/` 前缀。DeepSeek 模型在两种协议下均移除 `deepseek/` 前缀。其他带服务商前缀的模型可以使用 LiteLLM 的元数据和 token 估算。
+省略 `api` 时，DeepSeek 模型默认使用 Chat Completions，其余模型默认使用 Responses。自动选择时会移除 `openai/` 前缀。DeepSeek 模型在两种协议下均移除 `deepseek/` 前缀。其他带服务商前缀的模型可以使用 LiteLLM 的 token 上限和文本 token 估算。
 
 Qwen 和 Ollama 预设使用 Chat Completions。使用本地 Ollama 时，请将 `max_context_tokens` 与服务实际分配给模型的上下文大小对齐。端点格式见 [Qwen](https://www.alibabacloud.com/help/en/model-studio/model-calling-in-sub-workspace) 和 [Ollama](https://docs.ollama.com/api/openai-compatibility) 文档。
 
@@ -186,7 +186,7 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 
 - `strategy_list` 返回已注册策略的参数范围和通过校验的配置。
 - `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。
-- `experiment_get` 查询本次运行的实验记录。带上 `baseline_experiment_id` 可比较同一输入快照的期望处理价值。成功结果的 `result_ref` 相对于运行目录，指向 `experiments/` 下的中间分配文件，实验状态和指标随 Session Journal 保存。
+- `experiment_get` 查询本次运行的实验记录。带上 `baseline_experiment_id` 可比较同一输入快照的期望处理价值。求解产物写入 `files/experiments/<id>/allocation.json`。成功结果的 `result_ref` 相对于 `files/`，可直接传给 `read_file`。实验状态和指标随 Session Journal 保存。
 
 ## 模块索引
 

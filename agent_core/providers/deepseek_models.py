@@ -13,5 +13,4 @@ def model_info(model: str) -> dict[str, object]:
     name = model.removeprefix("deepseek/")
     if name not in {"deepseek-flash", "deepseek-v4-pro"}:
         return {}
-    return {"max_input_tokens": 1_000_000, "max_output_tokens": 393_216,
-            "supports_vision": name == "deepseek-flash"}
+    return {"max_input_tokens": 1_000_000, "max_output_tokens": 393_216}

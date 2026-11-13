@@ -17,14 +17,6 @@ export type ToolCall = {
   argument_error?: ProtocolError;
 };
 
-export type ImageAttachment = {
-  type: 'image';
-  path: string;
-  filename: string;
-  mime_type: string;
-  size_bytes: number;
-};
-
 export type FileAttachment = {
   type: 'file';
   path: string;
@@ -32,8 +24,6 @@ export type FileAttachment = {
   mime_type: string;
   size_bytes: number;
 };
-
-export type ToolMedia = ImageAttachment | FileAttachment;
 
 export type ProtocolError = {
   type: string;
@@ -113,7 +103,6 @@ export type SessionSummary = {
 
 export type SessionContentPart =
   | { type: 'text'; text: string }
-  | ImageAttachment
   | FileAttachment;
 
 /**
@@ -131,7 +120,7 @@ export type SessionItem = {
   reasoning?: string | null;
   // Non-conversation origins mark runtime-generated context that receives
   // special transcript rendering instead of a normal user message.
-  origin?: 'conversation' | 'tool_media' | 'tool_delivery' | 'job_result' | 'user_interaction' | 'hook_feedback';
+  origin?: 'conversation' | 'job_result' | 'user_interaction' | 'hook_feedback';
 };
 
 export type BackgroundJob = {
@@ -225,11 +214,6 @@ export type Incoming = (
       error: ProtocolError | null;
       tool_index: number;
       tool_count: number;
-    }
-  | {
-      type: 'tool_media';
-      turn_id: string;
-      attachments: ToolMedia[];
     }
   | ({
       type: 'job_status';

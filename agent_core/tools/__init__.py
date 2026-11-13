@@ -14,7 +14,6 @@ from .builtin import (
     EditFileTool,
     ListDirectoryTool,
     ReadFileTool,
-    ReadImageTool,
     ReadSkillTool,
     SearchFilesTool,
     ShellTool,
@@ -28,7 +27,7 @@ from .builtin import (
 from .catalog import ToolCatalog, ToolSet
 from .config import ROLE_TOOL_NAMES, TOOL_NAMES, ToolConfig, load_tool_config
 from .context import ToolExecutionContext
-from .paths import resolve_image, resolve_readable_path
+from .paths import resolve_readable_path
 
 __all__ = [
     "ApplyPatchTool",
@@ -38,7 +37,6 @@ __all__ = [
     "MAX_TOOL_RESULT_CHARS",
     "ROLE_TOOL_NAMES",
     "ReadFileTool",
-    "ReadImageTool",
     "ReadSkillTool",
     "SearchFilesTool",
     "ShellTool",
@@ -61,6 +59,5 @@ __all__ = [
     "WriteFileTool",
     "builtin_catalog",
     "load_tool_config",
-    "resolve_image",
     "resolve_readable_path",
 ]

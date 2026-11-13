@@ -33,7 +33,6 @@ class ToolExecutionContext:
     workspace: Workspace
     session: "Session"
     command_executor: "CommandExecutor | None" = None
-    vision_input: bool = False
     mcp: "McpClientManager | None" = None
     subagents: "SubagentRuntime | None" = None
     jobs: "JobManager | None" = None

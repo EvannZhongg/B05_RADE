@@ -129,9 +129,6 @@ class SubagentRuntime:
         context = replace(
             parent,
             session=session,
-            vision_input=(
-                "image" in role.provider.capabilities.input_modalities
-            ),
             subagents=None,
             jobs=None,
             plan=None,
@@ -144,7 +141,6 @@ class SubagentRuntime:
         tools = self._catalog.select(
             (
                 *role.tools,
-                "read_image",
                 "read_skill",
                 "remember",
             ),

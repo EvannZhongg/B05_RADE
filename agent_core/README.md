@@ -16,7 +16,7 @@ interfaces → agent_runtime → agent_core
 
 `Agent.run()` 成功返回 `AgentRunResult`，包含最终回答 `content` 和最后一次普通模型调用的 `usage`。执行过程和 Provider 状态保存在 Session Journal 中。
 
-执行过程通过结构化事件输出，包括文本与 reasoning 增量、完整消息、Tool 批次、Tool 调用与结果、媒体、上下文窗口、steer 应用和后台 Job 状态。Core 不决定这些事件在前端如何展示。
+执行过程通过结构化事件输出，包括文本与 reasoning 增量、完整消息、Tool 批次、Tool 调用与结果、上下文窗口、steer 应用和后台 Job 状态。Core 不决定这些事件在前端如何展示。
 
 相关模块：
 
@@ -44,7 +44,7 @@ interfaces → agent_runtime → agent_core
 
 ## 上下文与内容
 
-消息内容统一表示为文本、图片和文件 part。图片可以进入支持视觉的 Provider；普通附件以 Workspace 文件引用进入上下文。
+消息内容由文本和文件引用组成。Provider 将普通文件附件的 Workspace 相对路径及文件信息作为文本加入请求。
 
 `ContextManager` 按完整语义单元投影 Session 历史，计算窗口占用，并在达到阈值时压缩较早上下文、保留近期单元和用户锚点。压缩使用当前 Agent 的模型，保留主请求的 system、工具定义和原始待归档消息前缀，在尾部追加压缩指令；近期尾部不送入压缩，格式修复指令也追加在尾部。
 
@@ -52,10 +52,9 @@ interfaces → agent_runtime → agent_core
 
 | 模块 | 职责 |
 | --- | --- |
-| `content.py` | 文本、图片、文件与附件数据类型 |
+| `content.py` | 文本与文件附件数据类型 |
 | `projection.py` | 从 Session Journal 投影模型上下文单元 |
 | `context_manager.py` | token 预算、上下文压缩和窗口快照 |
-| `media.py` | 图片格式探测、尺寸、编码与 token 估算 |
 
 ## Session、计划与持久化
 
@@ -83,7 +82,6 @@ Runtime 通过 `JsonlSessionStore.open_journal()` 持有当前 Session 的写入
 
 - Workspace 文件读取、搜索、列举、写入、编辑和 patch
 - Shell 命令执行
-- 图片读取
 - Skill 读取和子 Agent 派发
 - 后台 Shell 与子 Agent Job 的查询和取消
 - 用户提问、计划更新与长期记忆写入
@@ -122,15 +120,11 @@ Session 在应用普通模型和压缩事件时累计 `CacheUsage`，只计入�
 
 每次调用落盘后，`ModelCompletedEvent` 经 Bridge 推送本次用量和会话累计快照，`CompressionCompletedEvent` 只推送会话累计缓存快照，两个前端立即更新，无需等待工具执行、压缩重试或 Turn 结束。`runtime_state.cache_usage` 与 GUI 历史读取提供相同累计快照，事件重放不会重复计数。Bridge 的 `turn_completed.usage` 表示最后一次普通模型调用的用量，不是整个 Turn 的累计用量。
 
-`ModelProvider` 共享媒体序列化、模型信息缓存和可取消的流读取。原生 OpenAI 模型的输入上限、输出上限和视觉能力来自 `providers/openai_models.py` 的本地资料，只维护经官方模型页核验的规范模型名，不维护日期快照、chat 别名或预览条目。资料使用官方公布的总上下文窗口，输出预留由 Runtime 扣除；token 估算使用 `tiktoken` 与随包分发的词表，不联网下载或导入 LiteLLM。工具 schema 按完整 JSON 计入，图片沿用共享尺寸估算，加密推理沿用服务端 usage。清单外的模型（含日期快照和别名）必须显式配置 `max_context_tokens`，按文本模型处理且不提供自动输出上限；未知别名和上游尚未公布 tokenizer 映射的 GPT-6 使用 `cl100k_base` 做本地估算，不能视为服务端精确计数。资料表与词表随软件发布维护，条目清单以该模块为准。
+`ModelProvider` 共享消息序列化、模型上限缓存和可取消的流读取。原生 OpenAI 模型的输入和输出上限来自 `providers/openai_models.py` 的本地资料，覆盖经官方模型页核验的规范模型名。Runtime 从总上下文窗口扣除输出预留。token 估算在本地使用 `tiktoken` 和随包词表，工具 schema 按完整 JSON 计入，加密推理按服务端 usage 计入。清单外的 OpenAI 模型（含日期快照和别名）需要显式配置 `max_context_tokens`。未知别名和上游尚未公布 tokenizer 映射的 GPT-6 使用 `cl100k_base` 做本地估算。资料表与词表随软件发布维护。
 
 原生文本计数器只缓存编码对象，每次对请求文本与完整 JSON 工具定义重新分词。ContextManager 使用最近一次成功普通模型调用的输入 usage，加上当前请求与锚点请求的本地估算差量；压缩判断和上下文展示共享这个值。锚点随 `model_completed` 写入 Journal，可恢复；压缩事件直接清除锚点，不将压缩状态重复写入指纹；端点、模型、协议、推理参数、系统提示、工具定义、计数策略或压缩状态变化时失效。缓存 token 已包含在输入 usage 中，不再相加；压缩和记忆调用不替换普通请求锚点。首次请求及失效后的请求仍为本地估算，增量误差仍可能累积。DeepSeek 原生 Chat 在无工具时忽略历史 reasoning；Responses 只回传原生 reasoning 项，展示摘要不计入输入，加密 reasoning 按原生回传状态和 usage 计入。
 
-DeepSeek Flash 与 V4 Pro 默认使用 Chat Completions，模型资料和文本计数在本地处理。其他带服务商前缀的模型可使用 LiteLLM 的元数据和 token 估算。所有模型请求由 OpenAI SDK 发送。
-
-图片在共享请求序列化阶段按 `providers/image_limits.py` 的内部策略处理，覆盖用户附件、Tool 图片及历史重发。已知服务的单边像素上限按整段对话的图片数量分档，数值随服务变化，以该模块为准；策略识别官方端点，未指定端点时使用模型路由，未知端点和未覆盖的服务保持原有发送行为。客户端上传限制与服务端推理缩放尺寸分别处理。超限图片仅在内存中等比缩小，发送时附带原图尺寸和坐标换算；原始附件与 Journal 不变。编码缓存包含目标尺寸上限，token 估算使用发送尺寸且不解码图片。
-
-所有视觉 Provider 在 token 估算和发送阶段都使用相同的格式探测和 5 MiB 字节上限检查。缺失图片以文本提示替代，不计图片 token；存在但为空、格式不可识别或超出字节上限的图片直接报错，不按 0 token 忽略，也不发送给上游。路径越界等调用错误同样直接报错。未知服务仅不应用尺寸缩放规则，仍受统一图片校验约束。
+DeepSeek Flash 与 V4 Pro 默认使用 Chat Completions，模型上限和文本计数在本地处理。其他带服务商前缀的模型可使用 LiteLLM 查询输入和输出 token 上限，并估算文本请求的 token 数。所有模型请求由 OpenAI SDK 发送。
 
 Responses 工具参数从 `response.completed` 的完整 output 读取，推理及加密状态通过消息的 `provider_data` 写入 Session Journal，后续请求原样回传；加密推理的 token 数使用服务端 usage 纳入上下文估算。Bridge 的呈现消息和 GUI 的会话读取响应不携带该状态。原生 SDK 流中断或协议异常会报错，不通过强制工具选择重新请求。
 
@@ -138,13 +132,12 @@ Responses 工具参数从 `response.completed` 的完整 output 读取，推理�
 
 | 模块 | 职责 |
 | --- | --- |
-| `llm.py` | Provider 抽象、请求、响应与能力类型 |
-| `providers/base.py` | 模型信息缓存、媒体与取消机制 |
-| `providers/openai_models.py` | 原生 OpenAI 模型的本地上限与视觉能力 |
-| `providers/deepseek_models.py` | DeepSeek 当前模型的本地上限与视觉能力 |
+| `llm.py` | Provider 抽象、请求与响应类型 |
+| `providers/base.py` | 模型上限缓存、消息序列化与取消机制 |
+| `providers/openai_models.py` | 原生 OpenAI 模型的本地上限 |
+| `providers/deepseek_models.py` | DeepSeek 当前模型的本地上限 |
 | `providers/openai_tokens.py` | 使用随包词表的本地请求 token 估算 |
 | `providers/openai_provider.py` | 原生 Responses 与 Chat Completions 协议 |
-| `providers/image_limits.py` | 已知服务的图片上传尺寸限制 |
 | `providers/reasoning.py` | `reasoning_effort` 与自定义推理参数的校验和路由映射 |
 | `providers/tool_call_stream.py` | 流式 Tool Call 组装与校验 |
 | `auxiliary.py` | 辅助模型调用的耗时、结果与用量统计 |

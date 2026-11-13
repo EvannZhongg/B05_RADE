@@ -1,7 +1,6 @@
 import json
 from abc import abstractmethod
 from contextvars import copy_context
-from pathlib import Path
 from queue import Empty, Full, Queue
 from threading import Event, Thread
 from types import GeneratorType
@@ -11,20 +10,11 @@ from agent_core.llm import (
     LLMProvider,
     LLMRequest,
     LLMResponse,
-    ProviderCapabilities,
 )
-from agent_core.content import FilePart, ImagePart, TextPart
-from agent_core.media import (
-    encode_data_url,
-    estimate_image_tokens,
-    fit_image_size,
-    probe_image,
-)
-from agent_core.path_utils import path_for_comparison
+from agent_core.content import FilePart, TextPart
 from agent_core.session import Message
 from agent_core.tools import ToolDefinition
 
-from .image_limits import image_edge_limit
 from .reasoning import normalize_semantic_effort, validate_reasoning_parameters
 
 
@@ -34,8 +24,7 @@ class ModelProvider(LLMProvider):
     @property
     def token_counting_identity(self) -> object:
         return [super().token_counting_identity, self._base_url,
-                self._reasoning_effort, self._reasoning_parameters,
-                str(self._media_root), "input-estimate-v1"]
+                self._reasoning_effort, self._reasoning_parameters, "input-estimate-v2"]
 
     @property
     def model_name(self) -> str:
@@ -47,7 +36,6 @@ class ModelProvider(LLMProvider):
         base_url: str | None = None,
         api_key: str | None = None,
         max_context_tokens: int | None = None,
-        media_root: Path | None = None,
         request_timeout_seconds: int = 300,
         max_retries: int = 2,
         reasoning_effort: str | None = None,
@@ -56,7 +44,6 @@ class ModelProvider(LLMProvider):
         self._model = model
         self._base_url = base_url
         self._api_key = api_key
-        self._media_root = media_root.expanduser().resolve() if media_root is not None else None
         if (
             isinstance(request_timeout_seconds, bool)
             or not isinstance(request_timeout_seconds, int)
@@ -102,32 +89,6 @@ class ModelProvider(LLMProvider):
                 model_info,
                 model,
             )
-        self._capabilities: ProviderCapabilities | None = None
-
-    @property
-    def capabilities(self) -> ProviderCapabilities:
-        if self._capabilities is None:
-            self._capabilities = self.capabilities_for_model(
-                self._model,
-                self._base_url,
-            )
-        return self._capabilities
-
-    @classmethod
-    def capabilities_for_model(
-        cls,
-        model: str,
-        base_url: str | None = None,
-    ) -> ProviderCapabilities:
-        modalities = {"text"}
-        try:
-            info = cls.model_info_for(model, base_url)
-            if info.get("supports_vision") is True:
-                modalities.add("image")
-        except Exception:
-            # Unknown metadata must not prevent text-only providers being used.
-            pass
-        return ProviderCapabilities(frozenset(modalities))
 
     @property
     def max_context_tokens(self) -> int:
@@ -269,81 +230,11 @@ def _cancellable_chunks(
             close()
 
 
-def _request_messages(
-    request: LLMRequest,
-    provider: ModelProvider | None = None,
-    *,
-    encode_media: bool = True,
-) -> list[dict[str, object]]:
-    max_image_edge = _request_image_edge_limit(request, provider)
+def _request_messages(request: LLMRequest) -> list[dict[str, object]]:
     return [
         {"role": "system", "content": request.system_prompt},
-        *[
-            _message_to_dict(
-                message,
-                include_images=(
-                    provider is None
-                    or "image" in provider.capabilities.input_modalities
-                ),
-                media_root=_media_root(request, provider),
-                encode_media=encode_media,
-                max_image_edge=max_image_edge,
-            )
-            for message in request.messages
-        ],
+        *(_message_to_dict(message) for message in request.messages),
     ]
-
-
-def _media_root(
-    request: LLMRequest,
-    provider: "ModelProvider | None",
-) -> Path | None:
-    if request.media_root is not None:
-        return request.media_root
-    if provider is not None:
-        return provider._media_root
-    return None
-
-
-def _media_tokens(
-    request: LLMRequest,
-    provider: "ModelProvider | None",
-) -> int:
-    """Sum the estimated cost of every image the request will send."""
-    if provider is not None and "image" not in provider.capabilities.input_modalities:
-        return 0
-    media_root = _media_root(request, provider)
-    max_image_edge = _request_image_edge_limit(request, provider)
-    total = 0
-    for message in request.messages:
-        for part in message.parts:
-            if not isinstance(part, ImagePart):
-                continue
-            try:
-                path = _resolve_media_path(part.path, media_root)
-                info = probe_image(path)
-            except FileNotFoundError:
-                # A missing image is sent as a short text notice, so
-                # it costs nothing beyond what the tokenizer counted.
-                continue
-            total += estimate_image_tokens(*fit_image_size(info.width, info.height, max_image_edge))
-    return total
-
-
-def _request_image_edge_limit(request: LLMRequest, provider: ModelProvider | None) -> int | None:
-    if provider is None or "image" not in provider.capabilities.input_modalities:
-        return None
-    media_root = _media_root(request, provider)
-    count = 0
-    for message in request.messages:
-        for part in message.parts:
-            if isinstance(part, ImagePart):
-                try:
-                    _resolve_media_path(part.path, media_root)
-                except FileNotFoundError:
-                    continue
-                count += 1
-    return image_edge_limit(provider.model_name, provider._base_url, count)
 
 
 def _request_tools(request: LLMRequest) -> list[dict[str, object]]:
@@ -367,23 +258,10 @@ def _get_model_max_context_tokens(
     return max_context_tokens
 
 
-def _message_to_dict(
-    message: Message,
-    *,
-    include_images: bool = True,
-    media_root: Path | None = None,
-    encode_media: bool = True,
-    max_image_edge: int | None = None,
-) -> dict[str, object]:
+def _message_to_dict(message: Message) -> dict[str, object]:
     data: dict[str, object] = {
         "role": message.role,
-        "content": _content_to_provider_format(
-            message,
-            include_images=include_images,
-            media_root=media_root,
-            encode_media=encode_media,
-            max_image_edge=max_image_edge,
-        ),
+        "content": _content_to_provider_format(message),
     }
     if message.reasoning is not None:
         data["reasoning_content"] = message.reasoning
@@ -404,89 +282,18 @@ def _message_to_dict(
     return data
 
 
-def _content_to_provider_format(
-    message: Message,
-    *,
-    include_images: bool = True,
-    media_root: Path | None = None,
-    encode_media: bool = True,
-    max_image_edge: int | None = None,
-) -> object:
+def _content_to_provider_format(message: Message) -> str | None:
     parts = message.parts
     if not parts:
         return None
-    if all(isinstance(part, TextPart) for part in parts):
-        return "".join(part.text for part in parts)
+    text = "".join(part.text for part in parts if isinstance(part, TextPart))
     files = [part for part in parts if isinstance(part, FilePart)]
-    file_notice = _attached_files_notice(files)
-    if not include_images:
-        # Preserve attachment paths for models that only accept text.
-        text = "".join(part.text for part in parts if isinstance(part, TextPart))
-        paths = [part.path for part in parts if isinstance(part, ImagePart)]
-        listed = "\n".join(f"- {path}" for path in paths)
-        sections = [text] if text else []
-        if paths:
-            sections.append(f"Attached images (this model cannot read them):\n{listed}")
-        if file_notice:
-            sections.append(file_notice)
-        return "\n\n".join(sections)
-    rendered: list[dict[str, object]] = []
-    for part in parts:
-        if isinstance(part, TextPart):
-            if part.text:
-                rendered.append({"type": "text", "text": part.text})
-        elif isinstance(part, ImagePart):
-            try:
-                path = _resolve_media_path(part.path, media_root)
-            except FileNotFoundError:
-                rendered.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            "[Image attachment unavailable in this workspace: "
-                            f"{part.path}]"
-                        ),
-                    }
-                )
-                continue
-            # Validate the same formats and byte limit used by token counting,
-            # regardless of whether this service needs dimension adaptation.
-            info = probe_image(path)
-            if max_image_edge is not None:
-                width, height = fit_image_size(info.width, info.height, max_image_edge)
-                if (width, height) != (info.width, info.height):
-                    rendered.append({
-                        "type": "text",
-                        "text": (
-                            f"[Image {part.path}: sent at {width}x{height}; "
-                            f"original {info.width}x{info.height}. "
-                            "To use original-image pixel coordinates or screenshot coordinate metadata, "
-                            f"multiply image x by {info.width / width:.8g} "
-                            f"and y by {info.height / height:.8g} first.]"
-                        ),
-                    })
-            if not encode_media:
-                # Counting tokens never needs the bytes: the caller adds
-                # each image's estimated cost separately. A placeholder
-                # keeps the message shape intact for the tokenizer.
-                rendered.append({"type": "text", "text": f"[image {part.path}]"})
-                continue
-            rendered.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": encode_data_url(path, max_edge=max_image_edge)
-                    },
-                }
-            )
-    if file_notice:
-        rendered.append({"type": "text", "text": file_notice})
-    return rendered
+    if not files:
+        return text
+    return "\n\n".join(filter(None, (text, _attached_files_notice(files))))
 
 
 def _attached_files_notice(files: list[FilePart]) -> str:
-    if not files:
-        return ""
     lines = [
         "Attached files are available at these workspace-relative paths. "
         "Use the available tools to inspect or process them as appropriate:"
@@ -502,33 +309,6 @@ def _attached_files_notice(files: list[FilePart]) -> str:
             + f", size_bytes={part.size_bytes}"
         )
     return "\n".join(lines)
-
-
-def _resolve_media_path(path: str, media_root: Path | None) -> Path:
-    candidate = Path(path)
-    was_relative = not candidate.is_absolute()
-    if was_relative:
-        if media_root is None:
-            raise ValueError(
-                "relative image paths require a provider media_root"
-            )
-        candidate = media_root / candidate
-    resolved = candidate.expanduser().resolve()
-    if was_relative and media_root is not None:
-        # Both sides must be resolved before being compared: a root that
-        # still contains a symlink (macOS serves /var as /private/var)
-        # would not be a prefix of the resolved candidate, and a
-        # legitimate path would be rejected as an escape.
-        root = media_root.expanduser().resolve()
-        try:
-            path_for_comparison(resolved).relative_to(
-                path_for_comparison(root)
-            )
-        except ValueError as error:
-            raise ValueError("image path must stay within media_root") from error
-    if not resolved.is_file():
-        raise FileNotFoundError(f"image attachment does not exist: {path}")
-    return resolved
 
 
 def _tool_definition_to_dict(tool: ToolDefinition) -> dict[str, object]:

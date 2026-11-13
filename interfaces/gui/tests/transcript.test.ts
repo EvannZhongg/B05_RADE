@@ -100,7 +100,7 @@ describe("process folding", () => {
     { types: ["text", "text"], expected: [] },
     { types: ["reasoning", "tool-call"], expected: [0, 1] },
     { types: ["reasoning", "text", "tool-call", "text", "reasoning", "text"], expected: [0, 2, 4] },
-    { types: ["text", "image", "file", "tool-call"], expected: [3] },
+    { types: ["text", "file", "tool-call"], expected: [2] },
   ])("only folds execution parts in $types", ({ types, expected }) => {
     expect(turnProcessPartIndexes(types.map((type) => ({ type })))).toEqual(expected);
   });
@@ -202,7 +202,6 @@ describe("isTurnActivity", () => {
     { type: "assistant_delta", turn_id: "t1", text: "hi", model_call_index: 1 },
     { type: "reasoning_delta", turn_id: "t1", text: "thinking", model_call_index: 1 },
     { type: "tool_batch_started", turn_id: "t1", model_call_index: 1, tool_calls: [] },
-    { type: "tool_media", turn_id: "t1", attachments: [] },
     { type: "assistant_message", turn_id: "t1", content: "hi", timestamp_utc: "2026-09-16T00:00:00Z", model_call_index: 1 },
     { type: "job_status", turn_id: "t1", job_id: "job-1", kind: "shell", status: "running", details: { command: "ls" } },
   ] satisfies Incoming[])("recognizes $type", (message) => {
@@ -480,53 +479,6 @@ describe("applyMessage", () => {
     });
     // The protocol carries no output, only the status.
     expect(JSON.parse(items[1].content as string)).toEqual({ ok: true });
-  });
-
-  it("renders tool media immediately with the active assistant reply", () => {
-    const { items } = fold([
-      {
-        type: "tool_batch_started",
-        turn_id: "t1",
-        model_call_index: 1,
-        tool_calls: [{ id: "image-call", name: "read_image", arguments: { paths: ["image.png"] } }],
-      },
-      {
-        type: "tool_result",
-        turn_id: "t1",
-        tool_call_id: "image-call",
-        name: "read_image",
-        ok: true,
-        error: null,
-        tool_index: 1,
-        tool_count: 1,
-      },
-      {
-        type: "tool_media",
-        turn_id: "t1",
-        attachments: [{
-          type: "image",
-          path: ".RADE/attachments/image.png",
-          filename: "image.png",
-          mime_type: "image/png",
-          size_bytes: 123,
-        }],
-      },
-    ]);
-
-    const messages = toMessages(items, "session-1");
-    expect(messages).toHaveLength(1);
-    expect(messages[0].role).toBe("assistant");
-    expect(messages[0].content).toEqual([
-      expect.objectContaining({ type: "tool-call", toolCallId: "image-call" }),
-      {
-        type: "image",
-        image: ".RADE/attachments/image.png",
-        filename: "image.png",
-        providerMetadata: {
-          RADE: { session_id: "session-1" },
-        },
-      },
-    ]);
   });
 
   it("applies a later tool result before earlier calls finish", () => {

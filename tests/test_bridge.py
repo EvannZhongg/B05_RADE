@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests.provider_fixtures import capabilities_stub, TEXT_MODEL, VISION_MODEL
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 
 from agent_core import (
@@ -17,7 +16,6 @@ from agent_core import (
     CacheUsage,
     TokenUsage,
     AssistantMessageDeltaEvent,
-    ProviderCapabilities,
     AssistantMessageEvent,
     ModelCompletedEvent,
     CompressionCompletedEvent,
@@ -49,7 +47,6 @@ from agent_core import (
 from agent_core.usage import usage_to_dict
 from agent_core.session_paths import session_directory
 from agent_core.projection import project_context_units
-from agent_core.providers import ModelProvider
 from agent_core.tools.config import ROLE_TOOL_NAMES, TOOL_NAMES
 from agent_runtime.host import RuntimeHost
 from agent_runtime.execution_plane import ExecutionPlane
@@ -1775,16 +1772,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             )
         )
 
-        with patch.object(
-            ModelProvider,
-            "capabilities_for_model",
-            classmethod(
-                lambda cls, model, base_url=None: ProviderCapabilities(
-                    frozenset({"text", "image"})
-                )
-            ),
-        ):
-            plane = bridge.host.planes.ensure(bridge.host.sessions)
+        plane = bridge.host.planes.ensure(bridge.host.sessions)
         main_provider = plane.agent._provider
         subagents = plane.agent._tools._context.subagents
         assert subagents is not None
@@ -2704,26 +2692,6 @@ class PluginAgentStartTest(BridgeTestCase):
         self.assertEqual(reviewer.tools, ROLE_TOOL_NAMES)
         self.assertIs(reviewer.provider, plane.provider)
         self.assertEqual(plane.provider.model_name, "openai/second")
-
-
-class ReadImageAvailabilityTest(BridgeTestCase):
-    def test_main_agent_only_gets_read_image_with_a_vision_model(self) -> None:
-        for model in (TEXT_MODEL, VISION_MODEL):
-            with self.subTest(model=model):
-                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-                message = open_session_message(root, provider_config={
-                    "main_agent": {"provider": "test"},
-                    "providers": {"test": {"model": model, "key": "test", "api": "chat_completions", "max_context_tokens": 1000}},
-                })
-                with patch.object(ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)):
-                    host = RuntimeHost(root)
-                    self.addCleanup(host.close)
-                    host.open_session()
-                    plane = host.planes.ensure(host.sessions)
-                self.assertEqual(
-                    "read_image" in {tool.name for tool in plane.agent._tools.definitions},
-                    model == VISION_MODEL,
-                )
 
 
 if __name__ == "__main__":

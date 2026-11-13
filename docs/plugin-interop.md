@@ -30,7 +30,7 @@ Read the requested source, analyze it, and report concrete findings.
 ```
 
 `tools` 保持原有内置角色工具范围及顺序，允许附加完整 MCP 工具名。省略仍选择原有
-内置角色工具，空数组不选择声明工具；Skill 和图片工具仍由既有能力推导机制添加。
+内置角色工具，空数组不选择声明工具。存在可用 Skill 时，Runtime 会添加 Skill 工具。
 不增加别名、通配符或隐式授权。可以显式引用其他启用插件或 standalone MCP Server 的工具。
 
 解析器检查数组类型、重复项和引用语法，Runtime 在 MCP 发现、allowlist 过滤和 Catalog

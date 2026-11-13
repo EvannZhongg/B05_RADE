@@ -54,8 +54,7 @@ class InputAnchorTest(unittest.TestCase):
         context = self.context_for(OpenAIProvider("gpt-5", base_url="https://one.example/v1"), restored)
         self.assertEqual(context.measure_input_tokens(self.request).tokens, 500)
         for request in (replace(self.request, system_prompt="changed"), replace(self.request, tools=()),
-                        replace(self.request, tools=(replace(TOOL, description="changed"),)),
-                        replace(self.request, media_root=Path(directory))):
+                        replace(self.request, tools=(replace(TOOL, description="changed"),))):
             measured = context.measure_input_tokens(request)
             self.assertEqual(measured.tokens, measured.local_tokens)
         for provider in (OpenAIProvider("gpt-5", base_url="https://two.example/v1"),

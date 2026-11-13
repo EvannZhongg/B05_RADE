@@ -196,15 +196,6 @@ function itemText(content: SessionItem['content']): string {
   return texts.join('\n');
 }
 
-function itemImagePaths(content: SessionItem['content']): string[] {
-  if (content === null || typeof content === 'string') return [];
-  const paths: string[] = [];
-  for (const part of content) {
-    if (part.type === 'image') paths.push(part.path);
-  }
-  return paths;
-}
-
 function itemFilePaths(content: SessionItem['content']): string[] {
   if (content === null || typeof content === 'string') return [];
   return content
@@ -228,18 +219,6 @@ function historyEntries(items: SessionItem[]): Entry[] {
     // Tool results only carry an outcome; the call entry shows it.
     if (item.role === 'tool') continue;
 
-    if (item.origin === 'tool_media' || item.origin === 'tool_delivery') {
-      const paths = itemImagePaths(item.content);
-      if (paths.length > 0) {
-        entries.push({
-          kind: 'notice',
-          id: nextId('notice'),
-          level: 'info',
-          text: `Viewing ${paths.length} image(s): ${paths.join(', ')}`,
-        });
-      }
-      continue;
-    }
     if (item.origin === 'job_result' || item.origin === 'user_interaction' || item.origin === 'hook_feedback') continue;
 
     if (item.reasoning) {
@@ -495,23 +474,6 @@ function applyMessage(state: State, message: Incoming): State {
           message.ok ? 'ok' : 'error',
           message.error,
         ),
-      };
-
-    case 'tool_media':
-      // Show paths for the attachments published by a tool batch.
-      return {
-        ...state,
-        entries: [
-          ...state.entries,
-          {
-            kind: 'notice',
-            id: nextId('notice'),
-            level: 'info',
-            text: `Viewing ${message.attachments.length} ${message.attachments.every((part) => part.type === 'image') ? 'image(s)' : 'attachment(s)'}: ${message.attachments
-              .map((attachment) => attachment.path)
-              .join(', ')}`,
-          },
-        ],
       };
 
     case 'hook_completed':

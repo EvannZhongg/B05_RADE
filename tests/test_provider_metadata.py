@@ -1,42 +1,13 @@
-"""Shared media serialization and metadata used by compatible endpoints."""
+"""Shared file reference serialization and metadata used by compatible endpoints."""
 
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-from agent_core import FilePart, ImagePart, LLMRequest, Message, TextPart, ToolDefinition
+from agent_core import FilePart, LLMRequest, Message, TextPart, ToolDefinition
 from agent_core.providers import OpenAIProvider
-from tests.image_fixtures import png_bytes
 
 
 class ProviderMetadataTest(unittest.TestCase):
-    def test_omits_empty_text_from_an_image_only_message(self) -> None:
-        from agent_core.providers.base import (
-            _content_to_provider_format,
-        )
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            image = root / "image.png"
-            image.write_bytes(png_bytes(4, 4))
-            content = _content_to_provider_format(
-                Message(
-                    role="user",
-                    content=(
-                        TextPart(text=""),
-                        ImagePart(
-                            path="image.png",
-                            filename="image.png",
-                        ),
-                    ),
-                ),
-                media_root=root,
-            )
-
-        self.assertEqual(len(content), 1)
-        self.assertEqual(content[0]["type"], "image_url")
-
     def test_describes_attached_files_as_workspace_paths(self) -> None:
         from agent_core.providers.base import (
             _content_to_provider_format,
@@ -59,53 +30,12 @@ class ProviderMetadataTest(unittest.TestCase):
 
         self.assertEqual(
             content,
-            [
-                {"type": "text", "text": "summarize this"},
-                {
-                    "type": "text",
-                    "text": (
-                        "Attached files are available at these workspace-relative "
-                        "paths. Use the available tools to inspect or process them "
-                        "as appropriate:\n"
-                        '- filename="Q3 report.pdf", '
-                        'path=".RADE/attachments/report.pdf", '
-                        'mime_type="application/pdf", size_bytes=12345'
-                    ),
-                },
-            ],
+            "summarize this\n\n"
+            "Attached files are available at these workspace-relative "
+            "paths. Use the available tools to inspect or process them as appropriate:\n"
+            '- filename="Q3 report.pdf", path=".RADE/attachments/report.pdf", '
+            'mime_type="application/pdf", size_bytes=12345',
         )
-
-    def test_relative_image_without_media_root_is_rejected(self) -> None:
-        from agent_core.providers.base import _content_to_provider_format
-
-        with self.assertRaisesRegex(ValueError, "media_root"):
-            _content_to_provider_format(
-                Message(
-                    role="user",
-                    content=(ImagePart(path=".RADE/attachments/a1.png"),),
-                )
-            )
-
-    def test_names_images_for_text_only_models(self) -> None:
-        """The model receives the attachment paths as text."""
-        from agent_core.providers.base import (
-            _content_to_provider_format,
-        )
-
-        content = _content_to_provider_format(
-            Message(
-                role="user",
-                content=(
-                    TextPart(text="look at this"),
-                    ImagePart(path=".RADE/attachments/a1.png"),
-                ),
-            ),
-            include_images=False,
-        )
-
-        self.assertIn("Attached images (this model cannot read them):", content)
-        # The path is still named, so the model can say what it cannot read.
-        self.assertIn(".RADE/attachments/a1.png", content)
 
     @patch(
         "litellm.token_counter",
@@ -170,6 +100,7 @@ class ProviderMetadataTest(unittest.TestCase):
         get_model_info_mock.return_value = {
             "max_input_tokens": 128000,
             "max_output_tokens": 8192,
+            "supports_vision": True,
         }
 
         provider = OpenAIProvider(
@@ -179,6 +110,10 @@ class ProviderMetadataTest(unittest.TestCase):
 
         self.assertEqual(provider.max_context_tokens, 128000)
         self.assertEqual(provider.max_output_tokens, 8192)
+        self.assertEqual(provider._get_model_info(), {
+            "max_input_tokens": 128000,
+            "max_output_tokens": 8192,
+        })
         get_model_info_mock.assert_called_once_with(
             model="custom/model",
             api_base="https://example.com/v1",

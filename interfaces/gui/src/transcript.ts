@@ -28,7 +28,6 @@ export function isTurnActivity(message: Incoming): boolean {
   return message.type === "assistant_delta"
     || message.type === "reasoning_delta"
     || message.type === "tool_batch_started"
-    || message.type === "tool_media"
     || message.type === "assistant_message"
     || message.type === "model_completed"
     || message.type === "compression_completed"
@@ -129,18 +128,6 @@ export function applyMessage(
                 ? ({ ok: true } satisfies ToolOutcome)
                 : ({ ok: false, error: message.error ?? undefined }),
             ),
-          },
-        ],
-      };
-
-    case "tool_media":
-      return {
-        items: [
-          ...items,
-          {
-            role: "user",
-            origin: "tool_media",
-            content: message.attachments,
           },
         ],
       };
@@ -274,7 +261,6 @@ type OpenMessage = {
 function itemParts(
   item: TranscriptItem,
   results: Map<string, ToolOutcome>,
-  sessionId?: string,
 ): Part[] {
   const parts: Part[] = [];
   // The model reasons before it answers, so reasoning comes first.
@@ -283,22 +269,6 @@ function itemParts(
   if (Array.isArray(item.content)) {
     for (const part of item.content) {
       if (part.type === "text") parts.push({ type: "text", text: part.text });
-      else if (item.origin !== "tool_media" && item.origin !== "tool_delivery") continue;
-      else if (part.type === "image") parts.push({
-        type: "image",
-        image: part.path,
-        filename: part.filename,
-        providerMetadata: {
-          RADE: { session_id: sessionId ?? null },
-        },
-      } as unknown as Part);
-      else parts.push({
-        type: "file",
-        data: part.path,
-        filename: part.filename,
-        mimeType: part.mime_type,
-        sourceType: "url",
-      } as unknown as Part);
     }
   }
   for (const call of item.tool_calls ?? []) {
@@ -330,7 +300,7 @@ export function turnProcessPartIndexes(parts: readonly { type: string }[]): numb
  * accumulate into one message and share one avatar. A user item starts
  * the next group.
  */
-export function toMessages(items: TranscriptItem[], sessionId?: string): ThreadMessageLike[] {
+export function toMessages(items: TranscriptItem[]): ThreadMessageLike[] {
   const results = new Map(
     items
       .filter(
@@ -344,23 +314,12 @@ export function toMessages(items: TranscriptItem[], sessionId?: string): ThreadM
 
   items.forEach((item, index) => {
     if (item.role === "tool") return;
-    // The session id travels into the URL builder, so an image is
-    // addressed against the run's files directory from the start.
-    const parts = itemParts(item, results, sessionId);
-
-    // Attachments a tool published arrive in a user-role item because that is the
-    // only message kind that can carry them. They belong to the reply the
-    // agent was composing, so they join it instead of opening a bubble
-    // that looks like the person spoke. The text beside them only tells
-    // the model where they came from, so it is left out here.
-    if (item.role === "user" && (item.origin === "tool_media" || item.origin === "tool_delivery")) {
-      if (open) open.content.push(...parts.filter((part) => ["image", "file"].includes((part as any).type)));
-      return;
-    }
     if (
       item.role === "user"
       && (item.origin === "job_result" || item.origin === "user_interaction" || item.origin === "hook_feedback")
     ) return;
+
+    const parts = itemParts(item, results);
 
     if (item.role === "assistant" && open) {
       open.content.push(...parts);

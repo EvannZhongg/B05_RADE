@@ -33,7 +33,6 @@ RADE-server
 - 管理单 Session 的页面附着、事件续传和显式 takeover
 - 提供已脱敏设置快照及配置更新 API
 - 展示长期记忆
-- 为运行中的工具图片签发短期访问 URL
 - 提供限制在当前运行的 `files/` 内的文件树，并在系统文件管理器中打开运行文件目录
 - 列出 `input/` 场景并提供 JSON 预览
 
@@ -45,7 +44,6 @@ HTTP / WebSocket 路由按模块拆分：
 | --- | --- |
 | `routes/sessions.py` | Session 查询与历史搜索、删除、active session 与 `/api/session` WebSocket |
 | `routes/run_files.py` | 浏览和打开当前运行的文件目录 |
-| `routes/media.py` | 工具图片签名与展示 |
 | `routes/settings.py` | 模型、设置、路由更新和长期记忆读取 |
 
 服务端非路由模块：
@@ -90,16 +88,12 @@ React 应用提供可折叠的 Session 列表、对话区和运行文件树。�
 | `src/chat/TurnNavigation.tsx` | 按 Turn 跳转的导航条 |
 | `src/session.ts` | 浏览器到服务端的 WebSocket client 与 JSON 消息接口 |
 | `src/chat/Composer.tsx` | 场景选择与 Provider 控件 |
-| `src/chat/Messages/` | assistant、user、Tool 与媒体消息渲染 |
+| `src/chat/Messages/` | assistant、user 与 Tool 消息渲染 |
 | `src/chat/RuntimeIndicators/` | Context Window、计划和后台 Job |
 | `src/RunFiles.tsx` | 运行文件树与逐项复制相对路径 |
 | `src/CopyTextButton.tsx` | 复制按钮（代码块、表格与文件树共用） |
 | `src/Settings.tsx` | Provider、Agent、Memory、Skill、Plugin、MCP、Schedule 设置页 |
 | `src/api.ts` | HTTP API 类型与请求函数 |
-
-## 工具媒体
-
-工具产出的运行图片通过短期签名 URL 展示。图片路径和文件树请求都以该运行的 `files/` 目录为根。
 
 ## 设置与运行状态
 

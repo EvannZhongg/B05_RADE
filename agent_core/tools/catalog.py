@@ -167,7 +167,6 @@ class ToolSet:
                 tool_call_id=call.id,
                 name=call.name,
                 output=output.output,
-                attachments=output.attachments,
                 artifact_writer=output.artifact_writer,
                 artifact_cleanup=output.artifact_cleanup,
                 artifact_preview=output.artifact_preview,

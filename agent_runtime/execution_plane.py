@@ -57,7 +57,6 @@ class ExecutionPlane:
         return self.catalog.select(
             (
                 *self.agent_config.tools.enabled,
-                "read_image",
                 "read_skill",
                 "update_plan",
                 *self.mcp.tool_names,

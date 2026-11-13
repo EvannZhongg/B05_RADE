@@ -2,7 +2,6 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from .auxiliary import AuxiliaryCallTracker
@@ -85,7 +84,6 @@ class ContextManager:
         system_prompt: str,
         consolidator_prompt: str,
         config: AgentConfig,
-        media_root: Path | None = None,
         memory_context: MemoryDocument | None = None,
         jobs: "JobManager | None" = None,
     ) -> None:
@@ -97,7 +95,6 @@ class ContextManager:
         self._jobs = jobs
         self._output_reserve_tokens = config.output_reserve_tokens
         self._max_generation_tokens = config.max_generation_tokens
-        self._media_root = media_root
 
         if self._output_reserve_tokens >= provider.max_context_tokens:
             raise ValueError(
@@ -154,8 +151,7 @@ class ContextManager:
 
     def _token_fingerprint(self, request: LLMRequest) -> str:
         envelope = [self._provider.token_counting_identity, request.system_prompt,
-                    [(tool.name, tool.description, tool.parameters) for tool in request.tools],
-                    str(request.media_root)]
+                    [(tool.name, tool.description, tool.parameters) for tool in request.tools]]
         return hashlib.sha256(json.dumps(envelope, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
     def measure_input_tokens(self, request: LLMRequest) -> InputTokenEstimate:
@@ -190,7 +186,6 @@ class ContextManager:
             system_prompt=self._system_prompt,
             messages=tuple(messages),
             tools=tuple(tools),
-            media_root=self._media_root,
         )
 
     def should_archive(self, input_tokens: int) -> bool:
@@ -340,7 +335,6 @@ class ContextManager:
             request = LLMRequest(
                 system_prompt="",
                 messages=(Message(role="user", content=content),),
-                media_root=self._media_root,
             )
             if (
                 self._provider.count_input_tokens(request)

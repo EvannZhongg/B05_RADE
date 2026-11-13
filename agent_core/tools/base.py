@@ -4,8 +4,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, ClassVar, Protocol, TypeAlias
 
-from ..content import AttachmentPart
-
 if TYPE_CHECKING:
     from .context import ToolExecutionContext
 
@@ -107,8 +105,6 @@ class ToolResult:
     name: str
     output: JSONValue = None
     error: ToolError | None = None
-    #: Observation attachments enter model context after the tool results.
-    attachments: tuple[AttachmentPart, ...] = ()
     executed: bool = field(default=False, compare=False, repr=False)
     hook_feedback: tuple[str, ...] = field(default=(), compare=False, repr=False)
     # Internal hooks used by tools that spool large results.  They are not
@@ -153,16 +149,12 @@ class ToolResult:
 
 @dataclass(frozen=True)
 class ToolOutput:
-    """A tool's result when it carries attachments or a spooled artifact.
+    """A tool result with a spooled artifact retained on disk.
 
-    A tool returns this instead of a bare :data:`JSONValue` when the
-    model needs to see pixels or when a complete result is retained on
-    disk: ``output`` is serialized into the tool result as usual, while
-    ``attachments`` and artifact hooks are consumed by the Runtime.
+    The tool result serializes ``output``. The Runtime consumes the artifact hooks.
     """
 
     output: JSONValue = None
-    attachments: tuple[AttachmentPart, ...] = ()
     artifact_writer: Callable[[Path], None] | None = field(
         default=None, compare=False, repr=False
     )

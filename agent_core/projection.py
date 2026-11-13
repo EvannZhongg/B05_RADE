@@ -22,9 +22,9 @@ def project_context_units(
     """Group raw items into units that must be retained or archived whole.
 
     A tool-calling assistant message, every result in that batch, and its
-    trailing media or user-interaction messages form one unit. Results are
-    ordered by the model's original call order, followed by the trailing
-    messages in Journal order. Incomplete batches remain part of the raw span
+    trailing user-interaction or hook feedback messages form one unit.
+    Results follow the model's original call order. Trailing messages follow
+    Journal order. Incomplete batches remain part of the raw span
     but expose no provider messages, and are therefore absent from the next
     provider request.
     """
@@ -40,16 +40,12 @@ def project_context_units(
             end = index + 1
             while end < len(history) and (
                 history[end].role == "tool"
-                or history[end].is_tool_media
-                or history[end].origin in {"user_interaction", "hook_feedback", "tool_delivery"}
+                or history[end].origin in {"user_interaction", "hook_feedback"}
             ):
                 following = history[end]
                 if following.tool_call_id in calls:
                     found[following.tool_call_id] = following
-                elif (
-                    following.is_tool_media
-                    or following.origin in {"user_interaction", "hook_feedback"}
-                ):
+                elif following.origin in {"user_interaction", "hook_feedback"}:
                     trailing.append(following)
                 end += 1
             messages: tuple[Message, ...] = ()
@@ -68,7 +64,7 @@ def project_context_units(
             )
             index = end
             continue
-        messages = () if item.role == "tool" or item.origin == "tool_delivery" else (item,)
+        messages = () if item.role == "tool" else (item,)
         result.append(
             ContextUnit(
                 start=start_index + index,

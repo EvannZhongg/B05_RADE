@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from typing import cast
 from uuid import uuid4
 
-from agent_core import HostCommandExecutor, JobCancelled, JobContext, JobManager, JobResult
+from agent_core import HostCommandExecutor, JobCancelled, JobContext, JobManager, JobResult, Workspace
 from agent_core.atomic import atomic_write_text
 from agent_core.execution.process import MAX_COMMAND_TIMEOUT_SECONDS, CommandCancelled
 from agent_core.tools import JSONValue
@@ -20,10 +20,10 @@ from .scene_input import SceneInput
 
 
 class ExperimentRunner:
-    def __init__(self, strategies: tuple[Strategy, ...], jobs: JobManager, run_directory: Path) -> None:
+    def __init__(self, strategies: tuple[Strategy, ...], jobs: JobManager, files: Workspace) -> None:
         self.registry = StrategyRegistry(strategies, max_timeout_seconds=MAX_COMMAND_TIMEOUT_SECONDS)
         self._jobs = jobs
-        self._run_directory = run_directory
+        self._files = files
 
     def submit(self, strategy_id: str, config_id: str, scene: SceneInput, turn_id: str) -> dict[str, JSONValue]:
         strategy, profile = self.registry.resolve(strategy_id, config_id)
@@ -60,7 +60,7 @@ class ExperimentRunner:
             "solver_elapsed_seconds": result.elapsed_seconds,
         }
         if result.status == "completed":
-            atomic_write_text(self._run_directory / result_ref, json.dumps({"allocation": result.allocation}))
+            atomic_write_text(self._files.resolve_path(result_ref), json.dumps({"allocation": result.allocation}))
             summary.update(valid=True, metrics=result.metrics, result_ref=result_ref)
         elif result.status == "invalid":
             summary["valid"] = False

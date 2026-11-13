@@ -57,8 +57,9 @@ def strategy(tmp_path, monkeypatch):
 def experiment_run(tmp_path, strategy):
     store = JsonlSessionStore(tmp_path / "runs")
     run_directory = store.session_directory("run")
-    files = run_directory / "files"
-    files.mkdir(parents=True)
+    files_path = run_directory / "files"
+    files_path.mkdir(parents=True)
+    files = Workspace(files_path)
     source = tmp_path / "scene1_1.json"
     source.write_text('{"P":[[0.5,0],[0.5,1]],"v":[10,3]}', encoding="utf-8")
     with store.open_journal("run") as sink:
@@ -67,9 +68,9 @@ def experiment_run(tmp_path, strategy):
         turn_id = session.begin_turn("scene")
         jobs = JobManager(session)
         try:
-            runner = ExperimentRunner((strategy,), jobs, run_directory)
-            scene = prepare_scene_input(tmp_path, source.name, Workspace(files))
-            yield runner, scene, turn_id, jobs, run_directory
+            runner = ExperimentRunner((strategy,), jobs, files)
+            scene = prepare_scene_input(tmp_path, source.name, files)
+            yield runner, scene, turn_id, jobs, files
         finally:
             jobs.close()
 
@@ -79,7 +80,7 @@ def experiment_run(tmp_path, strategy):
     [("invalid", "invalid", "task index"), ("timeout", "timed_out", "Exceeded"), ("error", "failed", "solver error")],
 )
 def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, status, diagnostic):
-    runner, scene, turn_id, jobs, run_directory = experiment_run
+    runner, scene, turn_id, jobs, files = experiment_run
     experiment_id = runner.submit("fixture", mode, scene, turn_id)["experiment_id"]
     jobs.wait_for_turn(turn_id)
     result = runner.get(experiment_id)
@@ -89,7 +90,7 @@ def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, s
     assert result["elapsed_seconds"] > 0
     assert result["solver_elapsed_seconds"] > 0
     assert result["result_ref"] is None
-    assert not (run_directory / "experiments").exists()
+    assert not (files.path / "experiments").exists()
 
 
 def test_discovery_and_submission_validate_profiles(experiment_run):
@@ -111,7 +112,7 @@ def test_discovery_and_submission_validate_profiles(experiment_run):
 
 
 def test_can_cancel_a_running_solver(experiment_run, tmp_path):
-    runner, scene, turn_id, jobs, run_directory = experiment_run
+    runner, scene, turn_id, jobs, files = experiment_run
     experiment_id = runner.submit("fixture", "cancel", scene, turn_id)["experiment_id"]
     started = tmp_path / "test_experiment_solver.started"
     deadline = monotonic() + 5
@@ -126,15 +127,15 @@ def test_can_cancel_a_running_solver(experiment_run, tmp_path):
     result = runner.get(experiment_id)
     assert result["status"] == "cancelled"
     assert result["result_ref"] is None
-    assert not (run_directory / "experiments").exists()
+    assert not (files.path / "experiments").exists()
 
 
 def test_comparison_rejects_different_source_snapshots(experiment_run, tmp_path):
-    runner, scene, turn_id, jobs, run_directory = experiment_run
+    runner, scene, turn_id, jobs, files = experiment_run
     baseline = runner.submit("fixture", "baseline", scene, turn_id)["experiment_id"]
     source = tmp_path / "scene1_1.json"
     source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-    changed = prepare_scene_input(tmp_path, source.name, Workspace(run_directory / "files"))
+    changed = prepare_scene_input(tmp_path, source.name, files)
     candidate = runner.submit("fixture", "candidate", changed, turn_id)["experiment_id"]
     jobs.wait_for_turn(turn_id)
     with pytest.raises(ValueError, match="same scene snapshot"):
@@ -147,8 +148,8 @@ def test_marginal_greedy_accounts_for_previous_assignments_and_breaks_ties_by_ta
 
 
 def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run):
-    _, scene, turn_id, jobs, run_directory = experiment_run
-    runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, run_directory)
+    _, scene, turn_id, jobs, files = experiment_run
+    runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
     strategy, = runner.registry.discover()
     assert strategy["strategy_id"] == "marginal_greedy"
     profile, = strategy["configs"]
@@ -159,7 +160,7 @@ def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run)
     result = runner.get(experiment_id)
     assert result["valid"] is True, result
     assert result["metrics"]["expected_value"] == 8.0
-    allocation = json.loads((run_directory / result["result_ref"]).read_text(encoding="utf-8"))
+    allocation = json.loads((files.path / result["result_ref"]).read_text(encoding="utf-8"))
     assert allocation == {"allocation": [0, 1]}
 
 
@@ -171,7 +172,12 @@ class TestExperimentBridge(BridgeTestCase):
     def test_scene_tools_submit_evaluate_compare_and_restore(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         bridge, stdout = self.make_bridge([], root)
-        message = open_session_message(root)
+        message = open_session_message(root, agent_config={
+            "max_same_tool_calls": 5,
+            "output_reserve_tokens": 100,
+            "scratch_workspace_root": str(root / "scratch"),
+            "main_agent": {"tools": {"read_file": True}},
+        })
         bridge.open_session(message)
         inputs = root / "input"
         inputs.mkdir()
@@ -180,7 +186,7 @@ class TestExperimentBridge(BridgeTestCase):
 
         def respond(request, *_):
             names = {tool.name for tool in request.tools}
-            self.assertTrue({"strategy_list", "experiment_run", "experiment_get"} <= names)
+            self.assertTrue({"strategy_list", "experiment_run", "experiment_get", "read_file"} <= names)
             results = {
                 item.tool_call_id: json.loads(item.content)["output"]
                 for item in bridge.host.sessions.session.items if item.role == "tool"
@@ -193,8 +199,12 @@ class TestExperimentBridge(BridgeTestCase):
                     ToolCall(mode, "experiment_run", {"strategy_id": "fixture", "config_id": mode})
                     for mode in ("baseline", "candidate")
                 ))
-            if "comparison" in results:
+            if "read-allocation" in results:
                 return LLMResponse(content="Evaluated")
+            if "comparison" in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "read-allocation", "read_file", {"path": results["comparison"]["result_ref"]},
+                ),))
             candidate_id = results["candidate"]["experiment_id"]
             baseline_id = results["baseline"]["experiment_id"]
             jobs = bridge.host.planes.current.jobs
@@ -216,7 +226,6 @@ class TestExperimentBridge(BridgeTestCase):
         events = emitted(stdout)
         assert events[-1]["type"] == "turn_completed", events[-1]
         session = bridge.host.sessions.session
-        run_directory = plane.files.path.parent
         results = {
             item.tool_call_id: json.loads(item.content)["output"]
             for item in session.items if item.role == "tool"
@@ -232,11 +241,16 @@ class TestExperimentBridge(BridgeTestCase):
         assert comparison["metrics"] == {"expected_value": 8.0, "total_value": 13, "assigned_workers": 2}
         assert comparison["comparison"]["baseline_expected_value"] == 7.5
         assert comparison["comparison"]["expected_value_delta"] == 0.5
-        assert json.loads((run_directory / comparison["result_ref"]).read_text()) == {"allocation": [0, 1]}
+        result_ref = comparison["result_ref"]
+        assert result_ref.startswith("experiments/")
+        assert json.loads((plane.files.path / result_ref).read_text(encoding="utf-8")) == {"allocation": [0, 1]}
+        assert not (plane.files.path.parent / "experiments").exists()
+        assert results["read-allocation"]["path"] == result_ref
+        assert '1| {"allocation": [0, 1]}' in results["read-allocation"]["content"]
         assert not (root / "output").exists()
 
         restored = bridge.host.sessions.store.load(session.session_id)
         jobs = JobManager(restored)
         self.addCleanup(jobs.close)
-        runner = ExperimentRunner((), jobs, run_directory)
+        runner = ExperimentRunner((), jobs, plane.files)
         assert runner.get(comparison["experiment_id"], results["baseline"]["experiment_id"]) == comparison

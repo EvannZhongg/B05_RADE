@@ -103,21 +103,3 @@ export async function openRunFolder(sessionId: string): Promise<void> {
     throw new Error(error.detail ?? `打开运行文件夹失败 (${response.status})`);
   }
 }
-
-export async function createSignedImageUrl(
-  path: string,
-  sessionId?: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const response = await fetch("/api/image-url", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, session_id: sessionId ?? null }),
-    signal,
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail ?? `图片加载失败 (${response.status})`);
-  }
-  return (await response.json() as { url: string }).url;
-}

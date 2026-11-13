@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_runtime.scene_validation import extract_scene_features, read_scene_input
+from rade_tasks.scene import SceneState
 
 
 SCENES = Path(__file__).resolve().parents[1] / "input"
@@ -25,8 +25,8 @@ SCENES = Path(__file__).resolve().parents[1] / "input"
     ],
 )
 def test_contest_fixture_dimensions(filename, rows, columns):
-    text = read_scene_input(SCENES, filename).decode("utf-8")
-    features = extract_scene_features(text)
+    text = (SCENES / filename).read_text(encoding="utf-8")
+    features = SceneState(text).summary()
     assert features["W"]["count"] == rows
     assert features["T"]["count"] == columns
     assert 0 < features["P"]["positive_fraction"] < 1
@@ -34,9 +34,9 @@ def test_contest_fixture_dimensions(filename, rows, columns):
 
 
 def test_extracts_candidate_and_probability_distributions_and_unreachable_value():
-    features = extract_scene_features(
+    features = SceneState(
         '\ufeff{"P":[[0.25,0,1,0],[0.5,0,0,0],[0,0,0,0]],"v":[8,12,8,1.5]}'
-    )
+    ).summary()
     assert features == {
         "T": {
             "count": 4,
@@ -65,7 +65,7 @@ def test_extracts_candidate_and_probability_distributions_and_unreachable_value(
 
 
 def test_all_zero_probabilities_and_value():
-    features = extract_scene_features('{"P":[[0]],"v":[0]}')
+    features = SceneState('{"P":[[0]],"v":[0]}').summary()
     assert features["T"]["tasks_without_candidates"] == 1
     assert features["W"]["workers_without_candidates"] == 1
     assert features["P"] == {
@@ -81,7 +81,7 @@ def test_all_zero_probabilities_and_value():
 @pytest.mark.parametrize("repeat", [1, 20])
 def test_top_decile_share_is_stable_under_replication(repeat):
     values = list(range(1, 11)) * repeat
-    features = extract_scene_features(json.dumps({"P": [[1] * len(values)], "v": values}))
+    features = SceneState(json.dumps({"P": [[1] * len(values)], "v": values})).summary()
     assert features["V"]["total_value"] == 55 * repeat
     assert features["V"]["value_distribution"] == {"p10": 1, "median": 5.5, "p90": 9}
     assert features["V"]["top_10_percent_value_share"] == 0.181818
@@ -89,7 +89,7 @@ def test_top_decile_share_is_stable_under_replication(repeat):
 
 def test_top_decile_rounds_task_count_up():
     values = [1] * 9 + [6, 9]
-    features = extract_scene_features(json.dumps({"P": [[1] * len(values)], "v": values}))
+    features = SceneState(json.dumps({"P": [[1] * len(values)], "v": values})).summary()
     assert features["V"]["top_10_percent_value_share"] == 0.625
 
 
@@ -114,4 +114,33 @@ def test_top_decile_rounds_task_count_up():
 )
 def test_rejects_invalid_scene(text, error):
     with pytest.raises(ValueError, match=error):
-        extract_scene_features(text)
+        SceneState(text)
+
+
+def test_queries_one_scene_statistic_with_original_matrix_indices():
+    state = SceneState('{"P":[[0.25,0,1,0],[0.5,0,0,0],[0,0,0,0]],"v":[8,12,8,1.5]}')
+
+    assert state.query("T.tasks_without_candidates") == 2
+    assert state.query("V.value_distribution") == {"p10": 1.5, "median": 8, "p90": 12}
+    assert state.query("task_candidate_histogram") == {"0": 2, "1": 1, "2": 1}
+    assert state.query("worker_candidate_histogram") == {"0": 1, "1": 1, "2": 1}
+    assert state.query("task", 1) == {"value": 12, "candidate_count": 0, "best_probability": 0}
+    assert state.query("worker", 1) == {"candidate_count": 1, "best_probability": 0.5}
+
+
+@pytest.mark.parametrize(
+    ("statistic", "index", "error"),
+    [
+        ("summary", None, "unknown scene statistic"),
+        ("P", None, "unknown scene statistic"),
+        ("task", None, "task index"),
+        ("task", True, "task index"),
+        ("task", 2, "task index"),
+        ("worker", -1, "worker index"),
+        ("T.count", 0, "only accepted for task and worker"),
+    ],
+)
+def test_rejects_invalid_scene_queries(statistic, index, error):
+    state = SceneState('{"P":[[0,1]],"v":[4,5]}')
+    with pytest.raises(ValueError, match=error):
+        state.query(statistic, index)

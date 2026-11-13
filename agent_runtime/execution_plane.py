@@ -17,6 +17,9 @@ from agent_core import (
 )
 from agent_core.llm import LLMProvider
 from agent_core.hooks import HookRunner
+from agent_core.tools import ToolSet
+
+from .scene_tool import QuerySceneTool, SceneToolContext
 
 if TYPE_CHECKING:
     from agent_core.mcp.manager import McpClientManager
@@ -44,9 +47,24 @@ class ExecutionPlane:
     role_tools: dict[str, tuple[str, ...]] = field(default_factory=dict)
     memory: MemoryManager | None = None
     agent: Agent | None = None
+    tool_context: SceneToolContext | None = None
     jobs: JobManager | None = None
     context_window: ContextWindow | None = None
     runtime_warnings: tuple[str, ...] = ()
+
+    def select_main_tools(self, context: SceneToolContext) -> ToolSet:
+        return self.catalog.select(
+            (
+                *self.agent_config.tools.enabled,
+                "read_image",
+                "read_skill",
+                "update_plan",
+                *self.mcp.tool_names,
+                "remember",
+                QuerySceneTool.name,
+            ),
+            context,
+        )
 
     def matches(
         self,
@@ -70,6 +88,7 @@ class ExecutionPlane:
         jobs = self.jobs
         self.jobs = None
         self.agent = None
+        self.tool_context = None
         self.memory = None
         self.context_window = None
         if jobs is not None:

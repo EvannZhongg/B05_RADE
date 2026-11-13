@@ -14,11 +14,12 @@
 TUI (Ink + React) ────────────────── Bridge ── agent_runtime ── Agent Core
 GUI (React) ── HTTP / WebSocket ── RADE-server
                                    └─ Session Host ── Bridge ── agent_runtime ── Agent Core
+                                                               └─ rade_tasks
 ```
 
 `agent_runtime` 是共享的应用 Runtime；Bridge 以 `python -m interfaces.bridge` 作为独立进程运行，由前端宿主启动，是前端与 Runtime 之间的唯一通道，两端用 newline-delimited JSON 交换协议消息。
 
-* 依赖方向单向：`interfaces/* → agent_runtime → agent_core`；`agent_core` 不得 import `interfaces` 或 `agent_runtime`，`agent_runtime` 不得 import `interfaces`。
+* 依赖方向为 `interfaces/* → agent_runtime → agent_core` 和 `agent_runtime → rade_tasks`。`agent_core` 不得导入 Runtime、领域模块或 `interfaces`，`agent_runtime` 不得导入 `interfaces`，`rade_tasks` 独立于 Core、Runtime、Bridge 和前端。
 * 驱动 Agent、执行 Tool只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变 Workspace 或 Session 的 Tool。
 * 前端对 Core 的复用仅限只读能力（如 Session 读取、Workspace 路径解析、只读 Tool 的文件列举）；执行语义不得在前端复制。
 * TUI 与 GUI 共享 Agent Runtime。GUI 宿主通过 `interfaces/session_host.py` 管理 Bridge 进程、活动 Session 和页面附着。
@@ -26,11 +27,12 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 * 取消、Session 与 Tool 执行语义只实现一次，不得由两个前端各维护一套。
 * 保持清晰的依赖方向，避免模块间循环依赖。
 
-## 3. Agent Core 与 Bridge
+## 3. Core、Runtime、Bridge 与场景任务
 
 新增能力的落点由职责决定：
 
-* 影响所有前端共享的执行语义 → `agent_core`。
+* 通用 Agent 执行机制 → `agent_core`。
+* 赛题场景、任务生命周期、分配结果和评估 → `rade_tasks`。
 * 只决定选择、装配与协议 → `agent_runtime` 与 `interfaces/bridge`（Bridge 进程自身的生命周期由前端宿主管理，见 §2）。
 * 只影响单个前端的呈现与交互 → 对应前端；不得反向进入 Core。
 
@@ -72,6 +74,7 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 * Workspace 绑定、Session 存储位置、取消与持久化时机
 * 一次装配由一个 `ExecutionPlaneManager` 原子持有；Provider、Workspace、配置或 Instructions 变化时整体重建
 * 交互 Turn 生命周期（含取消与 steer）
+* 场景输入适配由 `agent_runtime/scene_input.py` 负责，包含文件访问、原始附件保存和消息组装。场景任务接入 Runtime 后，由 Runtime 调用领域逻辑，并接入现有 Agent 执行、Session 持久化和取消机制。
 
 约束：
 
@@ -84,6 +87,24 @@ Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户�
 
 * 协议消息的增改必须同时更新 `interfaces/protocol/src/protocol.ts` 与发送方：`protocol.py` 定义大部分消息，其余由 `bridge.py` 与 `__main__.py` 内联发出。
 * 允许存在只服务单个前端的协议消息（如 `attach_only`、`takeover`、`attachment_replaced`），但它们只表达呈现与进程附着，不得承载 Agent 语义。
+
+### 3.4 rade_tasks 的领域职责
+
+* `scene.py` 负责场景 JSON 解析、校验与特征提取。以原始 `P` 的行标识处理单元，列标识待分配任务，`v` 与列对齐。
+* 后续由 `runner.py` 负责场景任务生命周期，`evaluation.py` 负责评估，`results.py` 负责分配结果校验与导出，`knowledge.py` 负责反思知识。按实际需求添加模块，复用 Runtime 提供的执行能力。
+
+### 3.5 场景任务的完成条件
+
+场景任务是前端面向用户的执行单位。单次运行绑定一个输入场景、一种反思模式及本次运行的标识。Core 的 Turn 仍可作为内部执行单位。当前 `turn_completed` 只表示 Agent 执行结束。迁移后，前端依据场景任务的结构化状态呈现结果。
+
+依据[赛题说明第三、四节](docs/反思式决策赛题信息/反思式决策赛题信息.md)，每个参赛测试用例需要同名的关闭反思和开启反思结果。单次运行交付对应模式的文件，两种模式的文件都验收通过时，该用例的提交才齐备。
+
+1. 校验原始场景，确定本次运行的反思模式和目标路径。赛题容器内使用 `/output/norethink/<输入文件名>` 或 `/output/rethink/<输入文件名>`。
+2. 取得本次运行提交的结构化分配结果。结果须能序列化为 JSON，符合主办方的输出格式，并满足原始场景的分配约束。仓库赛题资料给出了目录与命名规则，结果字段、索引约定等以主办方的提交模板为准。
+3. 用原始 `P` 和 `v` 复算期望处理价值，记录求解耗时。反思效果和跨场景达标情况属于评估指标。主办方的 `P_set` 用于评估，超过 10 分钟影响速度分，执行截止条件以实际运行预算为准。
+4. 分配校验和分数复算成功后，将本次结果写到目标路径。确认写入成功后持久化任务终态与结果路径，再发布完成事件。助手回复、计划状态和旧输出文件均不能作为本次成功的依据。
+
+结果缺失、校验失败或导出失败时记录失败原因。运行预算耗尽时记录超时原因，用户取消时沿用 Runtime 取消机制。终态由服务端根据本次执行和交付结果确定。
 
 ## 4. Tool 系统
 

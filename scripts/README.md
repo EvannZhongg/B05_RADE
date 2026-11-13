@@ -1,6 +1,6 @@
 # Scripts
 
-`scripts/` 存放手动执行的一次性维护脚本。它们不属于 `rade-agent` 包（`pyproject.toml` 只打包 `agent_core`、`agent_runtime` 和 `interfaces`），也不参与运行时装配，只在数据格式需要一次性迁移时使用。
+`scripts/` 存放手动执行的一次性维护脚本。它们不属于 `rade-agent` 包（`pyproject.toml` 只打包 `agent_core`、`agent_runtime`、`interfaces` 和 `rade_tasks`），也不参与运行时装配，只在数据格式需要一次性迁移时使用。
 
 | 脚本 | 用途 |
 | --- | --- |

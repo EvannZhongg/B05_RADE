@@ -17,7 +17,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from agent_core import JsonlSessionStore, Workspace
-from agent_runtime.scene_validation import list_scene_inputs, read_scene_input
+from agent_runtime.scene_input import list_scene_inputs, read_scene_input
 from agent_runtime.settings import SettingsStore
 from interfaces.session_host import ActiveSessionRegistry
 from .routes.media import create_media_router

@@ -168,20 +168,14 @@ class Agent:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._tools = tools
         self._execution_context = context
-        tool_result_normalizer = ToolResultNormalizer(
+        self._tool_result_normalizer = ToolResultNormalizer(
             context.workspace,
             session.session_id,
             sessions_directory=context.sessions_directory,
             artifact_directory=context.artifact_directory,
         )
         if context.jobs is not None:
-            context.jobs.set_result_normalizer(tool_result_normalizer)
-        self._tool_batch_executor = ToolBatchExecutor(
-            tools=tools,
-            session=session,
-            result_normalizer=tool_result_normalizer,
-            now=self._now,
-        )
+            context.jobs.set_result_normalizer(self._tool_result_normalizer)
         self._context = ContextManager(
             provider=provider,
             session=session,
@@ -193,8 +187,8 @@ class Agent:
             media_root=context.workspace.path,
         )
 
-    def context_window(self) -> ContextWindow:
-        request = self._context.build_request(self._tools.definitions)
+    def context_window(self, *, tools: ToolSet | None = None) -> ContextWindow:
+        request = self._context.build_request((self._tools if tools is None else tools).definitions)
         return self._context.window(self._context.measure_input_tokens(request).tokens)
 
     def run(
@@ -205,6 +199,8 @@ class Agent:
         turn_id: str | None = None,
         turn_control: TurnControl | None = None,
         input_source: str = "user",
+        *,
+        tools: ToolSet | None = None,
     ) -> AgentRunResult:
         try:
             result = self._run(
@@ -214,6 +210,7 @@ class Agent:
                 turn_id,
                 turn_control,
                 input_source,
+                self._tools if tools is None else tools,
             )
         except (KeyboardInterrupt, AgentCancelled):
             self._cancel_jobs(self._session.current_turn_id)
@@ -243,18 +240,25 @@ class Agent:
     def _run(
         self,
         user_input: str,
-        on_event: Callable[[AgentEvent], None] | None = None,
-        attachments: tuple[AttachmentPart, ...] = (),
-        turn_id: str | None = None,
-        turn_control: TurnControl | None = None,
-        input_source: str = "user",
+        on_event: Callable[[AgentEvent], None] | None,
+        attachments: tuple[AttachmentPart, ...],
+        turn_id: str | None,
+        turn_control: TurnControl | None,
+        input_source: str,
+        tools: ToolSet,
     ) -> AgentRunResult:
         turn_id = self._session.begin_turn(turn_id)
+        tool_batch_executor = ToolBatchExecutor(
+            tools=tools,
+            session=self._session,
+            result_normalizer=self._tool_result_normalizer,
+            now=self._now,
+        )
         model_call_index = 0
         stop_continuations = 0
 
         def check_input(text: str, source: str) -> tuple[str, ...]:
-            hook = self._tools.run_hooks("InputSubmitted", {
+            hook = tools.run_hooks("InputSubmitted", {
                 "input": {"text": text, "source": source},
             }, turn_control)
             if hook.decision == "deny":
@@ -291,7 +295,7 @@ class Agent:
         while True:
             continuation.raise_if_cancelled()
             continuation.apply_jobs()
-            request = self._context.build_request(self._tools.definitions)
+            request = self._context.build_request(tools.definitions)
             token_estimate = self._context.measure_input_tokens(request)
             input_tokens = token_estimate.tokens
             if on_event is not None:
@@ -417,7 +421,7 @@ class Agent:
                     if on_event is not None:
                         on_event(ToolMediaEvent(attachments=media))
 
-                self._tool_batch_executor.execute(
+                tool_batch_executor.execute(
                     response.tool_calls,
                     turn_id=turn_id,
                     turn_control=turn_control,
@@ -460,7 +464,7 @@ class Agent:
                         model_call_index=model_call_index,
                     )
                 )
-                on_event(ContextWindowEvent(self.context_window()))
+                on_event(ContextWindowEvent(self.context_window(tools=tools)))
                 on_event(UnitCompletedEvent(unit_start, len(self._session.items)))
             jobs = self._execution_context.jobs
 
@@ -469,7 +473,7 @@ class Agent:
                 hooks = self._execution_context.hooks
                 if not hooks or not any(hook.event == "Stop" for hook in hooks.definitions):
                     return False
-                hook = self._tools.run_hooks("Stop", {
+                hook = tools.run_hooks("Stop", {
                     "response": response.content,
                     "correction_attempt": stop_continuations,
                     "executions": turn_execution_summary(self._session),

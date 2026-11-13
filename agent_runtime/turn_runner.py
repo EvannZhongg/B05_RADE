@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, replace
+from functools import partial
 from threading import Lock
 from typing import Callable, Literal
 
@@ -10,6 +11,7 @@ from agent_core.errors import RuntimeErrorInfo
 
 from .callbacks import RuntimeCallbacks
 from .execution_plane import ExecutionPlane
+from .scene_input import SceneInput
 
 
 @dataclass(frozen=True)
@@ -61,7 +63,7 @@ class TurnRunner:
     def run_turn(
         self,
         turn_id: str,
-        text: str | Callable[[], str],
+        text: str | Callable[[], SceneInput],
         ensure_plane: Callable[[], ExecutionPlane],
         attachments: Callable[[], tuple[AttachmentPart, ...]],
     ) -> TurnResult:
@@ -89,8 +91,15 @@ class TurnRunner:
             memory = plane.memory
             if memory is not None:
                 memory.begin_turn()
-            result = plane.agent.run(
-                text() if callable(text) else text,
+            run_agent = plane.agent.run
+            if callable(text):
+                scene = text()
+                assert plane.tool_context is not None
+                tools = plane.select_main_tools(replace(plane.tool_context, state=scene.state))
+                run_agent = partial(run_agent, tools=tools)
+                text = scene.text
+            result = run_agent(
+                text,
                 turn_id=turn_id,
                 turn_control=control,
                 attachments=attachments(),

@@ -22,10 +22,10 @@
   "main_agent": {
     "tools": {
       "read_file": true,
-      "apply_patch": true,
+      "apply_patch": false,
       "edit_file": true,
       "write_file": true,
-      "search_files": true,
+      "search_files": false,
       "list_directory": true,
       "shell": true,
       "subagent": true,
@@ -34,7 +34,7 @@
   },
   "subagent_roles": {
     "researcher": {
-      "enabled": true,
+      "enabled": false,
       "description": "Read and search the workspace to answer a question. Prefer delegating complex, independent investigation tasks to this role so the main agent can continue other work in parallel. Cannot modify files.",
       "tools": {
         "read_file": true,

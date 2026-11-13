@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
 from agent_runtime.attachments import parse_attachments
-from agent_runtime.scene_validation import list_scene_inputs, prepare_scene_input
+from agent_runtime.scene_input import list_scene_inputs, prepare_scene_input
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
 from .protocol import (

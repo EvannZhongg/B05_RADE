@@ -1119,9 +1119,12 @@ class InterruptedTurnTest(BridgeTestCase):
         input_directory.mkdir()
         (input_directory / "scene1_1.json").write_bytes(text.encode("utf-8"))
         (input_directory / "scene1_2.json").write_text('{"P":[[0.1]],"v":[10,25]}', encoding="utf-8")
-        with patch.object(
-            plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
-        ) as stream:
+        with (
+            patch.object(plane.provider, "count_input_tokens", return_value=1),
+            patch.object(
+                plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
+            ) as stream,
+        ):
             self.bridge.run_turn({
                 "turn_id": "json",
                 "scene_input": "scene1_1.json",
@@ -1162,6 +1165,63 @@ class InterruptedTurnTest(BridgeTestCase):
             summary["started_at"],
             self.session.turns["json"].started_at.isoformat().replace("+00:00", "Z"),
         )
+
+    def test_scene_tool_queries_only_the_current_scene_snapshot(self) -> None:
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        input_directory = self.root / "input"
+        input_directory.mkdir()
+        first = input_directory / "scene1_1.json"
+        first.write_text('{"P":[[0.6,0],[0.2,0.8]],"v":[10,25]}', encoding="utf-8")
+        (input_directory / "scene1_2.json").write_text(
+            '{"P":[[0,1]],"v":[30,40]}', encoding="utf-8",
+        )
+        replies = iter((
+            LLMResponse(content=None, tool_calls=(
+                ToolCall("task", "query_scene", {"statistic": "task", "index": 0}),
+                ToolCall("histogram", "query_scene", {"statistic": "task_candidate_histogram"}),
+            )),
+            LLMResponse(content="First scene queried"),
+            LLMResponse(content=None, tool_calls=(
+                ToolCall("worker", "query_scene", {"statistic": "worker", "index": 0}),
+            )),
+            LLMResponse(content="Second scene queried"),
+            LLMResponse(content="Text turn completed"),
+        ))
+        requests = []
+
+        def respond(request, *_):
+            requests.append(request)
+            if len(requests) == 1:
+                first.unlink()
+            return next(replies)
+
+        with (
+            patch.object(plane.provider, "count_input_tokens", return_value=1),
+            patch.object(plane.provider, "stream_cancellable", side_effect=respond),
+        ):
+            self.bridge.run_turn({"turn_id": "one", "scene_input": "scene1_1.json"})
+            self.bridge.run_turn({"turn_id": "two", "scene_input": "scene1_2.json"})
+            self.bridge.run_turn({"turn_id": "text", "text": "Continue"})
+
+        self.assertEqual(len(requests), 5)
+        for request in requests[:4]:
+            self.assertIn("query_scene", {tool.name for tool in request.tools})
+        self.assertNotIn("query_scene", {tool.name for tool in requests[4].tools})
+        results = {
+            item.tool_call_id: json.loads(item.content)["output"]
+            for item in self.stored_items() if item.role == "tool"
+        }
+        self.assertEqual(results, {
+            "task": {
+                "statistic": "task",
+                "value": {"value": 10, "candidate_count": 2, "best_probability": 0.6},
+            },
+            "histogram": {"statistic": "task_candidate_histogram", "value": {"1": 1, "2": 1}},
+            "worker": {
+                "statistic": "worker",
+                "value": {"candidate_count": 1, "best_probability": 1},
+            },
+        })
 
     def test_compression_cache_usage_is_persisted_pushed_and_restored(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)

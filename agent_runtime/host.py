@@ -11,6 +11,7 @@ from agent_core import (
 from .callbacks import RuntimeCallbacks
 from .config import load_model_options
 from .plane_manager import ExecutionPlaneManager
+from .scene_input import SceneInput
 from .session_controller import SessionRuntimeController
 from .services import RuntimeServices
 from .turn_runner import TurnResult, TurnRunner
@@ -93,7 +94,7 @@ class RuntimeHost:
         self.callbacks.on_event(event, turn_id)
 
     def run_turn(
-        self, turn_id: str, text: str | Callable[[], str], *,
+        self, turn_id: str, text: str | Callable[[], SceneInput], *,
         attachments: Callable[[], tuple[AttachmentPart, ...]] = lambda: (),
     ) -> TurnResult:
         return self.turns.run_turn(

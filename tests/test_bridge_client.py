@@ -100,7 +100,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
         source = cls.root / "source"
         source.mkdir()
         shutil.copyfile(ROOT / "pyproject.toml", source / "pyproject.toml")
-        for directory in ("agent_core", "agent_runtime", "interfaces"):
+        for directory in ("agent_core", "agent_runtime", "interfaces", "rade_tasks"):
             shutil.copytree(
                 ROOT / directory, source / directory,
                 ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".DS_Store"),

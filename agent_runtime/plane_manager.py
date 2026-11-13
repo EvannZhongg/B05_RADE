@@ -15,7 +15,6 @@ from agent_core import (
     SubagentRoleRegistry,
     SubagentRuntime,
     HostCommandExecutor,
-    ToolExecutionContext,
     Workspace,
     WorkspaceInstructions,
     builtin_catalog,
@@ -40,6 +39,7 @@ from .execution_plane import ExecutionPlane
 from .instructions import load_workspace_instructions
 from .plugins import PluginAgent, PluginManager
 from .role_tools import resolve_role_tools
+from .scene_tool import QuerySceneTool, SceneToolContext
 from .settings import EnvironmentReloader, configuration_fingerprint
 from .callbacks import RuntimeCallbacks
 from .session_controller import SessionRuntimeController
@@ -124,7 +124,7 @@ class ExecutionPlaneManager:
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
             catalog = builtin_catalog()
-            catalog = catalog.extend(mcp.wait_ready(cancellation))
+            catalog = catalog.extend((*mcp.wait_ready(cancellation), QuerySceneTool()))
             role_tools = {}
             if agent_config.tools.is_enabled("subagent"):
                 for name, role in agent_config.subagent_roles.items():
@@ -248,7 +248,7 @@ class ExecutionPlaneManager:
                 plane.role_tools,
                 create_memory if store is not None else None,
             )
-            context = ToolExecutionContext(
+            context = SceneToolContext(
                 workspace=workspace,
                 session=session.session,
                 sessions_directory=session.sessions_directory,
@@ -265,17 +265,7 @@ class ExecutionPlaneManager:
                 hooks=plane.hooks,
                 on_hook_event=lambda event: self.callbacks.on_event(event, session.session.current_turn_id),
             )
-            tools = catalog.select(
-                (
-                    *agent_config.tools.enabled,
-                    "read_image",
-                    "read_skill",
-                    "update_plan",
-                    *mcp.tool_names,
-                    "remember",
-                ),
-                context,
-            )
+            tools = plane.select_main_tools(context)
             agent = Agent(
                 provider=main_provider,
                 session=session.session,
@@ -296,6 +286,7 @@ class ExecutionPlaneManager:
             )
             plane.memory = memory
             plane.agent = agent
+            plane.tool_context = context
             plane.context_window = agent.context_window()
         except BaseException:
             if self.current is plane:

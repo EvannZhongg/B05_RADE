@@ -25,7 +25,8 @@ class Bridge(SessionBridge):
         self._reader_lock = Lock()
         config_directory = default_config_directory()
         services = RuntimeServices(config_directory)
-        super().__init__(services=services, send=lambda event: stdout.write(encode(event) + "\n"))
+        super().__init__(services=services, input_directory=config_directory / "input",
+                         send=lambda event: stdout.write(encode(event) + "\n"))
 
     def read_message(self):
         self._start_reader()
@@ -148,10 +149,6 @@ def open_session_message(
         "provider": {
             "request_timeout_seconds": 300,
             "max_retries": 2,
-        },
-        "skills": {
-            "global_paths": ["skills"],
-            "workspace_paths": [],
         },
         **(agent_config if agent_config is not None else {
             "max_same_tool_calls": 5,

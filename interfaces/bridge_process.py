@@ -8,7 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from agent_core import Workspace
 from interfaces.bridge.event_stream import EventStream
 from interfaces.bridge.protocol import PROTOCOL_VERSION
 
@@ -67,11 +66,10 @@ class BridgeProcess:
         self._close_task: asyncio.Task[None] | None = None
 
     @classmethod
-    async def spawn(cls, workspace: Workspace, config_directory: Path) -> "BridgeProcess":
+    async def spawn(cls, config_directory: Path) -> "BridgeProcess":
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "interfaces.bridge",
             "--config-directory", str(config_directory),
-            cwd=workspace.path,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,

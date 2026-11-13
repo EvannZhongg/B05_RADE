@@ -417,7 +417,7 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 6,
+                "protocol_version": 7,
                 "session_id": "s1",
                 "workspace": "/tmp/work",
                 "provider": "test",
@@ -1115,16 +1115,21 @@ class InterruptedTurnTest(BridgeTestCase):
     def test_scene_features_are_passed_as_user_text(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
         text = '\ufeff{"P":[[0.6,0],[0.2,0.8],[0,0]],"v":[10,25]}'
+        input_directory = self.root / "input"
+        input_directory.mkdir()
+        (input_directory / "scene1_1.json").write_bytes(text.encode("utf-8"))
+        (input_directory / "scene1_2.json").write_text('{"P":[[0.1]],"v":[10,25]}', encoding="utf-8")
         with patch.object(
             plane.provider, "stream_cancellable", return_value=LLMResponse(content="Loaded")
         ) as stream:
             self.bridge.run_turn({
                 "turn_id": "json",
-                "json_input": {"filename": "输入  样例.json", "text": text},
+                "scene_input": "scene1_1.json",
             })
+            self.bridge.run_turn({"turn_id": "outside", "scene_input": "../input/scene1_1.json"})
             self.bridge.run_turn({
                 "turn_id": "invalid",
-                "json_input": {"filename": "bad.json", "text": '{"P":[[0.1]],"v":[10,25]}'},
+                "scene_input": "scene1_2.json",
             })
 
         stream.assert_called_once()
@@ -1133,7 +1138,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertIsInstance(user_message.content, str)
         features = json.loads(user_message.content)
         self.assertEqual(set(features), {"filename", "source_path", "T", "W", "P", "V"})
-        self.assertEqual(features["filename"], "输入  样例.json")
+        self.assertEqual(features["filename"], "scene1_1.json")
         self.assertEqual(features["T"]["count"], 2)
         self.assertEqual(features["W"]["count"], 3)
         self.assertEqual(features["P"]["positive_fraction"], 0.5)
@@ -1144,6 +1149,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(source.read_bytes(), text.encode("utf-8"))
         self.assertEqual(list(source.parent.iterdir()), [source])
         messages = emitted(self.stdout)
+        self.assertTrue(any(event["type"] == "turn_failed" and event["turn_id"] == "outside" for event in messages))
         completed = next(event for event in messages if event["type"] == "turn_completed")
         item = next(item for item in completed["transcript"]["items"] if item["role"] == "user")
         self.assertEqual(item["content"], user_message.content)
@@ -1151,7 +1157,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(messages[-1]["turn_id"], "invalid")
         self.assertIn("must be an array of length 2", messages[-1]["error"]["message"])
         summary, = self.store.list_workspace_sessions(self.root)
-        self.assertIn("输入 样例.json", summary["input_preview"])
+        self.assertIn("scene1_1.json", summary["input_preview"])
         self.assertEqual(
             summary["started_at"],
             self.session.turns["json"].started_at.isoformat().replace("+00:00", "Z"),
@@ -2075,16 +2081,19 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertIn("demo-skill: Does demo work.", prompt)
         self.assertNotIn("# Detailed instructions", prompt)
 
-    def test_registers_configured_global_and_workspace_skill_paths(self) -> None:
+    def test_registers_only_skills_from_the_config_directory(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        config = root / "config"
+        config = root / ".RADE"
         workspace = root / "workspace"
         config.mkdir()
         workspace.mkdir()
         for skill_root, name in (
-            (config / "shared-skills", "global-skill"),
-            (workspace / ".project-skills", "workspace-skill"),
+            (config / "skills", "rade-skill"),
+            (config / "shared-skills", "custom-skill"),
+            (workspace / "skills", "workspace-skill"),
+            (workspace / ".agents" / "skills", "agents-skill"),
+            (workspace / ".RADE" / "skills", "workspace-rade-skill"),
         ):
             skill = skill_root / name
             skill.mkdir(parents=True)
@@ -2120,7 +2129,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         skills = plane.agent._execution_context.skills
 
         assert skills is not None
-        self.assertEqual(skills.names, ("global-skill", "workspace-skill"))
+        self.assertEqual(skills.names, ("rade-skill",))
         self.assertEqual(plane.runtime_warnings, ())
 
     def test_registers_plugin_skills_with_the_plugin_namespace(self) -> None:

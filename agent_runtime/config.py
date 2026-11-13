@@ -4,14 +4,19 @@ import shutil
 from dataclasses import dataclass, field
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from agent_core import AgentConfig, DirectorySkillSource
+from agent_core import DirectorySkillSource, SkillLoader, SkillRegistry, SkillSource
 from agent_core.memory import MemoryStore
+from agent_core.path_utils import is_path_within
 from agent_core.providers import (
     OPENAI_APIS,
     normalize_semantic_effort,
     validate_reasoning_parameters,
 )
+
+if TYPE_CHECKING:
+    from .plugins import PluginManager
 
 EXECUTION_CONFIG_FILENAMES = ("provider_config.json", "agent_config.json")
 PROMPT_FILENAMES = (
@@ -69,39 +74,18 @@ def memory_store(directory: Path) -> MemoryStore:
     return MemoryStore(directory / "sessions")
 
 
-def configured_skill_sources(
-    config_directory: Path,
-    agent_config: AgentConfig,
-    workspace: Path | None = None,
-) -> tuple[DirectorySkillSource, ...]:
-    """Resolve configured standalone Skill roots in registration order."""
-    directories = _resolve_skill_paths(
-        agent_config.skills.global_paths,
-        config_directory,
-    )
-    if workspace is not None:
-        directories += _resolve_skill_paths(
-            agent_config.skills.workspace_paths,
-            workspace,
+def load_runtime_skills(directory: Path, plugins: "PluginManager") -> SkillRegistry:
+    skill_directory = directory / "skills"
+    plugin_directory = directory / "plugins"
+    sources: list[SkillSource] = []
+    if is_path_within(skill_directory, directory):
+        sources.append(DirectorySkillSource(skill_directory))
+    if is_path_within(plugin_directory, directory):
+        sources.extend(
+            source for source in plugins.skill_sources()
+            if is_path_within(source.plugin.root, plugin_directory)
         )
-
-    sources = []
-    seen = set()
-    for directory in directories:
-        resolved = directory.expanduser().resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        sources.append(DirectorySkillSource(resolved))
-    return tuple(sources)
-
-
-def _resolve_skill_paths(paths: tuple[str, ...], base: Path) -> tuple[Path, ...]:
-    resolved = []
-    for value in paths:
-        path = Path(value).expanduser()
-        resolved.append(path if path.is_absolute() else base / path)
-    return tuple(resolved)
+    return SkillLoader().load(sources)
 
 
 def initialize_config_directory(directory: Path) -> tuple[Path, ...]:

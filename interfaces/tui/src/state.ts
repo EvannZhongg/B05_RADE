@@ -42,6 +42,7 @@ export type Entry =
 export type NavigationPicker = (
   | { kind: 'sessions'; list: SessionSummary[] | null }
   | { kind: 'workspaces'; list: string[] | null }
+  | { kind: 'input'; list: string[] | null; error?: string }
 ) & { selectedIndex: number };
 
 export type State = {
@@ -607,6 +608,11 @@ function applyMessage(state: State, message: Incoming): State {
     case 'workspaces_listed':
       return state.picker?.kind === 'workspaces'
         ? { ...state, picker: { kind: 'workspaces', list: message.workspaces, selectedIndex: 0 } }
+        : state;
+
+    case 'input_scenes_listed':
+      return state.picker?.kind === 'input'
+        ? { ...state, picker: { kind: 'input', list: message.filenames, error: message.error, selectedIndex: 0 } }
         : state;
 
     case 'session_items':

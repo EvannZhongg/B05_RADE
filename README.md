@@ -114,7 +114,7 @@ Frontends and SDK:
 | Path | Contents |
 | --- | --- |
 | `.RADE/provider_config.json` | Provider definitions and the default main agent provider |
-| `.RADE/agent_config.json` | Tools, context, memory, skill paths, subagents, MCP, workspace instructions, and scratch workspace settings |
+| `.RADE/agent_config.json` | Tools, context, memory, subagents, MCP, workspace instructions, and scratch workspace settings |
 | `.RADE/.env` | The secrets and environment variables referenced by the configuration |
 | `.RADE/prompts/` | Main agent, subagent, compaction, and memory prompts |
 | `.RADE/skills/` | Standalone skills |

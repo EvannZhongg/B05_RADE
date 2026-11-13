@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
 from agent_runtime.attachments import parse_attachments
-from agent_runtime.scene_validation import prepare_scene_input
+from agent_runtime.scene_validation import list_scene_inputs, prepare_scene_input
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
 from .protocol import (
@@ -35,8 +35,10 @@ from .event_stream import EventStream
 
 class Bridge:
     def __init__(self, *, services: RuntimeServices,
+                 input_directory: Path,
                  send: Callable[[dict[str, object]], None]) -> None:
         self._send = send
+        self._input_directory = input_directory
         self._event_lock = RLock()
         self._messages: Queue[dict[str, object] | BaseException | None] = Queue()
         self._shutdown_requested = False
@@ -331,6 +333,13 @@ class Bridge:
                 self._refresh_runtime()
             elif message["type"] == "list_sessions":
                 self._emit_sessions()
+            elif message["type"] == "list_input_scenes":
+                try:
+                    filenames = list_scene_inputs(self._input_directory)
+                except (OSError, ValueError) as error:
+                    self.emit("input_scenes_listed", filenames=[], error=str(error))
+                else:
+                    self.emit("input_scenes_listed", filenames=filenames)
             elif message["type"] == "load_session":
                 self._emit_session_items()
             elif message["type"] == "session_snapshot":
@@ -400,9 +409,10 @@ class Bridge:
         turn_id = str(message["turn_id"])
         self._checkpoint_turn = turn_id
         workspace = self.host.sessions.workspace
-        if "json_input" in message:
+        if "scene_input" in message or "text" not in message:
             result = self.host.run_turn(
-                turn_id, lambda: prepare_scene_input(message["json_input"], workspace),
+                turn_id,
+                lambda: prepare_scene_input(self._input_directory, message.get("scene_input"), workspace),
             )
         else:
             result = self.host.run_turn(

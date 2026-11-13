@@ -19,6 +19,7 @@ class BridgeServer:
         self._write_lock = Lock()
         self._channels_lock = Lock()
         self._channels: dict[str, tuple[Bridge, Thread]] = {}
+        self._input_directory = Path.cwd().resolve() / "input"
         self.services = RuntimeServices(config_directory)
 
     def emit(self, **message: object) -> None:
@@ -50,6 +51,7 @@ class BridgeServer:
                         raise ProtocolError("first channel command must be 'open_session'")
                     bridge = Bridge(
                         services=self.services,
+                        input_directory=self._input_directory,
                         send=lambda event, key=channel_id: self.emit(
                             type="channel_event", channel_id=key, event=event,
                         ),

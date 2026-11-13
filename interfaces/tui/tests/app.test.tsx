@@ -1,8 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import React from 'react';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { render } from 'ink-testing-library';
 import type { Incoming } from '@rade/protocol/internal';
 
@@ -31,6 +28,9 @@ vi.mock('@rade/client', () => ({
       activeMockChannel = channelId;
       sent.push(message);
       sentChannels.push(channelId);
+      if (message.type === 'list_input_scenes') {
+        setTimeout(() => emit({ type: 'input_scenes_listed', filenames: [sceneFilename, 'scene2_1.json'] }, channelId), 10);
+      }
       if (autoReady && message.type === 'session_snapshot') {
         setTimeout(() => {
           emit({ ...readyByChannel.get(channelId), resumed: true }, channelId);
@@ -40,7 +40,7 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 6,
+              type: 'session_ready', protocol_version: 7,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               workspace: message.workspace,
               provider: 'test',
@@ -75,16 +75,7 @@ vi.mock('@rade/client', () => ({
   },
 }));
 
-let jsonDirectory: string;
-let jsonPath: string;
-const jsonText = '{"items":[1,2],"label":"样例"}';
-
-beforeEach(async () => {
-  jsonDirectory = await mkdtemp(join(tmpdir(), 'rade-json-'));
-  jsonPath = join(jsonDirectory, 'sample file.json');
-  await writeFile(jsonPath, jsonText);
-});
-afterEach(async () => { await rm(jsonDirectory, { recursive: true, force: true }); });
+const sceneFilename = 'scene1_1.json';
 
 const { App } = await import('../src/app.js');
 
@@ -139,6 +130,17 @@ async function typeDraft(
 ): Promise<void> {
   stdin.write(text);
   await waitFor(() => expect(lastFrame()).toContain(text));
+}
+
+async function selectScene(stdin: { write: (data: string) => void }, lastFrame: Frame): Promise<void> {
+  await waitFor(() => expect(lastFrame()).toContain('❯ ' + sceneFilename));
+  stdin.write('\r');
+}
+
+async function runScene(stdin: { write: (data: string) => void }, lastFrame: Frame): Promise<void> {
+  await typeDraft(stdin, lastFrame, '/input');
+  stdin.write('\r');
+  await selectScene(stdin, lastFrame);
 }
 
 function lineContaining(frame: string | undefined, text: string): number {
@@ -271,27 +273,35 @@ describe('App', () => {
     );
   });
 
-  it('submits a JSON file once the runtime is idle', async () => {
-    const { stdin, lastFrame } = renderApp(jsonDirectory);
+  it('ignores a local path and submits only the scene selected from /input', async () => {
+    const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, '"sample file.json"');
+    await typeDraft(stdin, lastFrame, 'outside/scene1_1.json');
     stdin.write('\r');
-    await waitFor(() =>
-      expect(sent.find((m) => m.type === 'user_turn')).toMatchObject({ json_input: { filename: 'sample file.json', text: jsonText } }),
-    );
+    await wait(30);
+    expect(turns()).toHaveLength(0);
+    stdin.write('\u001b');
+    await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
+    await typeDraft(stdin, lastFrame, '/input');
+    stdin.write('\r');
+    await waitFor(() => expect(lastFrame()).toContain('❯ ' + sceneFilename));
+    stdin.write('\u001b[B');
+    await waitFor(() => expect(lastFrame()).toContain('❯ scene2_1.json'));
+    stdin.write('\r');
+    await waitFor(() => expect(turns()[0]).toMatchObject({ scene_input: 'scene2_1.json' }));
   });
 
   it('keeps an opening draft without submitting before runtime synchronization', async () => {
     autoReady = false;
     const { stdin, lastFrame } = renderApp();
-    await typeDraft(stdin, lastFrame, jsonPath);
+    await typeDraft(stdin, lastFrame, '/input');
     stdin.write('\r');
     await wait(20);
     expect(turns()).toHaveLength(0);
-    expect(lastFrame()).toContain(jsonPath);
+    expect(lastFrame()).toContain('/input');
 
     emit({
-      type: 'session_ready', protocol_version: 6,
+      type: 'session_ready', protocol_version: 7,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
@@ -310,7 +320,8 @@ describe('App', () => {
     });
     await waitForReady(lastFrame);
     stdin.write('\r');
-    await waitFor(() => expect(turns()[0]).toMatchObject({ json_input: { filename: 'sample file.json', text: jsonText } }));
+    await selectScene(stdin, lastFrame);
+    await waitFor(() => expect(turns()[0]).toMatchObject({ scene_input: sceneFilename }));
   });
 
   it('refreshes the runtime without creating a turn or restarting the bridge', async () => {
@@ -321,15 +332,16 @@ describe('App', () => {
     await waitFor(() => expect(sent).toContainEqual({ type: 'runtime_refresh' }));
     expect(turns()).toHaveLength(0);
     expect(bridgeCount).toBe(1);
-    await typeDraft(stdin, lastFrame, jsonPath);
+    await typeDraft(stdin, lastFrame, '/input');
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain(jsonPath));
+    await waitFor(() => expect(lastFrame()).toContain('/input'));
     expect(turns()).toHaveLength(0);
     emit({ type: 'runtime_refreshed', provider: 'test', model: 'test/updated' });
     await waitFor(() => expect(lastFrame()).toContain('Runtime refreshed.'));
     expect(lastFrame()).toContain('test/updated');
     stdin.write('\r');
-    await waitFor(() => expect(turns()).toContainEqual(expect.objectContaining({ json_input: { filename: 'sample file.json', text: jsonText } })));
+    await selectScene(stdin, lastFrame);
+    await waitFor(() => expect(turns()).toContainEqual(expect.objectContaining({ scene_input: sceneFilename })));
   });
 
   it('opens /model and switches through provider_set', async () => {
@@ -477,8 +489,7 @@ describe('App', () => {
     expect(sent.filter(message => message.type === 'open_session')).toHaveLength(2);
     expect(closedChannels).toEqual([]);
     emit({ type: 'assistant_delta', turn_id: 'background', text: 'hidden second session', model_call_index: 1 }, secondChannel);
-    await typeDraft(stdin, lastFrame, jsonPath);
-    stdin.write('\r');
+    await runScene(stdin, lastFrame);
     await waitFor(() => expect(turns()).toHaveLength(1));
     expect(sentChannels[sent.findIndex(message => message.type === 'user_turn')]).toBe(firstChannel);
     expect(lastFrame()).not.toContain('hidden second session');
@@ -507,12 +518,12 @@ describe('App', () => {
     });
     expect(lastFrame()).toContain('old workspace history');
 
-    await typeDraft(stdin, lastFrame, jsonPath);
+    await typeDraft(stdin, lastFrame, '/input');
     stdin.write('\r');
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 6, session_id: 'fresh', workspace: '/next',
+      type: 'session_ready', protocol_version: 7, session_id: 'fresh', workspace: '/next',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
@@ -528,8 +539,9 @@ describe('App', () => {
     emit(snapshot);
     await waitFor(() => expect(lastFrame()).not.toContain('opening session…'));
     stdin.write('\r');
+    await selectScene(stdin, lastFrame);
     await waitFor(() => expect(turns()).toHaveLength(1));
-    expect(turns()[0].json_input).toEqual({ filename: 'sample file.json', text: jsonText });
+    expect(turns()[0].scene_input).toBe(sceneFilename);
 
     emit(snapshot);
     emit({ type: 'turn_completed', turn_id: turns()[0].turn_id, usage: null });
@@ -562,7 +574,7 @@ describe('App', () => {
     await wait(30);
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
     stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
+    await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
     unmount();
   });
@@ -613,7 +625,7 @@ describe('App', () => {
     });
     await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
     stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
+    await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
     await typeDraft(stdin, lastFrame, '/workspaces');
     stdin.write('\r');
     await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
@@ -671,11 +683,10 @@ describe('App', () => {
       expect(lastFrame()).toContain('in use in another window');
       expect(lastFrame()).toContain('original conversation');
       stdin.write('\u001b');
-      await waitFor(() => expect(lastFrame()).toContain('JSON file path'));
-      await typeDraft(stdin, lastFrame, jsonPath);
-      stdin.write('\r');
+      await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
+      await runScene(stdin, lastFrame);
       await waitFor(() => expect(turns()).toHaveLength(attempt));
-      expect(turns().at(-1).json_input).toEqual({ filename: 'sample file.json', text: jsonText });
+      expect(turns().at(-1).scene_input).toBe(sceneFilename);
       expect(sentChannels[sent.lastIndexOf(turns().at(-1))]).toBe('session-1');
       emit(snapshot);
       emit({ type: 'turn_completed', turn_id: turns().at(-1).turn_id, usage: null });
@@ -714,7 +725,7 @@ describe('App', () => {
     });
 
     await waitFor(() => expect(lastFrame()).toContain('replayed line 60'));
-    expect(lastFrame()).toContain('JSON file path');
+    expect(lastFrame()).toContain('Enter /input to select a scene');
   });
 
   it('closes the session picker on escape without switching', async () => {
@@ -730,18 +741,17 @@ describe('App', () => {
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
   });
 
-  it('keeps a second JSON file from interrupting an active turn', async () => {
+  it('keeps /input from opening during an active turn', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
 
-    await typeDraft(stdin, lastFrame, jsonPath);
-    stdin.write('\r');
+    await runScene(stdin, lastFrame);
     await waitFor(() => expect(turns()).toHaveLength(1));
 
-    await typeDraft(stdin, lastFrame, jsonPath);
+    await typeDraft(stdin, lastFrame, '/input');
     stdin.write('\r');
-    // The draft clears immediately and the message targets the active turn.
-    await waitFor(() => expect(lastFrame()).not.toContain('second'));
+    await waitFor(() => expect(lastFrame()).not.toContain('Input scenes'));
+    expect(sent.filter((message) => message.type === 'list_input_scenes')).toHaveLength(1);
     expect(turns()).toHaveLength(1);
     expect(steers()).toHaveLength(0);
   });
@@ -750,8 +760,7 @@ describe('App', () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
 
-    await typeDraft(stdin, lastFrame, jsonPath);
-    stdin.write('\r');
+    await runScene(stdin, lastFrame);
     await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
 
     const inputLine = lineContaining(lastFrame(), 'Enter / for commands');
@@ -763,8 +772,7 @@ describe('App', () => {
   it('cancels the active turn on escape', async () => {
     const { stdin, lastFrame } = renderApp();
     await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, jsonPath);
-    stdin.write('\r');
+    await runScene(stdin, lastFrame);
     // Wait for the busy status: escape only cancels once the turn is running.
     await waitFor(() => expect(lastFrame()).toContain('esc to cancel'));
 
@@ -907,7 +915,7 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 6,
+      type: 'session_ready', protocol_version: 7,
       session_id: 'sess-1234',
       workspace: '/w',
       provider: 'test',
@@ -928,7 +936,7 @@ describe('App', () => {
 
     expect(
       lineContaining(lastFrame(), 'test/model') -
-        lineContaining(lastFrame(), 'JSON file path'),
+        lineContaining(lastFrame(), 'Enter /input to select a scene'),
     ).toBe(2);
   });
 

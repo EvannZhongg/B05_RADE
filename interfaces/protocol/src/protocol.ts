@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 export type JSONValue =
   | string
@@ -254,6 +254,7 @@ export type Incoming = (
   | { type: 'runtime_refresh_failed'; error: RuntimeFailure }
   | { type: 'sessions_listed'; sessions: SessionSummary[] }
   | { type: 'workspaces_listed'; workspaces: string[] }
+  | { type: 'input_scenes_listed'; filenames: string[]; error?: string }
   | { type: 'session_items'; items: SessionItem[] }
   | { type: 'plan_updated'; plan: PlanSnapshot }
   | { type: 'mcp_server_status'; server: string; status: string; tool_count?: number; error?: string }
@@ -269,12 +270,6 @@ export type Incoming = (
   transcript?: TranscriptCheckpoint;
 };
 
-export type JsonInput = {
-  filename: string;
-  /** Contest scene JSON with P indexed by processing unit and task, and v indexed by task. */
-  text: string;
-};
-
 export type Outgoing =
   | {
       // May also rebind an idle Bridge to another Session without restarting it.
@@ -285,7 +280,7 @@ export type Outgoing =
       provider?: string;
     }
   | { type: 'user_turn'; turn_id: string; text: string; attachments?: UserAttachment[] }
-  | { type: 'user_turn'; turn_id: string; json_input: JsonInput }
+  | { type: 'user_turn'; turn_id: string; scene_input: string }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
   | { type: 'provider_set'; provider: string }
   | { type: 'workspace_set'; workspace: string }
@@ -294,6 +289,7 @@ export type Outgoing =
   // List stored conversations; control-plane-only Sessions can be absent.
   | { type: 'list_sessions' }
   | { type: 'list_workspaces' }
+  | { type: 'list_input_scenes' }
   | { type: 'load_session' }
   | { type: 'session_snapshot' };
 

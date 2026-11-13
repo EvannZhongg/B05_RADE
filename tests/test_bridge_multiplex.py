@@ -101,7 +101,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         config["main_agent"]["tools"]["shell"] = True
         config["main_agent"]["tools"]["read_file"] = True
         path.write_text(json.dumps(config), encoding="utf-8")
-        self.bridge = await BridgeProcess.spawn(Workspace(self.root), self.root)
+        self.bridge = await BridgeProcess.spawn(self.root)
 
     async def asyncTearDown(self):
         self.http.release.set()
@@ -126,7 +126,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         channel = self.bridge.open_channel(key)
         channel.send({**self.opening, "session_id": session_id or key})
         ready, _ = await self.until(channel, "session_ready")
-        self.assertEqual(ready["protocol_version"], 6)
+        self.assertEqual(ready["protocol_version"], 7)
         await self.until(channel, "runtime_state")
         return channel
 

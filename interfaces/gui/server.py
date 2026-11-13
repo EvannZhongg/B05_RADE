@@ -12,11 +12,12 @@ from contextlib import nullcontext
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from agent_core import JsonlSessionStore, Workspace
+from agent_runtime.scene_validation import list_scene_inputs, read_scene_input
 from agent_runtime.settings import SettingsStore
 from interfaces.session_host import ActiveSessionRegistry
 from .routes.media import create_media_router
@@ -27,6 +28,7 @@ from .routes.workspace import WorkspaceResolver, create_workspace_router
 STATIC_PATH = Path(__file__).resolve().parent / "static"
 HOST = "127.0.0.1"
 PORT = 8736
+SCENE_PREVIEW_LENGTH = 12_000
 
 
 def create_app(
@@ -36,6 +38,7 @@ def create_app(
     active_sessions: ActiveSessionRegistry,
 ) -> FastAPI:
     workspace_resolver = WorkspaceResolver(workspace, store)
+    input_directory = Path.cwd().resolve() / "input"
 
     app = FastAPI(
         title="RADE",
@@ -59,6 +62,23 @@ def create_app(
             host=HOST,
         )
     )
+
+    @app.get("/api/input-scenes")
+    def get_input_scenes() -> list[str]:
+        try:
+            return list_scene_inputs(input_directory)
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.get("/api/input-scenes/preview")
+    def preview_input_scene(filename: str) -> dict[str, object]:
+        try:
+            text = read_scene_input(input_directory, filename).decode("utf-8-sig")
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return {"text": text[:SCENE_PREVIEW_LENGTH], "truncated": len(text) > SCENE_PREVIEW_LENGTH}
 
     if STATIC_PATH.is_dir():
         app.mount("/", StaticFiles(directory=STATIC_PATH, html=True), name="gui")

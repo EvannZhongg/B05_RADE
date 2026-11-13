@@ -22,7 +22,7 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 6 as const,
+  protocol_version: 7 as const,
   session_id: 'abc12345-0000',
   workspace: '/tmp/work',
   provider: 'deepseek',

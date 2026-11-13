@@ -19,6 +19,10 @@ export const COMMANDS: Command[] = [
     description: 'Start a new conversation in an existing workspace',
   },
   {
+    name: '/input',
+    description: 'Select and run a scene from input/',
+  },
+  {
     name: '/model',
     description: 'Switch this session to another configured provider',
   },

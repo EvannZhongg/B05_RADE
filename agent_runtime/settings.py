@@ -12,7 +12,7 @@ from threading import RLock
 
 from dotenv import dotenv_values
 
-from agent_core import SkillLoader, load_agent_config
+from agent_core import load_agent_config
 from agent_core.atomic import atomic_write_text
 from agent_core.providers import (
     OPENAI_APIS,
@@ -23,8 +23,8 @@ from agent_core.tools import ROLE_TOOL_NAMES, TOOL_NAMES
 
 from .config import (
     EXECUTION_CONFIG_FILENAMES,
-    configured_skill_sources,
     load_model_options,
+    load_runtime_skills,
     load_scratch_workspace_root,
 )
 from .plugins import PluginManager
@@ -179,13 +179,7 @@ class SettingsStore:
             })
 
         plugins = PluginManager.discover(self.directory / "plugins")
-        skills = SkillLoader().load(
-            (
-                *configured_skill_sources(self.directory, agent_config),
-                *plugins.skill_sources(),
-            ),
-            warnings=plugins.warnings,
-        )
+        skills = load_runtime_skills(self.directory, plugins)
         plugin_mcp, plugin_mcp_warnings = plugins.load_mcp_servers()
         plugin_agents, plugin_agent_warnings = plugins.load_agents()
         _, plugin_hook_warnings = plugins.load_hooks()
@@ -267,7 +261,10 @@ class SettingsStore:
                 "description": agent.description,
                 "source": str(agent.source),
             } for agent in plugin_agents],
-            "warnings": list(skills.warnings) + list(plugin_mcp_warnings) + list(plugin_agent_warnings) + list(plugin_hook_warnings),
+            "warnings": [
+                *plugins.warnings, *skills.warnings, *plugin_mcp_warnings,
+                *plugin_agent_warnings, *plugin_hook_warnings,
+            ],
         }
 
     @staticmethod

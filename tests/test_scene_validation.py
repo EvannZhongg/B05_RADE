@@ -3,32 +3,29 @@ from pathlib import Path
 
 import pytest
 
-from agent_runtime.scene_validation import extract_scene_features
+from agent_runtime.scene_validation import extract_scene_features, read_scene_input
 
 
-SCENES = (
-    Path(__file__).resolve().parents[1]
-    / "docs" / "反思式决策赛题信息" / "赛题自测场景"
-)
+SCENES = Path(__file__).resolve().parents[1] / "input"
 
 
 @pytest.mark.parametrize(
     ("filename", "rows", "columns"),
     [
-        ("scene1_0_50_20.json", 50, 20),
-        ("scene1_1_40_30.json", 40, 30),
-        ("scene1_2_50_20.json", 50, 20),
-        ("scene1_3_50_20.json", 50, 20),
-        ("scene1_4_50_20.json", 50, 20),
-        ("scene2_0_500_200.json", 500, 200),
-        ("scene2_1_400_300.json", 400, 300),
-        ("scene2_2_500_200.json", 500, 200),
-        ("scene2_3_500_200.json", 500, 200),
-        ("scene2_4_500_200.json", 500, 200),
+        ("scene1_1.json", 50, 20),
+        ("scene1_2.json", 40, 30),
+        ("scene1_3.json", 50, 20),
+        ("scene1_4.json", 50, 20),
+        ("scene1_5.json", 50, 20),
+        ("scene2_1.json", 500, 200),
+        ("scene2_2.json", 400, 300),
+        ("scene2_3.json", 500, 200),
+        ("scene2_4.json", 500, 200),
+        ("scene2_5.json", 500, 200),
     ],
 )
 def test_contest_fixture_dimensions(filename, rows, columns):
-    text = (SCENES / filename).read_text(encoding="utf-8")
+    text = read_scene_input(SCENES, filename).decode("utf-8")
     features = extract_scene_features(text)
     assert features["W"]["count"] == rows
     assert features["T"]["count"] == columns

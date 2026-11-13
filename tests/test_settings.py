@@ -11,6 +11,8 @@ from agent_runtime.settings import (
     configuration_fingerprint,
     environment_reference,
 )
+from tests.plugin_fixtures import write_manifest
+from tests.skill_fixtures import write_skill
 
 
 PROVIDERS = {
@@ -25,7 +27,6 @@ AGENT = {
     "provider": {"request_timeout_seconds": 300, "max_retries": 2},
     "scratch_workspace_root": "workspaces/scratch",
     "workspace_instruction_files": ["AGENTS.md"],
-    "skills": {"global_paths": ["skills"], "workspace_paths": []},
     "context": {"compression": {"enabled": True, "trigger_ratio": None, "keep_recent_units": 4, "user_anchor_token_budget": 2000}},
     "main_agent": {"tools": {"read_file": True}},
     "subagent_roles": {},
@@ -56,20 +57,17 @@ class SettingsStoreTest(unittest.TestCase):
             "workspace_max_tokens": 3000,
         })
 
-    def test_snapshot_loads_configured_global_skill_paths(self) -> None:
-        external = self.root / "shared-skills" / "demo"
-        external.mkdir(parents=True)
-        (external / "SKILL.md").write_text(
-            "---\nname: shared\ndescription: Shared skill.\n---\n",
-            encoding="utf-8",
-        )
-        document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
-        document["skills"]["global_paths"] = ["shared-skills"]
-        self.store.agent_path.write_text(json.dumps(document), encoding="utf-8")
+    def test_snapshot_lists_rade_skills_and_enabled_plugin_skills(self) -> None:
+        write_skill(self.root / "skills", "demo", name="standalone")
+        write_skill(self.root / "shared-skills", "demo", name="external")
+        manifest = write_manifest(self.root / "plugins", "example", components={"skills": ["skills"]})
+        write_skill(manifest.parent / "skills", "demo", name="demo")
+        manifest = write_manifest(self.root / "plugins", "disabled", enabled=False, components={"skills": ["skills"]})
+        write_skill(manifest.parent / "skills", "demo", name="demo")
 
         snapshot = self.store.snapshot()
 
-        self.assertEqual([skill["name"] for skill in snapshot["skills"]], ["shared"])
+        self.assertEqual([skill["id"] for skill in snapshot["skills"]], ["standalone", "example:demo"])
 
     def test_provider_save_is_validated_and_writes_secret_to_dotenv(self) -> None:
         snapshot = self.store.save_provider("second", {
@@ -119,7 +117,7 @@ class SettingsStoreTest(unittest.TestCase):
         document["subagent_roles"] = {
             "researcher": {"description": "Reads.", "tools": {}, "extra": []},
         }
-        for field in ("provider", "skills", "context", "main_agent"):
+        for field in ("provider", "context", "main_agent"):
             document[field]["extra"] = "metadata"
         document["context"]["compression"]["extra"] = True
         self.store.agent_path.write_text(json.dumps(document), encoding="utf-8")

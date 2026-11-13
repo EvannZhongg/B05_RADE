@@ -351,10 +351,14 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
 }
 
 export function NavigationPicker({ picker }: { picker: NavigationPickerState }): React.ReactElement {
-  const workspaces = picker.kind === 'workspaces';
+  const labels = {
+    workspaces: { title: 'Workspaces', empty: 'No workspaces with conversation history.', action: 'new session' },
+    sessions: { title: 'Sessions', empty: 'No conversations in this workspace.', action: 'switch' },
+    input: { title: 'Input scenes', empty: 'No scenes in input/.', action: 'run' },
+  }[picker.kind];
   const items = picker.kind === 'sessions'
     ? picker.list?.map((session) => ({ id: session.session_id, label: sessionLabel(session) }))
-    : picker.list?.map((workspace) => ({ id: workspace, label: workspace }));
+    : picker.list?.map((name) => ({ id: name, label: name }));
   return (
     <Box
       marginTop={1}
@@ -363,12 +367,14 @@ export function NavigationPicker({ picker }: { picker: NavigationPickerState }):
       borderColor="cyan"
       paddingX={1}
     >
-      <Text color="cyan" bold>{workspaces ? 'Workspaces' : 'Sessions'}</Text>
+      <Text color="cyan" bold>{labels.title}</Text>
       <Box marginTop={1} flexDirection="column">
-        {items === undefined ? (
+        {picker.kind === 'input' && picker.error ? (
+          <Text color="red" wrap="truncate-end">{picker.error}</Text>
+        ) : items === undefined ? (
           <Text dimColor>Loading…</Text>
         ) : items.length === 0 ? (
-          <Text dimColor>{workspaces ? 'No workspaces with conversation history.' : 'No conversations in this workspace.'}</Text>
+          <Text dimColor>{labels.empty}</Text>
         ) : (
           items.map((item, index) => {
             const selected = index === picker.selectedIndex;
@@ -388,7 +394,7 @@ export function NavigationPicker({ picker }: { picker: NavigationPickerState }):
           })
         )}
       </Box>
-      <Text dimColor>↑/↓ select · enter {workspaces ? 'new session' : 'switch'} · esc close</Text>
+      <Text dimColor>↑/↓ select · enter {labels.action} · esc close</Text>
     </Box>
   );
 }

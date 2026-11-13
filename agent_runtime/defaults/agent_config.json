@@ -11,16 +11,6 @@
     "CLAUDE.md",
     "AGENTS.md"
   ],
-  "skills": {
-    "global_paths": [
-      "skills"
-    ],
-    "workspace_paths": [
-      "skills",
-      ".agents/skills",
-      ".RADE/skills"
-    ]
-  },
   "context": {
     "compression": {
       "enabled": true,

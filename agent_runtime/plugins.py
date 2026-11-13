@@ -9,12 +9,13 @@ from typing import Iterable
 import yaml
 
 from agent_core import (
+    DirectorySkillSource,
     McpServerConfig,
     SkillLocation,
     load_mcp_server_map,
     namespace_mcp_servers,
 )
-from agent_core.path_utils import relative_to_root
+from agent_core.path_utils import is_path_within, relative_to_root
 from agent_core.tools import ROLE_TOOL_NAMES
 from agent_core.hooks import HOOK_EVENTS, HookDefinition
 from agent_core.execution.process import MAX_COMMAND_TIMEOUT_SECONDS
@@ -127,16 +128,9 @@ class PluginSkillSource:
     plugin: PluginDescriptor
 
     def skill_locations(self) -> Iterable[SkillLocation]:
-        locations = []
         for root in self.plugin.components.skills:
-            if not root.is_dir():
-                continue
-            locations.extend(
-                SkillLocation(child / "SKILL.md", self.plugin.name)
-                for child in sorted(root.iterdir(), key=lambda path: path.name)
-                if child.is_dir() and (child / "SKILL.md").is_file()
-            )
-        return tuple(locations)
+            if is_path_within(root, self.plugin.root):
+                yield from DirectorySkillSource(root, self.plugin.name).skill_locations()
 
 
 class PluginManager:

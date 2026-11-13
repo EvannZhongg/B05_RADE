@@ -10,21 +10,18 @@ from unittest.mock import AsyncMock, patch
 
 from agent_core import (
     AgentConfig,
-    DirectorySkillSource,
     Session,
-    SkillLoader,
     ToolExecutionContext,
     Workspace,
     builtin_catalog,
 )
-from agent_core.config import SkillConfig
 from agent_core.llm import LLMRequest
 from agent_core.mcp.config import load_mcp_config
 from agent_core.mcp.manager import McpClientManager
 from agent_core.mcp.tool import McpTool
 from agent_core.providers.base import _request_tools
 from agent_core.tools.config import TOOL_NAMES, load_tool_config
-from agent_runtime.config import configured_skill_sources
+from agent_runtime.config import load_runtime_skills
 from agent_runtime.plugins import PluginManager
 from tests.plugin_fixtures import write_manifest
 from tests.skill_fixtures import write_skill
@@ -55,40 +52,6 @@ class RegistrationOrderTest(unittest.TestCase):
                     ),
                     names,
                 )
-
-    def test_skill_sources_preserve_config_order_and_first_duplicate(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config_root, workspace = root / "config", root / "workspace"
-            first = write_skill(config_root / "z-root", "z-dir", name="shared")
-            write_skill(config_root / "a-root", "a-dir", name="global-second")
-            write_skill(workspace / "skills", "a-dir", name="shared")
-            write_skill(workspace / "skills", "z-dir", name="workspace-last")
-            config = AgentConfig(
-                max_same_tool_calls=3,
-                output_reserve_tokens=1000,
-                tools=load_tool_config({}),
-                workspace_instruction_files=(),
-                skills=SkillConfig(
-                    global_paths=("z-root", "a-root", "z-root"),
-                    workspace_paths=("skills",),
-                ),
-            )
-            sources = configured_skill_sources(config_root, config, workspace)
-            self.assertEqual(
-                tuple(source.directory for source in sources),
-                (
-                    config_root / "z-root",
-                    config_root / "a-root",
-                    workspace / "skills",
-                ),
-            )
-            registry = SkillLoader().load(sources)
-            self.assertEqual(
-                registry.names, ("shared", "global-second", "workspace-last"),
-            )
-            self.assertEqual(registry.get("shared").directory, first.parent.resolve())
-            self.assertEqual(len(registry.warnings), 1)
 
     def test_filesystem_enumeration_does_not_change_skill_prompt_or_enum(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -128,10 +91,7 @@ class RegistrationOrderTest(unittest.TestCase):
 
                 with patch.object(Path, "iterdir", enumerate_children):
                     manager = PluginManager.discover(plugins)
-                    registry = SkillLoader().load((
-                        DirectorySkillSource(standalone),
-                        *manager.skill_sources(),
-                    ))
+                    registry = load_runtime_skills(root.resolve(), manager)
                 self.assertEqual(registry.names, expected)
                 context = ToolExecutionContext(
                     Workspace(root), Session(), skills=registry,

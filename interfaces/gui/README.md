@@ -22,6 +22,8 @@ RADE-server --workspace ~/projects/my-project
 
 默认监听 <http://127.0.0.1:8736>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
 
+从项目根目录启动 `RADE-server` 后，在对话区的 `选择 input/ 场景` 下拉框中选择、预览并运行场景。列表读取启动目录下的 `input/`，文件名使用 `scene<S>_<I>.json`，其中 `S` 为 1 或 2，`I` 为 1–5。切换会话工作区时继续使用同一个输入目录。
+
 ## 服务端
 
 `interfaces/application_host.py` 管理Session Host 和 HTTP 的生命周期，并向 `server.py` 注入活动 Session 注册表；`server.py` 组装 GUI 应用和路由，管理 HTTP 监听与 Uvicorn 的启停。HTTP 适配器职责包括：
@@ -36,6 +38,7 @@ RADE-server --workspace ~/projects/my-project
 - 从某条历史用户消息的锚点创建分支 Session（fork），源 Session 保持不变
 - 上传附件、下载文件和签发短期图片访问 URL
 - 提供限制在当前 Session Workspace 内的文件树，并在系统文件管理器中打开该 Workspace
+- 列出 `input/` 场景并提供 JSON 预览
 
 `ActiveSessionRegistry` 按 Session 保存后台运行的 `ActiveSession`。页面切换或临时断线不会取消 Turn；重新连接可以从 Bridge 分配的 `event_sequence` 继续。宿主缓存 Bridge 的完整运行快照和 transcript 检查点。一个 Session 同时只有一个控制页面，新页面只有显式 takeover 才替换现有 attachment。
 
@@ -59,7 +62,7 @@ HTTP / WebSocket 路由按模块拆分：
 
 常驻 Bridge 进程的生命周期、通道收发与故障广播由宿主侧模块 `interfaces/bridge_process.py` 提供；GUI 只决定何时创建、附着与关闭，不实现协议语义。
 
-服务端只直接复用 Core 的只读 Session / Workspace 能力和 Runtime 的设置服务，唯一的 Session 写入是 fork：Session Store 复制锚点所在 Turn 之前的 Journal 生成新 Session，并记录来源和锚点，不经过 Bridge，也不改写源 Session。所有会改变 Session 或 Workspace 执行状态的 Agent 操作仍经 Bridge 协议完成。
+服务端直接复用 Core 的只读 Session / Workspace 能力和 Runtime 的设置、场景读取能力，唯一的 Session 写入是 fork：Session Store 复制锚点所在 Turn 之前的 Journal 生成新 Session，并记录来源和锚点。所有会改变 Session 或 Workspace 执行状态的 Agent 操作经 Bridge 协议完成。
 
 ## 前端
 
@@ -73,7 +76,7 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 - 等待首个 `runtime_state` 同步屏障
 - 回放 Journal 并把协议事件投影为 assistant-ui 消息
 - 管理流式文本、reasoning、Tool、计划、Job 和 Context Window
-- 选择并预览本地 JSON 文件，提交后可停止运行。支持修改 Provider 和 Workspace
+- 选择并预览 `input/` 场景，提交后可停止运行。支持修改 Provider 和 Workspace
 - 上传附件并提交文本或 attachment-only Turn
 - 在重连期间合并待应用的本地选择与服务端权威状态
 

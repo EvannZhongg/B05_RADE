@@ -11,7 +11,6 @@ from agent_core import (
     MemoryManager,
     MemoryReconciler,
     McpConfig,
-    SkillLoader,
     SubagentRole,
     SubagentRoleRegistry,
     SubagentRuntime,
@@ -32,9 +31,9 @@ from agent_core.execution.process import CancellationSignal
 
 from .config import (
     ModelConfig,
-    configured_skill_sources,
     load_config,
     load_prompt_templates,
+    load_runtime_skills,
     memory_store,
 )
 from .execution_plane import ExecutionPlane
@@ -118,16 +117,7 @@ class ExecutionPlaneManager:
         with ExitStack() as startup:
             startup.callback(mcp.close)
             mcp.start()
-            skills = SkillLoader().load(
-                (
-                    *configured_skill_sources(
-                        self._config_directory,
-                        agent_config,
-                        workspace.path,
-                    ),
-                    *plugins.skill_sources(),
-                )
-            )
+            skills = load_runtime_skills(self._config_directory, plugins)
             prompts = load_prompt_templates(self._config_directory / "prompts")
 
             main_provider = self._provider_for(config, workspace, agent_config)

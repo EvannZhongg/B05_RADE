@@ -106,7 +106,7 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 | 路径 | 用途 |
 | --- | --- |
 | `provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
-| `agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Instructions 与 scratch Workspace |
+| `agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Instructions 与 scratch Workspace |
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
 | `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`WorkspaceMemory.md` |
 | `skills/` | standalone Skill |
@@ -115,7 +115,9 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 初始化时从仓库内的 [`defaults/`](defaults) 补齐缺失的配置、Prompt 和 Skill，并创建用于手动安装插件的 `plugins/` 目录。
 
-`agent_config.json` 的 `skills.global_paths` 相对配置目录解析、`skills.workspace_paths` 相对当前 Workspace 解析。`scratch_workspace_root` 的相对路径也以配置目录为基准，默认为 `workspaces/scratch`。同名 Skill 保留最先注册的来源，Plugin Skill 排在配置来源之后。
+Skill 仅从配置目录下的 `skills/` 和 `plugins/` 加载，默认分别为 `.RADE/skills/` 和 `.RADE/plugins/`。先注册 standalone Skill，再注册启用的插件通过 `plugin.json` 声明的 Skill。插件 Skill 使用 `<plugin>:<skill>` 标识，同一标识保留最先注册的 Skill。
+
+`scratch_workspace_root` 的相对路径以配置目录为基准，默认为 `workspaces/scratch`。
 
 子 Agent（含插件角色）、上下文压缩和长期记忆合并共用当前 Session 选中的主 Provider。上下文压缩复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
 

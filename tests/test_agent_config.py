@@ -7,7 +7,6 @@ from agent_core import (
     AgentConfig,
     MemoryConfig,
     ProviderRequestConfig,
-    SkillConfig,
     ToolConfig,
     load_agent_config,
 )
@@ -39,14 +38,6 @@ class AgentConfigTest(unittest.TestCase):
                     "max_retries": 2,
                 },
                 "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                "skills": {
-                    "global_paths": ["skills"],
-                    "workspace_paths": [
-                        "skills",
-                        ".agents/skills",
-                        ".RADE/skills",
-                    ],
-                },
                 **fields,
             }
         )
@@ -90,55 +81,6 @@ class AgentConfigTest(unittest.TestCase):
             ("PROJECT.md", "TEAM.md"),
         )
 
-    def test_loads_global_and_workspace_skill_paths(self) -> None:
-        config = self.load(
-            {
-                "skills": {
-                    "global_paths": ["skills", "~/shared-skills"],
-                    "workspace_paths": [".agents/skills", "/opt/skills"],
-                },
-                "main_agent": {"tools": ENABLED_TOOLS},
-            }
-        )
-
-        self.assertEqual(
-            config.skills,
-            SkillConfig(
-                global_paths=("skills", "~/shared-skills"),
-                workspace_paths=(".agents/skills", "/opt/skills"),
-            ),
-        )
-
-    def test_requires_skill_path_configuration(self) -> None:
-        with self.assertRaisesRegex(ValueError, "config field 'skills'.*object"):
-            self.load_json(
-                {
-                    "max_same_tool_calls": 5,
-                    "output_reserve_tokens": 100,
-                    "provider": {
-                        "request_timeout_seconds": 300,
-                        "max_retries": 2,
-                    },
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "main_agent": {"tools": ENABLED_TOOLS},
-                }
-            )
-
-    def test_rejects_invalid_skill_path_configuration(self) -> None:
-        for skills in (
-            {"global_paths": "skills", "workspace_paths": []},
-            {"global_paths": ["skills"], "workspace_paths": [""]},
-            {"global_paths": ["skills", "skills"], "workspace_paths": []},
-        ):
-            with self.subTest(skills=skills):
-                with self.assertRaises(ValueError):
-                    self.load(
-                        {
-                            "skills": skills,
-                            "main_agent": {"tools": ENABLED_TOOLS},
-                        }
-                    )
-
     def test_requires_workspace_instruction_files(self) -> None:
         with self.assertRaisesRegex(ValueError, "workspace_instruction_files.*array"):
             self.load_json(
@@ -148,10 +90,6 @@ class AgentConfigTest(unittest.TestCase):
                     "provider": {
                         "request_timeout_seconds": 300,
                         "max_retries": 2,
-                    },
-                    "skills": {
-                        "global_paths": ["skills"],
-                        "workspace_paths": [],
                     },
                     "main_agent": {"tools": ENABLED_TOOLS},
                 }
@@ -233,10 +171,6 @@ class AgentConfigTest(unittest.TestCase):
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
                     "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "skills": {
-                        "global_paths": ["skills"],
-                        "workspace_paths": [],
-                    },
                     "main_agent": {"tools": ENABLED_TOOLS},
                 }
                 if provider is not None:
@@ -317,11 +251,6 @@ class AgentConfigTest(unittest.TestCase):
         config = self.load({
             "extra": {"enabled": False},
             "provider": {"extra": 1},
-            "skills": {
-                "global_paths": ["skills"],
-                "workspace_paths": ["skills", ".agents/skills", ".RADE/skills"],
-                "extra": [],
-            },
             "context": {"extra": True, "compression": {"extra": 0.5}},
             "memory": {"extra": 1},
             "main_agent": {"tools": ENABLED_TOOLS, "extra": "metadata"},
@@ -393,10 +322,6 @@ class AgentConfigTest(unittest.TestCase):
                         "max_retries": 2,
                     },
                     "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                    "skills": {
-                        "global_paths": ["skills"],
-                        "workspace_paths": [],
-                    },
                 }
             )
 
@@ -440,10 +365,6 @@ class SubagentRoleConfigTest(unittest.TestCase):
                             "max_retries": 2,
                         },
                         "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
-                        "skills": {
-                            "global_paths": ["skills"],
-                            "workspace_paths": [],
-                        },
                         "main_agent": {"tools": ENABLED_TOOLS},
                         "subagent_roles": roles,
                     }

@@ -153,7 +153,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
             process = FakeBridgeProcess()
             channels = [ClosingChannel(), FakeBridge(), FakeBridge()]
             with patch.object(process, "open_channel", side_effect=lambda key: process.track(channels.pop(0))):
-                registry = session_host.ActiveSessionRegistry(JsonlSessionStore(root / "sessions"), Workspace(root), root)
+                registry = session_host.ActiveSessionRegistry(JsonlSessionStore(root / "sessions"), root)
                 registry._bridge = process
                 opening = {"type": "open_session", "session_id": "one", "workspace": str(root)}
                 await registry.open_or_attach(opening, Workspace(root), attach_only=False)
@@ -365,7 +365,7 @@ class SessionSearchCancellationTest(unittest.IsolatedAsyncioTestCase):
         self.store = JsonlSessionStore(root / "sessions")
         workspace = Workspace(root)
         settings = SettingsStore(root / "config")
-        registry = session_host.ActiveSessionRegistry(self.store, workspace, settings.directory)
+        registry = session_host.ActiveSessionRegistry(self.store, settings.directory)
         self.app = gui_server.create_app(workspace, self.store, settings, registry)
         self.requests = []
         self.releases = []
@@ -651,7 +651,6 @@ class GuiTest(unittest.TestCase):
             "provider": {"request_timeout_seconds": 300, "max_retries": 2},
             "scratch_workspace_root": str(self.root / "scratch"),
             "workspace_instruction_files": ["AGENTS.md"],
-            "skills": {"global_paths": ["skills"], "workspace_paths": []},
             "context": {"compression": {"enabled": True, "trigger_ratio": None, "keep_recent_units": 4, "user_anchor_token_budget": 2000}},
             "main_agent": {"tools": {"read_file": True}},
             "subagent_roles": {},
@@ -664,7 +663,7 @@ class GuiTest(unittest.TestCase):
     def client(self, bridge: FakeBridge | None = None):
         workspace = Workspace(self.root)
         settings = SettingsStore(self.config)
-        registry = session_host.ActiveSessionRegistry(self.store, workspace, settings.directory)
+        registry = session_host.ActiveSessionRegistry(self.store, settings.directory)
         app = gui_server.create_app(workspace, self.store, settings, registry)
         client = TestClient(
             app,
@@ -1913,6 +1912,28 @@ class GuiTest(unittest.TestCase):
             response = client.get("/api/sessions/..%5Cescape")
 
         self.assertEqual(response.status_code, 400)
+
+    def test_lists_and_previews_only_scenes_from_the_startup_directory(self) -> None:
+        startup = (self.root / "startup").resolve()
+        directory = startup / "input"
+        directory.mkdir(parents=True)
+        (directory / "scene1_2.json").write_text('{"P":[[0.5]],"v":[1]}', encoding="utf-8")
+        (directory / "scene1_1.json").write_text("[" + " " * 12_000 + "]", encoding="utf-8")
+        (directory / "arbitrary.json").touch()
+        (directory / "scene1_3.json").mkdir()
+        (self.root / "input").mkdir()
+        (self.root / "input" / "scene2_1.json").touch()
+
+        with patch.object(Path, "cwd", return_value=startup), self.client() as client:
+            self.assertEqual(client.get("/api/input-scenes").json(), ["scene1_1.json", "scene1_2.json"])
+            preview_url = "/api/input-scenes/preview"
+            preview = client.get(preview_url, params={"filename": "scene1_2.json"}).json()
+            self.assertEqual(preview, {"text": '{"P":[[0.5]],"v":[1]}', "truncated": False})
+            preview = client.get(preview_url, params={"filename": "scene1_1.json"}).json()
+            self.assertTrue(preview["truncated"])
+            self.assertEqual(len(preview["text"]), 12_000)
+            self.assertEqual(client.get(preview_url, params={"filename": "scene2_1.json"}).status_code, 404)
+            self.assertEqual(client.get(preview_url, params={"filename": "../input/scene1_2.json"}).status_code, 400)
 
     def test_workspace_listing_rejects_traversal(self) -> None:
         with self.client() as client:

@@ -255,7 +255,7 @@ export function Prompt({
         paddingX={1}
       >
         {value === '' ? (
-          <Text dimColor>{placeholder ?? 'JSON file path'}</Text>
+          <Text dimColor>{placeholder ?? 'Enter / for commands'}</Text>
         ) : (
           <Text>{renderedValue}</Text>
         )}

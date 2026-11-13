@@ -114,7 +114,7 @@ Runtime 层：
 | 路径 | 内容 |
 | --- | --- |
 | `.RADE/provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
-| `.RADE/agent_config.json` | Tool、上下文、记忆、Skill 路径、子 Agent、MCP、Workspace Instructions 与 scratch Workspace 设置 |
+| `.RADE/agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Workspace Instructions 与 scratch Workspace 设置 |
 | `.RADE/.env` | 配置引用的密钥和环境变量 |
 | `.RADE/prompts/` | 主 Agent、子 Agent、压缩与记忆 Prompt |
 | `.RADE/skills/` | standalone Skill |

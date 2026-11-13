@@ -1,10 +1,14 @@
 // Runs from an external npm installation; imports only the public packages.
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { BridgeClient } from '@rade/client';
 import { PROTOCOL_VERSION } from '@rade/protocol';
 
 const jsonText = '{"P":[[0,0.5],[1,0],[0.25,0.75]],"v":[12,25]}';
+await mkdir('input', { recursive: true });
+await mkdir('workspace', { recursive: true });
+await writeFile('input/scene1_1.json', jsonText);
+await writeFile('input/other.json', jsonText);
 const messages = [];
 let sourcePath;
 const problems = [];
@@ -36,8 +40,12 @@ function handleMessage(message) {
   }
   if (message.type === 'runtime_state' && ready && !synchronized) {
     synchronized = true;
+    client.send({ type: 'list_input_scenes' }, 'main');
+  }
+  if (message.type === 'input_scenes_listed') {
+    assert.deepEqual(message.filenames, ['scene1_1.json']);
     stage = 'complete';
-    client.send({ type: 'user_turn', turn_id: 'complete', json_input: { filename: 'example.json', text: jsonText } }, 'main');
+    client.send({ type: 'user_turn', turn_id: 'complete', scene_input: 'scene1_1.json' }, 'main');
   }
   if (message.type === 'user_turn_received' && message.turn_id === 'complete') {
     client.send({ type: 'user_steer', turn_id: 'complete', steer_id: 'steer-1', text: 'Use this answer' }, 'main');
@@ -50,7 +58,7 @@ function handleMessage(message) {
     const input = message.transcript.items.find(item => item.role === 'user').content;
     assert.equal(typeof input, 'string');
     const features = JSON.parse(input);
-    assert.equal(features.filename, 'example.json');
+    assert.equal(features.filename, 'scene1_1.json');
     assert.equal(features.T.count, 2);
     assert.equal(features.W.count, 3);
     assert.equal(features.P.positive_fraction, 0.666667);
@@ -95,12 +103,12 @@ const timeout = setTimeout(() => {
   console.error(JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
   void client.shutdown();
 }, 45000);
-client.send({ type: 'open_session', workspace: process.cwd(), session_id: null, provider: 'fixture' }, 'main');
+client.send({ type: 'open_session', workspace: `${process.cwd()}/workspace`, session_id: null, provider: 'fixture' }, 'main');
 const result = await client.closed;
 clearTimeout(timeout);
 assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
 assert.deepEqual(problems, []);
-assert.equal(await readFile(sourcePath, 'utf8'), jsonText);
+assert.equal(await readFile(`workspace/${sourcePath}`, 'utf8'), jsonText);
 assert.equal(result.code, 0);
 assert.equal(messages.filter(message => message.type === 'model_completed').length, 2);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));

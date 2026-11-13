@@ -1,11 +1,8 @@
-import { readFile, stat } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import type { Incoming, Outgoing } from '@rade/protocol/internal';
 import { BridgeClient } from '@rade/client';
 import { COMMANDS, parseCommand } from './commands.js';
-import { readJsonInput } from '../../jsonInput.js';
 import { Prompt } from './input.js';
 import {
   PlanView,
@@ -38,9 +35,6 @@ export function App(props: AppProps): React.ReactElement {
   const { rows } = useWindowSize();
   const [state, dispatch] = useReducer(reducer, initialState);
   const [draft, setDraft] = useState('');
-  const [jsonError, setJsonError] = useState('');
-  const [readingJson, setReadingJson] = useState(false);
-  const readingJsonRef = useRef(false);
   const [selection, setSelection] = useState<SessionSelection>({ workspace: props.workspace, sessionId: null, channelId: 'session-1' });
   const [settingsMode, setSettingsMode] = useState<'model' | 'provider' | null>(null);
   const [modelChoice, setModelChoice] = useState(0);
@@ -201,7 +195,14 @@ export function App(props: AppProps): React.ReactElement {
         return;
       }
       if (key.return) {
-        if (picker.kind === 'workspaces') {
+        if (picker.kind === 'input') {
+          if (inputBusy) return;
+          const filename = picker.list[picker.selectedIndex];
+          const turnId = 'turn-' + ++turnCounter.current;
+          send({ type: 'user_turn', turn_id: turnId, scene_input: filename });
+          dispatch({ type: 'picker_closed' });
+          dispatch({ type: 'submit', turnId, text: filename });
+        } else if (picker.kind === 'workspaces') {
           const workspace = picker.list[picker.selectedIndex];
           if (workspace) openSession(workspace, null);
         } else {
@@ -240,7 +241,6 @@ export function App(props: AppProps): React.ReactElement {
   // Global keys. Ink delivers Ctrl+C as input, so cancelling is explicit.
   useInput(
     (input, key) => {
-      if (readingJsonRef.current) return;
       if (key.ctrl && input === 'c') {
         if (busy) {
           if (state.turnId) bridgeRef.current?.cancel(state.turnId, activeChannel.current);
@@ -270,59 +270,36 @@ export function App(props: AppProps): React.ReactElement {
     },
   );
 
-  const submit = async (value: string): Promise<void> => {
-    const text = value.trim();
-    if (text === '' || readingJsonRef.current) return;
+  const submit = (value: string): void => {
     // runtime_state is the synchronization barrier. Keep the draft editable
     // while the Session opens, but do not let a command overtake its initial
     // execution snapshot and then get reset back to idle by that snapshot.
     if (state.status === 'opening') return;
-    if (state.status === 'session_unavailable' && text !== '/sessions' && text !== '/workspaces') return;
-    const parsed = parseCommand(text);
-    if ((parsed?.command.name === '/sessions' || parsed?.command.name === '/workspaces') && inputBusy) return;
-    if (parsed?.command.name === '/refresh' && inputBusy) return;
-    if (parsed) {
-      setDraft('');
-      setJsonError('');
-      if (parsed.command.name === '/sessions') {
-        send({ type: 'list_sessions' });
-        dispatch({ type: 'picker_opened', kind: 'sessions' });
-      } else if (parsed.command.name === '/workspaces') {
-        send({ type: 'list_workspaces' });
-        dispatch({ type: 'picker_opened', kind: 'workspaces' });
-      } else if (parsed.command.name === '/model') {
-        if (busy) return;
-        setSettingsMode('model');
-        setModelChoice(0);
-        send({ type: 'settings_get' });
-      } else if (parsed.command.name === '/provider') {
-        setSettingsMode('provider');
-        send({ type: 'settings_get' });
-      } else if (parsed.command.name === '/refresh') {
-        dispatch({ type: 'refresh_submitted' });
-        send({ type: 'runtime_refresh' });
-      }
-      return;
-    }
-    if (inputBusy) return;
-    const path = resolve(state.workspace || selection.workspace, text.replace(/^"(.*)"$/, '$1'));
-    setJsonError('');
-    readingJsonRef.current = true;
-    setReadingJson(true);
-    try {
-      const jsonInput = await readJsonInput(basename(path), async () => {
-        if (!(await stat(path)).isFile()) throw new Error('Expected a JSON file.');
-        return readFile(path);
-      });
-      const turnId = 'turn-' + ++turnCounter.current;
-      send({ type: 'user_turn', turn_id: turnId, json_input: jsonInput });
-      dispatch({ type: 'submit', turnId, text: jsonInput.filename });
-      setDraft((current) => current === value ? '' : current);
-    } catch (error) {
-      setJsonError(error instanceof Error ? error.message : String(error));
-    } finally {
-      readingJsonRef.current = false;
-      setReadingJson(false);
+    const command = parseCommand(value)?.command.name;
+    if (!command) return;
+    if (state.status === 'session_unavailable' && command !== '/sessions' && command !== '/workspaces') return;
+    if (inputBusy && command !== '/model' && command !== '/provider') return;
+    setDraft('');
+    if (command === '/input') {
+      dispatch({ type: 'picker_opened', kind: 'input' });
+      send({ type: 'list_input_scenes' });
+    } else if (command === '/sessions') {
+      send({ type: 'list_sessions' });
+      dispatch({ type: 'picker_opened', kind: 'sessions' });
+    } else if (command === '/workspaces') {
+      send({ type: 'list_workspaces' });
+      dispatch({ type: 'picker_opened', kind: 'workspaces' });
+    } else if (command === '/model') {
+      if (busy) return;
+      setSettingsMode('model');
+      setModelChoice(0);
+      send({ type: 'settings_get' });
+    } else if (command === '/provider') {
+      setSettingsMode('provider');
+      send({ type: 'settings_get' });
+    } else if (command === '/refresh') {
+      dispatch({ type: 'refresh_submitted' });
+      send({ type: 'runtime_refresh' });
     }
   };
 
@@ -356,18 +333,16 @@ export function App(props: AppProps): React.ReactElement {
       ) : state.picker || settingsMode ? null : (
         <Prompt
           value={draft}
-          onChange={(value) => { setDraft(value); setJsonError(''); }}
-          onSubmit={(value) => void submit(value)}
+          onChange={setDraft}
+          onSubmit={submit}
           focus
-          busy={inputBusy || readingJson}
+          busy={inputBusy}
           docked
           commands={state.status === 'session_unavailable' ? COMMANDS.filter((command) => command.name === '/sessions' || command.name === '/workspaces') : COMMANDS}
-          placeholder={inputBusy ? 'Enter / for commands' : 'JSON file path · Enter to run · / for commands'}
+          placeholder={inputBusy ? 'Enter / for commands' : 'Enter /input to select a scene'}
         />
       )}
 
-      {readingJson && <Text dimColor>Reading JSON…</Text>}
-      {jsonError && <Text color="red" wrap="truncate-end">{jsonError}</Text>}
       <StatusBar state={state} elapsed={elapsed} />
     </Box>
   );

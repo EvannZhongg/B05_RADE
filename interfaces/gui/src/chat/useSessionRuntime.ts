@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useExternalStoreRuntime } from "@assistant-ui/react";
-import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type JsonInput, type PlanSnapshot, type RuntimePhase } from "@rade/protocol";
+import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase } from "@rade/protocol";
 import { createScratchWorkspace, releaseActiveSession, selectWorkspace, type ModelOption, type Session, type WorkspaceOption } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
@@ -88,7 +88,7 @@ export function useSessionRuntime({
   const controlsDisabled = attachmentReplaced || backgroundDisconnected || pendingUserItem !== null || refreshing;
   const sessionRunning = running || backgroundActive || pendingUserItem !== null || refreshing;
 
-  const canSubmitJson = workspaceSelected && !sessionRunning && !controlsDisabled && !configurationPending && !attaching;
+  const canSubmitScene = workspaceSelected && !sessionRunning && !controlsDisabled && !configurationPending && !attaching;
 
   useEffect(() => {
     if (session.workspace) setWorkspaceDraft(session.workspace);
@@ -372,13 +372,13 @@ export function useSessionRuntime({
     connect({ attachOnly: true, takeover: true });
   }
 
-  async function submitJson(file: JsonInput): Promise<boolean> {
-    if (!canSubmitJson || runtimeIsActive(runtimePhaseRef.current)) return false;
+  async function submitScene(filename: string): Promise<boolean> {
+    if (!canSubmitScene || runtimeIsActive(runtimePhaseRef.current)) return false;
     const startsSession = !itemsRef.current.some(
       (item) => item.role === "user"
         && (item.origin === undefined || item.origin === "conversation"),
     );
-    showPendingUserItem({ role: "user", content: file.filename });
+    showPendingUserItem({ role: "user", content: filename });
     applyRuntimePhase("starting");
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToast(null);
@@ -390,7 +390,7 @@ export function useSessionRuntime({
     const socket = socketRef.current ?? connect();
     awaitingSessionActivityRef.current = startsSession;
     try {
-      await socket.sendUserTurn({ type: "user_turn", turn_id: activeTurnIdRef.current, json_input: file });
+      await socket.sendUserTurn({ type: "user_turn", turn_id: activeTurnIdRef.current, scene_input: filename });
     } catch (error) {
       showPendingUserItem(null);
       activeTurnIdRef.current = null;
@@ -398,7 +398,7 @@ export function useSessionRuntime({
       applyRuntimePhase("inactive");
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       setReconnecting(false);
-      showAlert({ kind: "alert", id: "json-submit", level: "error", text: String(error) });
+      showAlert({ kind: "alert", id: "scene-submit", level: "error", text: String(error) });
       return false;
     }
     return true;
@@ -492,7 +492,7 @@ export function useSessionRuntime({
     providerSaving,
     workspaceSaving,
     refreshing,
-    canSubmitJson,
+    canSubmitScene,
     controlsDisabled,
     sessionRunning,
     workspaceSelected,
@@ -504,7 +504,7 @@ export function useSessionRuntime({
       delete next[id];
       return next;
     }),
-    submitJson,
+    submitScene,
     takeOverAttachment,
     changeProvider,
     refreshRuntime,

@@ -213,13 +213,11 @@ class ActiveSessionRegistry:
     def __init__(
         self,
         store: JsonlSessionStore,
-        workspace: Workspace,
         config_directory: Path,
     ) -> None:
         self._store = store
         self._sessions: dict[str, ActiveSession] = {}
         self._lock = asyncio.Lock()
-        self._workspace = workspace
         self._config_directory = config_directory
         self._bridge: BridgeProcess | None = None
         self._closing: dict[str, asyncio.Task[None]] = {}
@@ -229,7 +227,7 @@ class ActiveSessionRegistry:
             await self._bridge.close()
             self._bridge = None
         if self._bridge is None:
-            self._bridge = await BridgeProcess.spawn(self._workspace, self._config_directory)
+            self._bridge = await BridgeProcess.spawn(self._config_directory)
 
     async def open_or_attach(
         self,

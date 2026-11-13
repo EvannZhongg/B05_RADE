@@ -1,11 +1,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Check, ChevronDown, FileJson, Folder, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
-import type { JsonInput } from "@rade/protocol";
-import { readJsonInput } from "../../../jsonInput";
+import { get } from "../api";
 import { ContextWindowIndicator, RuntimeIndicators } from "./RuntimeIndicators";
 import type { SessionRuntime } from "./useSessionRuntime";
 
-const JSON_PREVIEW_LENGTH = 12_000;
+type ScenePreview = { text: string; truncated: boolean };
 
 export function Composer({ runtime }: { runtime: SessionRuntime }) {
   const refreshDisabled = !runtime.workspaceSelected || runtime.controlsDisabled || runtime.sessionRunning
@@ -19,23 +18,37 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
   ];
   const workspacePickerRef = useRef<HTMLDivElement | null>(null);
   const feedbackRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const [jsonInput, setJsonInput] = useState<JsonInput | null>(null);
-  const [reading, setReading] = useState(false);
-  const [fileError, setFileError] = useState("");
+  const [filenames, setFilenames] = useState<string[] | null>(null);
+  const [listRevision, setListRevision] = useState(0);
+  const [listError, setListError] = useState("");
+  const [filename, setFilename] = useState("");
+  const [preview, setPreview] = useState<ScenePreview | null>(null);
+  const [previewError, setPreviewError] = useState("");
 
-  async function selectFile(file: File) {
-    setReading(true);
-    setJsonInput(null);
-    setFileError("");
-    try {
-      setJsonInput(await readJsonInput(file.name, () => file.arrayBuffer()));
-    } catch (error) {
-      setFileError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setReading(false);
-    }
-  }
+  useEffect(() => {
+    const request = new AbortController();
+    get<string[]>("/api/input-scenes", request.signal).then((names) => {
+      if (request.signal.aborted) return;
+      setFilenames(names);
+      setListError("");
+      setFilename((current) => names.includes(current) ? current : "");
+    }).catch((error: Error) => {
+      if (!request.signal.aborted) setListError(error.message);
+    });
+    return () => request.abort();
+  }, [listRevision]);
+
+  useEffect(() => {
+    if (!filename) return;
+    const request = new AbortController();
+    const query = new URLSearchParams({ filename });
+    get<ScenePreview>(`/api/input-scenes/preview?${query}`, request.signal).then((result) => {
+      if (!request.signal.aborted) setPreview(result);
+    }).catch((error: Error) => {
+      if (!request.signal.aborted) setPreviewError(error.message);
+    });
+    return () => request.abort();
+  }, [filename]);
   useLayoutEffect(() => {
     const feedback = feedbackRef.current!;
     const thread = feedback.closest<HTMLElement>(".thread")!;
@@ -117,24 +130,21 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
           <button type="button" role="menuitem" className="workspace-new-option" onClick={() => { setWorkspaceEditing(false); void runtime.chooseScratchWorkspace(); }} disabled={runtime.controlsDisabled || runtime.sessionRunning || runtime.workspaceSaving}><Plus size={16} />临时工作区</button>
         </div>}
       </div>
-      <div className="json-file-row">
-        <button type="button" className="json-picker" onClick={() => fileInputRef.current?.click()} disabled={reading}>
-          <FileJson size={16} />{jsonInput ? "更换 JSON" : "选择 JSON"}
-        </button>
-        <input ref={fileInputRef} className="json-file-input" type="file" accept=".json,application/json" onChange={(event) => {
-          const file = event.currentTarget.files?.[0];
-          event.currentTarget.value = "";
-          if (file) void selectFile(file);
-        }} />
-        <span className="json-filename" title={jsonInput?.filename} role="status">
-          {reading ? "正在读取…" : jsonInput?.filename}
-        </span>
-        {jsonInput && <button type="button" className="json-clear" aria-label="移除 JSON 文件" onClick={() => setJsonInput(null)}><X size={15} /></button>}
-      </div>
-      {fileError && <p className="json-file-error" role="alert">{fileError}</p>}
-      {jsonInput && <details className="json-preview">
-        <summary>预览文件{jsonInput.text.length > JSON_PREVIEW_LENGTH ? "（部分）" : ""}</summary>
-        <pre tabIndex={0}>{jsonInput.text.slice(0, JSON_PREVIEW_LENGTH)}</pre>
+      <label className="json-file-row">
+        <FileJson size={16} aria-hidden="true" />
+        <select className="json-picker" aria-label="选择 input 场景" value={filename} onFocus={() => setListRevision((revision) => revision + 1)} onChange={(event) => {
+          setFilename(event.currentTarget.value);
+          setPreview(null);
+          setPreviewError("");
+        }}>
+          <option value="">{listError ? "场景列表读取失败" : filenames === null ? "正在读取 input/…" : filenames.length ? "选择 input/ 场景" : "input/ 暂无场景"}</option>
+          {filenames?.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </label>
+      {(listError || (filename && previewError)) && <p className="json-file-error" role="alert">{listError || previewError}</p>}
+      {filename && preview && <details className="json-preview">
+        <summary>预览文件{preview.truncated ? "（部分）" : ""}</summary>
+        <pre tabIndex={0}>{preview.text}</pre>
       </details>}
       <div className="composer-bottom">
         <label className="model-selector" title={runtime.providers.find((option) => option.id === runtime.displayedProvider)?.model}>
@@ -145,9 +155,9 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
         <div className="composer-actions">
           <ContextWindowIndicator window={runtime.contextWindow} cacheUsage={runtime.cacheUsage} />
           <button type="button" className="runtime-refresh" aria-label="重新加载运行环境" title="重新加载运行环境" disabled={refreshDisabled} onClick={runtime.refreshRuntime}><RefreshCw size={15} /></button>
-          <button type="button" className="json-run" disabled={!jsonInput || !runtime.canSubmitJson} onClick={async () => {
-            if (jsonInput && await runtime.submitJson(jsonInput)) {
-              setJsonInput((current) => current === jsonInput ? null : current);
+          <button type="button" className="json-run" disabled={!filename || !runtime.canSubmitScene} onClick={async () => {
+            if (filename && await runtime.submitScene(filename)) {
+              setFilename((current) => current === filename ? "" : current);
             }
           }}>运行</button>
         </div>

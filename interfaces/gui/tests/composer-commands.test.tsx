@@ -36,7 +36,7 @@ function TestComposer() {
   </ThreadPrimitive.Root></AssistantRuntimeProvider>;
 }
 
-describe("JSON composer", () => {
+describe("Scene composer", () => {
   let container: HTMLDivElement;
   let root: Root;
   const snapshot: Incoming = {
@@ -48,6 +48,12 @@ describe("JSON composer", () => {
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("fetch", vi.fn(async (path: string) => ({
+      ok: true,
+      json: async () => path === "/api/input-scenes"
+        ? ["scene1_1.json", "scene2_1.json"]
+        : { text: '{"P":[[0.5]],"v":[1]}', truncated: false },
+    })));
     sent.length = 0;
     onTurnEnd.mockClear();
     onSessionAvailable.mockClear();
@@ -68,20 +74,19 @@ describe("JSON composer", () => {
     await act(async () => connection.onMessage(message));
   }
 
-  async function select(filename: string, text: string) {
-    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
-    Object.defineProperty(input, "files", { configurable: true, value: [{ name: filename, arrayBuffer: async () => new TextEncoder().encode(text).buffer }] });
+  async function select(filename: string) {
+    const input = container.querySelector<HTMLSelectElement>('[aria-label="选择 input 场景"]')!;
+    input.value = filename;
     await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
   }
 
   const refresh = () => container.querySelector<HTMLButtonElement>('[aria-label="重新加载运行环境"]')!;
   const run = () => container.querySelector<HTMLButtonElement>(".json-run")!;
 
-  it("refreshes with a button and keeps the selected JSON for the next turn", async () => {
-    await select("example.json", '{"items":[1,2]}');
-    expect(container.querySelector("textarea")).toBeNull();
-    expect(container.textContent).toContain("example.json");
-    expect(container.querySelector("pre")?.textContent).toBe('{"items":[1,2]}');
+  it("previews a listed scene and keeps the selection during runtime refresh", async () => {
+    await select("scene1_1.json");
+    expect(container.querySelector('input[type="file"]')).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe('{"P":[[0.5]],"v":[1]}');
     await act(async () => refresh().click());
     expect(sent).toEqual([{ type: "runtime_refresh" }]);
     expect(run().disabled).toBe(true);
@@ -90,16 +95,14 @@ describe("JSON composer", () => {
     await act(async () => run().click());
     expect(sent.at(-1)).toEqual({
       type: "user_turn", turn_id: "turn-1",
-      json_input: { filename: "example.json", text: '{"items":[1,2]}' },
+      scene_input: "scene1_1.json",
     });
   });
 
-  it("rejects invalid JSON and allows a valid replacement to run when idle", async () => {
-    await select("invalid.json", "{bad}");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("有效的 UTF-8 JSON");
+  it("requires a selection and only submits it while idle", async () => {
     expect(run().disabled).toBe(true);
     await receive({ ...snapshot, phase: "running", turn_id: "active" });
-    await select("replacement.JSON", '{"n":9007199254740993}');
+    await select("scene2_1.json");
     expect(run().disabled).toBe(true);
     await act(async () => run().click());
     expect(sent).toEqual([]);
@@ -107,7 +110,7 @@ describe("JSON composer", () => {
     await act(async () => run().click());
     expect(sent).toEqual([{
       type: "user_turn", turn_id: "turn-1",
-      json_input: { filename: "replacement.JSON", text: '{"n":9007199254740993}' },
+      scene_input: "scene2_1.json",
     }]);
   });
 });

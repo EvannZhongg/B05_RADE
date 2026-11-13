@@ -30,7 +30,7 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 6
+PROTOCOL_VERSION = 7
 
 
 class ProtocolError(ValueError):
@@ -41,7 +41,7 @@ COMMAND_TYPES = frozenset({
     "provider_set", "workspace_set",
     "list_sessions", "list_workspaces", "load_session", "session_snapshot", "settings_get",
     "settings_provider_save", "settings_agent_save",
-    "runtime_refresh",
+    "runtime_refresh", "list_input_scenes",
 })
 
 

@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 6
+# Public Bridge protocol, major 7
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -15,9 +15,9 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 ## Stability and scope
 
-Protocol 6 adds JSON file input to `user_turn` and removes the structured question exchange.
+Protocol 7 selects contest scenes by filename from the Bridge process working directory's `input/`.
 
-Every `session_ready` advertises `protocol_version: 6`. Clients must check this
+Every `session_ready` advertises `protocol_version: 7`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -30,7 +30,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":6}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":7}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -183,13 +183,14 @@ turn: it is emitted before the terminal event. The process may have queued input
 | Command | Payload / response |
 | --- | --- |
 | `open_session` | Above; `session_ready` then `runtime_state`, or opening failure. |
-| `user_turn` | `turn_id` and either `json_input` or `text` with optional `attachments`; receipt and execution events below. |
+| `user_turn` | `turn_id` and either `scene_input` or `text` with optional `attachments`; receipt and execution events below. |
 | `user_steer` | Target `turn_id`, `steer_id`, `text`; received/rejected then applied if consumed. |
 | `cancel` | Target `turn_id`; matching queued/active turn is cancelled cooperatively. No immediate acknowledgment. |
 | `provider_set` | Configured `provider`; `provider_changed` with `provider`, `model`, `runtime`. |
 | `workspace_set` | `workspace`; `workspace_changed` with actual path and `runtime`. |
 | `list_sessions` | `sessions_listed.sessions`: current workspace session summaries. |
 | `list_workspaces` | `workspaces_listed.workspaces`: absolute workspace paths with stored conversation history, most recently active first. |
+| `list_input_scenes` | `input_scenes_listed.filenames`: sorted scene filenames in `input/`. The event includes `error` if listing fails. |
 | `load_session` | `session_items.items`: currently bound conversation. |
 | `session_snapshot` | `session_ready` then `runtime_state` for the existing Runtime; preserves its execution plane, Jobs, MCP and Journal writer. |
 
@@ -216,9 +217,11 @@ Workspace and Session path rules; there is no binary upload transport. Runtime
 validates actual files and normalizes media metadata. Tool media events reference
 local images by the same convention.
 
-For a contest scene, send `json_input: {filename, text}` with the file's
-name and UTF-8 JSON text. Runtime validates `P` and `v` and derives processing
-units from the rows of `P` and tasks from its columns. The user message contains
+For a contest scene, send `scene_input: "scene1_1.json"`. Runtime reads the UTF-8
+file from `input/` relative to the Bridge process working directory. Filenames
+follow `scene<S>_<I>.json`, with `S` in 1–2 and `I` in 1–5. Runtime validates
+`P` and `v` and derives processing units from the rows of `P` and tasks from
+its columns. The user message contains
 the extracted `T`, `W`, `P`, and `V` features and a workspace-relative
 `source_path` for exact calculations. An invalid scene fails the turn before a
 model call.
@@ -342,9 +345,9 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 6
+receive bridge_ready; check protocol_version == 7
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 6; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 7; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
 receive/render events

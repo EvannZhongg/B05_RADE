@@ -6,6 +6,8 @@ from typing import Iterable, Protocol
 
 import yaml
 
+from .path_utils import is_path_within
+
 
 @dataclass(frozen=True)
 class SkillLocation:
@@ -32,10 +34,11 @@ class DirectorySkillSource:
         root = self.directory.expanduser().resolve()
         if not root.is_dir():
             return ()
+        candidates = (child / "SKILL.md" for child in sorted(root.iterdir(), key=lambda path: path.name))
         return tuple(
-            SkillLocation(child / "SKILL.md", self.namespace)
-            for child in sorted(root.iterdir(), key=lambda path: path.name)
-            if child.is_dir() and (child / "SKILL.md").is_file()
+            SkillLocation(path, self.namespace)
+            for path in candidates
+            if is_path_within(path, root) and path.is_file()
         )
 
 

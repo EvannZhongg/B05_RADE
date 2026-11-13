@@ -157,7 +157,7 @@ class ExternalBridgeClientTest(unittest.TestCase):
     def open(self, peer, session_id=None):
         peer.send({"type": "open_session", "workspace": str(self.external), "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 6)
+        self.assertEqual(ready["protocol_version"], 7)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 
@@ -280,7 +280,7 @@ print(json.dumps({'file': str(Path(local_tokens.__file__).resolve()), 'counts': 
         agent["memory"]["enabled"] = False
         agent["mcp"]["enabled"] = False
         agent["provider"]["max_retries"] = 0
-        agent["skills"] = {"global_paths": [], "workspace_paths": []}
+        shutil.rmtree(config / "skills")
         for tool in agent["main_agent"]["tools"]:
             agent["main_agent"]["tools"][tool] = tool == "shell"
         agent_path.write_text(json.dumps(agent), encoding="utf-8")

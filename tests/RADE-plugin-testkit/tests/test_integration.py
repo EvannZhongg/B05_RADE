@@ -306,7 +306,6 @@ class BridgeIntegrationTest(unittest.TestCase):
         self.json_file(self.config / "agent_config.json", {
             "max_same_tool_calls": 5, "output_reserve_tokens": 1000, "workspace_instruction_files": [],
             "provider": {"request_timeout_seconds": 15, "max_retries": 0},
-            "skills": {"global_paths": [], "workspace_paths": []},
             "memory": {"enabled": False}, "main_agent": {"tools": {"subagent": True, "write_file": True}}, "mcp": {"enabled": True},
         })
         prompts = self.config / "prompts"
@@ -371,7 +370,8 @@ class BridgeIntegrationTest(unittest.TestCase):
         names = {tool["function"]["name"] for tool in self.http.requests[0].get("tools", [])}
         self.assertFalse(any(name.startswith("mcp__repo-review-kit_") for name in names))
         self.assertNotIn("subagent", names)
-        self.assertNotIn("read_skill", names)
+        skill_tool = next(tool["function"] for tool in self.http.requests[0]["tools"] if tool["function"]["name"] == "read_skill")
+        self.assertEqual(skill_tool["parameters"]["properties"]["name"]["enum"], ["plugin-creator", "skill-creator"])
         self.assertFalse(any(
             message["type"] == "mcp_server_status"
             and message["server"].startswith("repo-review-kit:")

@@ -204,17 +204,17 @@ describe('Prompt caret visibility', () => {
       <Prompt value="" onChange={() => {}} onSubmit={() => {}} focus busy={false} />,
     );
     await wait(60);
-    expect(lastFrame() ?? '').toContain('JSON file path');
+    expect(lastFrame() ?? '').toContain('Enter / for commands');
 
     rerender(<Prompt value="" onChange={() => {}} onSubmit={() => {}} focus busy />);
     await wait(60);
-    expect(lastFrame() ?? '').toContain('JSON file path');
+    expect(lastFrame() ?? '').toContain('Enter / for commands');
 
     rerender(<Prompt value="typed" onChange={() => {}} onSubmit={() => {}} focus busy={false} />);
     await wait(60);
     const frame = lastFrame() ?? '';
     expect(frame).toContain('typed');
-    expect(frame).not.toContain('JSON file path');
+    expect(frame).not.toContain('Enter / for commands');
   });
 });
 

@@ -35,7 +35,7 @@ class ApplicationHost:
         self.workspace = workspace
         self.store = store
         self.settings = settings
-        self.active_sessions = ActiveSessionRegistry(store, workspace, settings.directory)
+        self.active_sessions = ActiveSessionRegistry(store, settings.directory)
 
     async def _serve_http(self) -> None:
         try:

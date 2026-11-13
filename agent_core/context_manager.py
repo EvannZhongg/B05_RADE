@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Callable, Iterable
 
 from .auxiliary import AuxiliaryCallTracker
 from .config import AgentConfig
-from .content import historical_content
 from .llm import (
     AuxiliaryModelCall, LLMProvider, LLMRequest, LLMResponse,
     with_generation_limit,
@@ -462,7 +461,7 @@ def _render_user_anchors(
         timestamp = anchor.timestamp_utc.astimezone().isoformat(
             timespec="seconds"
         )
-        content = historical_content(anchor.content)
+        content = anchor.content
         if content:
             turn = (
                 "current turn"

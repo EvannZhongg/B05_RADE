@@ -22,7 +22,7 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 8 as const,
+  protocol_version: 9 as const,
   session_id: 'abc12345-0000',
   provider: 'deepseek',
   model: 'deepseek/deepseek-chat',
@@ -607,7 +607,7 @@ describe('sessions', () => {
       message: {
         type: 'session_items',
         items: [
-          { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+          { role: 'user', content: 'run it' },
           {
             role: 'assistant',
             content: null,

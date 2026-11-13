@@ -1,6 +1,6 @@
-// Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
+// Public stdio Bridge protocol. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 export type JSONValue =
   | string
@@ -15,14 +15,6 @@ export type ToolCall = {
   name: string;
   arguments: { readonly [key: string]: JSONValue } | string;
   argument_error?: ProtocolError;
-};
-
-export type FileAttachment = {
-  type: 'file';
-  path: string;
-  filename: string;
-  mime_type: string;
-  size_bytes: number;
 };
 
 export type ProtocolError = {
@@ -101,10 +93,6 @@ export type SessionSummary = {
   started_at: string | null;
 };
 
-export type SessionContentPart =
-  | { type: 'text'; text: string }
-  | FileAttachment;
-
 /**
  * One normalized conversation item in a transcript checkpoint or history response.
  *
@@ -113,7 +101,7 @@ export type SessionContentPart =
  */
 export type SessionItem = {
   role: 'user' | 'assistant' | 'tool';
-  content: string | SessionContentPart[] | null;
+  content: string | null;
   timestamp_utc?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;

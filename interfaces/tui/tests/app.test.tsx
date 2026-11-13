@@ -40,7 +40,7 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 8,
+              type: 'session_ready', protocol_version: 9,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
               provider: 'test',
               model: 'test/model',
@@ -298,7 +298,7 @@ describe('App', () => {
     expect(lastFrame()).toContain('/input');
 
     emit({
-      type: 'session_ready', protocol_version: 8,
+      type: 'session_ready', protocol_version: 9,
       session_id: 'sess-1234',
       provider: 'test',
       model: 'test/model',
@@ -513,7 +513,7 @@ describe('App', () => {
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 8, session_id: 'fresh',
+      type: 'session_ready', protocol_version: 9, session_id: 'fresh',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
@@ -827,7 +827,7 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 8,
+      type: 'session_ready', protocol_version: 9,
       session_id: 'sess-1234',
       provider: 'test',
       model: 'test/model',

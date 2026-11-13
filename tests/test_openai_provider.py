@@ -11,8 +11,8 @@ import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI
 
 from agent_core import (
-    AgentCancelled, FilePart, JsonlSessionStore, LLMRequest, Message,
-    ProviderProtocolError, ProviderRequestError, ProviderStreamError, Session, TextPart,
+    AgentCancelled, JsonlSessionStore, LLMRequest, Message,
+    ProviderProtocolError, ProviderRequestError, ProviderStreamError, Session,
     TokenUsage, ToolCall, ToolDefinition,
 )
 from agent_core.providers import OpenAIProvider
@@ -160,16 +160,6 @@ class OpenAIProviderTest(unittest.TestCase):
         self.assertEqual(inputs[0], {"role": "assistant", "content": "calling"})
         self.assertEqual(inputs[1], {"type": "function_call", "call_id": "call_1",
                                      "name": "probe", "arguments": "{}"})
-
-    def test_responses_serializes_file_references_as_text(self):
-        attachment = FilePart(path="report.pdf", filename="report.pdf", mime_type="application/pdf", size_bytes=12)
-        request = LLMRequest("Test", (Message("user", (TextPart("summarize"), attachment)),))
-        with self.transport([response_event()]) as requests:
-            self.provider().stream(request, lambda _: None)
-        content = json.loads(requests[0].content)["input"][0]["content"]
-        self.assertIsInstance(content, str)
-        self.assertTrue(content.startswith("summarize\n\nAttached files"))
-        self.assertIn('path="report.pdf"', content)
 
     def test_does_not_accept_truncated_or_failed_responses(self):
         cases = [

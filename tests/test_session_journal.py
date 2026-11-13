@@ -5,7 +5,6 @@ import unittest
 
 from agent_core import (
     CacheUsage,
-    FilePart,
     JsonlSessionStore,
     Message,
     RuntimeErrorInfo,
@@ -14,7 +13,6 @@ from agent_core import (
     TokenUsage,
 )
 from agent_core.projection import project_context_units
-from agent_core.content import historical_content
 from agent_core.session import message_from_dict
 from agent_core.llm import AuxiliaryModelCall
 
@@ -151,73 +149,11 @@ class SessionJournalTest(unittest.TestCase):
         self.assertEqual(projected[1].tool_calls[0].arguments_json, raw)
         self.assertEqual(projected[2].tool_call_id, call.id)
 
-    def test_attachment_replay_requires_current_metadata(self):
-        for missing in ("filename", "size_bytes"):
-            part = {
-                "type": "file",
-                "path": ".RADE/attachments/report.pdf",
-                "filename": "report.pdf",
-                "mime_type": "application/pdf",
-                "size_bytes": 123,
-            }
-            del part[missing]
-
-            with self.subTest(missing=missing):
-                with self.assertRaises(ValueError):
-                    message_from_dict({"role": "user", "content": [part]})
-
-    def test_attachment_replay_does_not_coerce_metadata_types(self):
-        for field, value in (
-            ("filename", 123),
-            ("size_bytes", "123"),
-            ("size_bytes", True),
-        ):
-            part = {
-                "type": "file",
-                "path": ".RADE/attachments/report.pdf",
-                "filename": "report.pdf",
-                "mime_type": "application/pdf",
-                "size_bytes": 123,
-            }
-            part[field] = value
-
-            with self.subTest(field=field, value=value):
-                with self.assertRaises(ValueError):
-                    message_from_dict({"role": "user", "content": [part]})
-
-    def test_file_attachment_is_journaled_and_replayed(self):
-        session = Session("s")
-        attachment = FilePart(
-            path=".RADE/attachments/report.pdf",
-            filename="report.pdf",
-            mime_type="application/pdf",
-            size_bytes=123,
-        )
-        session.begin_turn("turn-1")
-        session.add_item("user", "summarize", attachments=(attachment,))
-
-        replayed = Session("s")
-        for event in session.journal:
-            replayed.journal.append(event)
-            replayed.apply_event(event)
-
-        self.assertEqual(replayed.items[0].parts[1], attachment)
-        self.assertEqual(
-            session.journal[-1].payload["message"]["content"][1],
-            {
-                "type": "file",
-                "path": ".RADE/attachments/report.pdf",
-                "filename": "report.pdf",
-                "mime_type": "application/pdf",
-                "size_bytes": 123,
-            },
-        )
-        self.assertEqual(
-            historical_content(replayed.items[0].content),
-            "summarize\nAttached files:\n"
-            "- report.pdf (.RADE/attachments/report.pdf, application/pdf, "
-            "123 bytes)",
-        )
+    def test_replay_rejects_non_text_message_content(self):
+        for content in ([{"type": "text", "text": "hello"}], 42):
+            with self.subTest(content=content):
+                with self.assertRaisesRegex(ValueError, "message content must be a string or null"):
+                    message_from_dict({"role": "user", "content": content})
 
     def test_turn_failure_is_structured_and_replayed(self):
         session = Session("s")

@@ -186,23 +186,6 @@ function toolOutcomes(items: SessionItem[]): Map<string, ToolOutcome> {
   return outcomes;
 }
 
-function itemText(content: SessionItem['content']): string {
-  if (typeof content === 'string') return content;
-  if (content === null) return '';
-  const texts: string[] = [];
-  for (const part of content) {
-    if (part.type === 'text') texts.push(part.text);
-  }
-  return texts.join('\n');
-}
-
-function itemFilePaths(content: SessionItem['content']): string[] {
-  if (content === null || typeof content === 'string') return [];
-  return content
-    .filter((part) => part.type === 'file')
-    .map((part) => `${part.filename} (${part.path})`);
-}
-
 /**
  * Rebuilds transcript entries from a stored conversation.
  *
@@ -230,18 +213,9 @@ function historyEntries(items: SessionItem[]): Entry[] {
       });
     }
 
-    const text = itemText(item.content);
+    const text = item.content;
     if (item.role === 'user') {
       if (text) entries.push({ kind: 'user', id: nextId('user'), text });
-      const files = itemFilePaths(item.content);
-      if (files.length > 0) {
-        entries.push({
-          kind: 'notice',
-          id: nextId('notice'),
-          level: 'info',
-          text: `Attached file(s): ${files.join(', ')}`,
-        });
-      }
       continue;
     }
 

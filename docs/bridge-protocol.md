@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 8
+# Public Bridge protocol, major 9
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -17,7 +17,10 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 Protocol 7 selects contest scenes by filename from the Bridge process working directory's `input/`.
 
-Every `session_ready` advertises `protocol_version: 8`. Clients must check this
+Protocol 9 restricts `SessionItem.content` to strings and `null`. It removes
+attachment and content-part arrays from transcript checkpoints and history.
+
+Every `session_ready` advertises `protocol_version: 9`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -30,7 +33,7 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":8}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":9}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
@@ -289,7 +292,8 @@ checkpoint replacing the entire conversation through event N. It is attached to
 one is emitted), and terminal events. Apply the event's non-transcript state, then
 replace transcript with the checkpoint; do not append that event's conversation
 content again. Apply subsequent conversation events only after N. Session items
-contain normalized user/assistant/tool content and Artifact references; they do
+contain normalized user/assistant/tool content as text or `null`. Tool results
+can contain Artifact references in their JSON text. Session items do
 not expose the append-only journal format or provider payloads. Tool-result live
 events deliberately omit output; read normalized content from checkpoints.
 
@@ -327,9 +331,9 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 8
+receive bridge_ready; check protocol_version == 9
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 8; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 9; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
 receive/render events

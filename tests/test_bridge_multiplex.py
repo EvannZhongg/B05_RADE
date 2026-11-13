@@ -126,7 +126,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         channel = self.bridge.open_channel(key)
         channel.send({**self.opening, "session_id": session_id or key})
         ready, _ = await self.until(channel, "session_ready")
-        self.assertEqual(ready["protocol_version"], 8)
+        self.assertEqual(ready["protocol_version"], 9)
         await self.until(channel, "runtime_state")
         return channel
 

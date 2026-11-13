@@ -1,4 +1,3 @@
-import json
 from abc import abstractmethod
 from contextvars import copy_context
 from queue import Empty, Full, Queue
@@ -11,7 +10,6 @@ from agent_core.llm import (
     LLMRequest,
     LLMResponse,
 )
-from agent_core.content import FilePart, TextPart
 from agent_core.session import Message
 from agent_core.tools import ToolDefinition
 
@@ -261,7 +259,7 @@ def _get_model_max_context_tokens(
 def _message_to_dict(message: Message) -> dict[str, object]:
     data: dict[str, object] = {
         "role": message.role,
-        "content": _content_to_provider_format(message),
+        "content": message.content,
     }
     if message.reasoning is not None:
         data["reasoning_content"] = message.reasoning
@@ -280,35 +278,6 @@ def _message_to_dict(message: Message) -> dict[str, object]:
     if message.tool_call_id is not None:
         data["tool_call_id"] = message.tool_call_id
     return data
-
-
-def _content_to_provider_format(message: Message) -> str | None:
-    parts = message.parts
-    if not parts:
-        return None
-    text = "".join(part.text for part in parts if isinstance(part, TextPart))
-    files = [part for part in parts if isinstance(part, FilePart)]
-    if not files:
-        return text
-    return "\n\n".join(filter(None, (text, _attached_files_notice(files))))
-
-
-def _attached_files_notice(files: list[FilePart]) -> str:
-    lines = [
-        "Attached files are available at these workspace-relative paths. "
-        "Use the available tools to inspect or process them as appropriate:"
-    ]
-    for part in files:
-        lines.append(
-            "- filename="
-            + json.dumps(part.filename, ensure_ascii=False)
-            + ", path="
-            + json.dumps(part.path, ensure_ascii=False)
-            + ", mime_type="
-            + json.dumps(part.mime_type, ensure_ascii=False)
-            + f", size_bytes={part.size_bytes}"
-        )
-    return "\n".join(lines)
 
 
 def _tool_definition_to_dict(tool: ToolDefinition) -> dict[str, object]:

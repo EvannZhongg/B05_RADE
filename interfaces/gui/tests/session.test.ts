@@ -102,7 +102,7 @@ describe("SessionSocket synchronization", () => {
     }]);
 
     FakeWebSocket.latest.receive({
-      type: "session_ready", protocol_version: 8,
+      type: "session_ready", protocol_version: 9,
       session_id: "session-1",
       provider: "default",
       model: "test/model",

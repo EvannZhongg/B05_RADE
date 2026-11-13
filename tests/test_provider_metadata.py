@@ -1,42 +1,13 @@
-"""Shared file reference serialization and metadata used by compatible endpoints."""
+"""Token limits and estimation for OpenAI-compatible endpoints."""
 
 import unittest
 from unittest.mock import patch
 
-from agent_core import FilePart, LLMRequest, Message, TextPart, ToolDefinition
+from agent_core import LLMRequest, Message, ToolDefinition
 from agent_core.providers import OpenAIProvider
 
 
 class ProviderMetadataTest(unittest.TestCase):
-    def test_describes_attached_files_as_workspace_paths(self) -> None:
-        from agent_core.providers.base import (
-            _content_to_provider_format,
-        )
-
-        content = _content_to_provider_format(
-            Message(
-                role="user",
-                content=(
-                    TextPart(text="summarize this"),
-                    FilePart(
-                        path=".RADE/attachments/report.pdf",
-                        filename="Q3 report.pdf",
-                        mime_type="application/pdf",
-                        size_bytes=12345,
-                    ),
-                ),
-            )
-        )
-
-        self.assertEqual(
-            content,
-            "summarize this\n\n"
-            "Attached files are available at these workspace-relative "
-            "paths. Use the available tools to inspect or process them as appropriate:\n"
-            '- filename="Q3 report.pdf", path=".RADE/attachments/report.pdf", '
-            'mime_type="application/pdf", size_bytes=12345',
-        )
-
     @patch(
         "litellm.token_counter",
         return_value=42,

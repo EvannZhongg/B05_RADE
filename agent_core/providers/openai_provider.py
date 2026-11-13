@@ -349,19 +349,17 @@ class OpenAIProvider(ModelProvider):
 
 def _responses_input(request: LLMRequest) -> list[dict[str, object]]:
     inputs = []
-    messages = _request_messages(request)[1:]
-    for message, rendered in zip(request.messages, messages):
+    for message in request.messages:
         native_output = message.provider_data.get("openai_responses")
         if message.role == "assistant" and native_output:
             inputs.extend(native_output)
             continue
         if message.role == "tool":
             inputs.append({"type": "function_call_output", "call_id": message.tool_call_id,
-                           "output": rendered["content"] or ""})
+                           "output": message.content or ""})
             continue
-        content = rendered["content"]
-        if content:
-            inputs.append({"role": message.role, "content": content})
+        if message.content:
+            inputs.append({"role": message.role, "content": message.content})
         for call in message.tool_calls:
             inputs.append({"type": "function_call", "call_id": call.id, "name": call.name,
                            "arguments": call.arguments_json})

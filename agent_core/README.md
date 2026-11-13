@@ -44,7 +44,7 @@ interfaces → agent_runtime → agent_core
 
 ## 上下文与内容
 
-消息内容由文本和文件引用组成。Provider 将普通文件附件的 Workspace 相对路径及文件信息作为文本加入请求。
+消息内容使用纯文本。没有正文的消息可以使用 `null`。
 
 `ContextManager` 按完整语义单元投影 Session 历史，计算窗口占用，并在达到阈值时压缩较早上下文、保留近期单元和用户锚点。压缩使用当前 Agent 的模型，保留主请求的 system、工具定义和原始待归档消息前缀，在尾部追加压缩指令；近期尾部不送入压缩，格式修复指令也追加在尾部。
 
@@ -52,7 +52,6 @@ interfaces → agent_runtime → agent_core
 
 | 模块 | 职责 |
 | --- | --- |
-| `content.py` | 文本与文件附件数据类型 |
 | `projection.py` | 从 Session Journal 投影模型上下文单元 |
 | `context_manager.py` | token 预算、上下文压缩和窗口快照 |
 

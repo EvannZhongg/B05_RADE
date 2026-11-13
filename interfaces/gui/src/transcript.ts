@@ -265,12 +265,7 @@ function itemParts(
   const parts: Part[] = [];
   // The model reasons before it answers, so reasoning comes first.
   if (item.reasoning) parts.push({ type: "reasoning", text: item.reasoning });
-  if (typeof item.content === "string" && item.content) parts.push({ type: "text", text: item.content });
-  if (Array.isArray(item.content)) {
-    for (const part of item.content) {
-      if (part.type === "text") parts.push({ type: "text", text: part.text });
-    }
-  }
+  if (item.content) parts.push({ type: "text", text: item.content });
   for (const call of item.tool_calls ?? []) {
     parts.push({
       type: "tool-call",

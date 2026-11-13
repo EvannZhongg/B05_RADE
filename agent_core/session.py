@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Callable, Literal
 from threading import Lock
 from uuid import uuid4
 
-from .content import Content, FilePart, TextPart, content_parts
 from .errors import (
     RuntimeErrorInfo,
     runtime_error_from_dict,
@@ -46,17 +45,13 @@ JobExecutionStatus = Literal[
 @dataclass(frozen=True)
 class Message:
     role: MessageRole
-    content: Content
+    content: str | None
     timestamp_utc: datetime | None = None
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
     reasoning: str | None = None
     origin: MessageOrigin = "conversation"
     provider_data: dict[str, object] = field(default_factory=dict)
-
-    @property
-    def parts(self):
-        return content_parts(self.content)
 
     @property
     def is_user_authored(self) -> bool:
@@ -117,7 +112,7 @@ class JobExecution:
 @dataclass(frozen=True)
 class UserAnchor:
     turn_id: str
-    content: Content
+    content: str | None
     timestamp_utc: datetime
     source: UserAnchorSource
     item_index: int
@@ -549,20 +544,15 @@ class Session:
     def add_item(
         self,
         role: MessageRole,
-        content: Content,
+        content: str | None,
         timestamp_utc: datetime | None = None,
         tool_calls: tuple[ToolCall, ...] = (),
         tool_call_id: str | None = None,
         reasoning: str | None = None,
-        attachments: tuple[FilePart, ...] = (),
         origin: MessageOrigin = "conversation",
         user_source: UserAnchorSource = "user_input",
         provider_data: dict[str, object] | None = None,
     ) -> None:
-        if attachments:
-            parts = list(content_parts(content))
-            parts.extend(attachments)
-            content = tuple(parts)
         message = Message(
             role,
             content,
@@ -621,7 +611,7 @@ def message_to_dict(
 ) -> dict[str, object]:
     data: dict[str, object] = {
         "role": message.role,
-        "content": _content_to_dict(message),
+        "content": message.content,
     }
     if message.timestamp_utc is not None:
         data["timestamp_utc"] = _format_utc(message.timestamp_utc)
@@ -643,49 +633,8 @@ def message_to_dict(
 
 def message_from_dict(data: dict[str, object]) -> Message:
     content = data.get("content")
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if not isinstance(part, dict):
-                raise ValueError("message content part must be an object")
-            if part.get("type") == "text":
-                parts.append(TextPart(str(part.get("text", ""))))
-            elif part.get("type") == "file":
-                path = part.get("path")
-                filename = part.get("filename")
-                mime_type = part.get("mime_type")
-                size_bytes = part.get("size_bytes")
-                if not isinstance(path, str) or not path:
-                    raise ValueError(
-                        "attachment path must be a non-empty string"
-                    )
-                if not isinstance(filename, str) or not filename:
-                    raise ValueError(
-                        "attachment filename must be a non-empty string"
-                    )
-                if not isinstance(mime_type, str) or not mime_type:
-                    raise ValueError(
-                        "attachment mime_type must be a non-empty string"
-                    )
-                if (
-                    isinstance(size_bytes, bool)
-                    or not isinstance(size_bytes, int)
-                    or size_bytes < 0
-                ):
-                    raise ValueError(
-                        "attachment size_bytes must be a non-negative integer"
-                    )
-                parts.append(
-                    FilePart(
-                        path=path,
-                        filename=filename,
-                        mime_type=mime_type,
-                        size_bytes=size_bytes,
-                    )
-                )
-            else:
-                raise ValueError("unknown message content part type")
-        content = tuple(parts)
+    if content is not None and not isinstance(content, str):
+        raise ValueError("message content must be a string or null")
     calls = tuple(
         ToolCall.from_dict(call)
         for call in data.get("tool_calls", [])
@@ -715,26 +664,3 @@ def message_from_dict(data: dict[str, object]) -> Message:
         ),
         provider_data=dict(data.get("provider_data", {})),
     )
-
-
-def _content_to_dict(message: Message) -> object:
-    parts = message.parts
-    if not parts:
-        return None
-    if all(isinstance(part, TextPart) for part in parts):
-        return "".join(part.text for part in parts)
-    result: list[dict[str, object]] = []
-    for part in parts:
-        if isinstance(part, TextPart):
-            result.append({"type": "text", "text": part.text})
-        else:
-            result.append(
-                {
-                    "type": part.type,
-                    "path": part.path,
-                    "filename": part.filename,
-                    "mime_type": part.mime_type,
-                    "size_bytes": part.size_bytes,
-                }
-            )
-    return result

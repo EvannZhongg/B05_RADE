@@ -17,7 +17,7 @@ there and are not repeated here. The public/internal boundary is described in
 | `@rade/protocol` | `Incoming` / `Outgoing`, `PROTOCOL_VERSION`, `BridgeRequest` / `BridgeEvent`, data types, state helpers and `MessageDecoder` | Public |
 | `@rade/protocol/internal` | Settings-editing types, GUI attachment and replay extensions used by first-party frontends | Internal, no stability promise |
 
-The public data types cover attachments, tool calls, token usage,
+The public data types cover tool calls, token usage,
 plans, context window, session items and structured runtime failures.
 `PROTOCOL_VERSION` is the single source for the protocol major; the reference
 document states what that major means.

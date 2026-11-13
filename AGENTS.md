@@ -50,7 +50,6 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 * Skill 加载（`SkillSource` 与 Registry；Core 不决定 Skill 目录来源）
 * 计划状态与跨 Turn 的计划恢复
 * 后台 Jobs 与 Turn 控制（steer、cancel 的语义与终止条件）
-* 文件附件与模型上下文中的路径提示
 * Runtime Instruction 的数据类型与 fingerprint（读取时机与来源顺序由 `agent_runtime` 决定）
 * 子 Agent Runtime 与角色注册表
 * Provider 抽象、MCP 客户端机制

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Iterable, Iterator, TextIO
 
 from .atomic import atomic_write_text
-from .content import FilePart, text_content
 from .file_lock import acquire_file_lock
 from .session import JournalEvent, JournalSink, Session, message_from_dict
 from .session_paths import default_runs_directory, session_directory, session_log_path, validate_session_id
@@ -94,7 +93,7 @@ class JsonlSessionStore:
                         message = message_from_dict(data)
                         if message.origin != "conversation":
                             continue
-                        text = text_content(message.content)
+                        text = message.content
                         match = pattern.search(text) if text else None
                         if match is None:
                             continue
@@ -399,15 +398,8 @@ def _record_session_activity(
         message = message_from_dict(data)
         if message.origin != "conversation":
             continue
-        text = " ".join((text_content(message.content) or "").split())
-        metadata["input_preview"] = text[:80] or next(
-            (
-                part.filename
-                for part in message.parts
-                if isinstance(part, FilePart) and part.filename
-            ),
-            None,
-        )
+        text = " ".join((message.content or "").split())
+        metadata["input_preview"] = text[:80] or None
         changed = True
     return changed
 

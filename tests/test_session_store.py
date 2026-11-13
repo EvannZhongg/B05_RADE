@@ -10,7 +10,6 @@ from pathlib import Path
 from threading import Event
 
 from agent_core import (
-    FilePart,
     JsonlSessionStore,
     HostCommandExecutor,
     PlanSnapshot,
@@ -18,7 +17,6 @@ from agent_core import (
     Session,
     SessionInUseError,
     ToolCall,
-    TextPart,
 )
 from agent_core.session_paths import session_log_path
 from agent_core import session_store as session_store_module
@@ -180,7 +178,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
             first.add_item("assistant", "The NEEDLE is here")
             persist(store, first)
             second = Session("second")
-            second.add_item("user", (FilePart(path="needle.txt", filename="needle.txt"), TextPart("中文 needle 正文")))
+            second.add_item("user", "中文 needle 正文")
             persist(store, second)
 
             matches = store.search_messages(" needle ", limit=50, per_session_limit=3)
@@ -363,86 +361,6 @@ class JsonlSessionStoreTest(unittest.TestCase):
             self.assertEqual(
                 {item["input_preview"] for item in store.list_sessions()},
                 {"first", "second"},
-            )
-
-    def test_lists_session_with_attachments_by_first_user_text(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "runs")
-            session = Session("attachment-session")
-            session.begin_turn("t")
-            session.add_item(
-                "user",
-                "分析这份文件",
-                attachments=(
-                    FilePart(
-                        path="attachments/report.pdf",
-                        filename="report.pdf",
-                        size_bytes=12,
-                    ),
-                ),
-            )
-            session.finish_turn("completed")
-            persist(store, session)
-
-            self.assertEqual(
-                store.list_sessions(),
-                [{
-                    "session_id": "attachment-session", "input_preview": "分析这份文件",
-                    "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
-                }],
-            )
-
-    def test_previews_attachment_only_sessions_from_their_files(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "runs")
-            single = Session("single-attachment")
-            single.begin_turn("t")
-            single.add_item(
-                "user",
-                "",
-                attachments=(
-                    FilePart(
-                        path="attachments/design.pdf",
-                        filename="design.pdf",
-                        size_bytes=12,
-                    ),
-                ),
-            )
-            single.finish_turn("completed")
-            persist(store, single)
-
-            multiple = Session("multiple-attachments")
-            multiple.begin_turn("t")
-            multiple.add_item(
-                "user",
-                "",
-                attachments=(
-                    FilePart(
-                        path="attachments/brief.pdf",
-                        filename="brief.pdf",
-                        mime_type="application/pdf",
-                        size_bytes=24,
-                    ),
-                    FilePart(
-                        path="attachments/reference.txt",
-                        filename="reference.txt",
-                        size_bytes=12,
-                    ),
-                ),
-            )
-            multiple.finish_turn("completed")
-            persist(store, multiple)
-
-            previews = {
-                item["session_id"]: item["input_preview"]
-                for item in store.list_sessions()
-            }
-            self.assertEqual(previews["single-attachment"], "design.pdf")
-            self.assertEqual(
-                previews["multiple-attachments"],
-                "brief.pdf",
             )
 
     def test_lists_sessions_newest_first(self) -> None:

@@ -348,7 +348,7 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 8,
+                "protocol_version": 9,
                 "session_id": "s1",
                 "provider": "test",
                 "model": "test/model",

@@ -29,7 +29,7 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 8
+PROTOCOL_VERSION = 9
 
 
 class ProtocolError(ValueError):

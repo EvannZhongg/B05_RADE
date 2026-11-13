@@ -45,8 +45,6 @@ from agent_core import (
     ToolResultEvent,
     TurnControl,
     UserSteerAppliedEvent,
-    FilePart,
-    TextPart,
     ToolCatalog,
     ToolExecutionContext,
     UpdatePlanTool,
@@ -1859,44 +1857,6 @@ class AgentTest(unittest.TestCase):
         )
         self.assertNotIn("assistant", history[0].content or "")
         self.assertNotIn("tool", history[0].content or "")
-
-    def test_recent_file_attachment_is_carried_into_next_request(self) -> None:
-        session = Session(session_id="files")
-        session.add_item(
-            "user",
-            "look at this",
-            REQUEST_TIME,
-            attachments=(
-                FilePart(
-                    path=".RADE/attachments/report.pdf",
-                    mime_type="application/pdf",
-                    filename="report.pdf",
-                    size_bytes=123,
-                ),
-            ),
-        )
-        provider = MockProvider(["ok"])
-        agent = make_agent(
-            provider=provider,
-            session=session,
-            system_prompt="Be helpful.",
-        )
-        agent.run("follow up")
-
-        historical = provider.requests[0].messages[1]
-        self.assertEqual(historical.role, "user")
-        self.assertEqual(
-            historical.parts,
-            (
-                TextPart(text="look at this"),
-                FilePart(
-                    path=".RADE/attachments/report.pdf",
-                    mime_type="application/pdf",
-                    filename="report.pdf",
-                    size_bytes=123,
-                ),
-            ),
-        )
 
     def test_compresses_completed_units_inside_the_active_turn(self) -> None:
         calls = tuple(

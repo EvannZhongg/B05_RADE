@@ -624,7 +624,7 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 8 as const,
+        protocol_version: 9 as const,
         session_id: "s1",
         provider: "test",
         model: "m",

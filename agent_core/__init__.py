@@ -49,12 +49,6 @@ from .jobs import (
 )
 from .llm import LLMProvider, LLMRequest, LLMResponse
 from .usage import CacheUsage, TokenUsage
-from .content import (
-    Content,
-    ContentPart,
-    FilePart,
-    TextPart,
-)
 from .memory import (
     MemoryCandidate,
     MemoryDocument,
@@ -161,8 +155,6 @@ __all__ = [
     "CommandCancelled",
     "CommandOutputSpool",
     "CommandExecutor",
-    "Content",
-    "ContentPart",
     "ContextWindow",
     "ContextWindowEvent",
     "ContextCompressionConfig",
@@ -171,7 +163,6 @@ __all__ = [
     "DEFAULT_TOOL_RESULT_PREVIEW_CHARS",
     "DirectorySkillSource",
     "EditFileTool",
-    "FilePart",
     "HostCommandExecutor",
     "platform_shell_launcher",
     "JobCancelled",
@@ -234,7 +225,6 @@ __all__ = [
     "SubagentRoleRegistry",
     "SubagentRuntime",
     "SubagentTool",
-    "TextPart",
     "TokenUsage",
     "Tool",
     "ToolBatchStartedEvent",

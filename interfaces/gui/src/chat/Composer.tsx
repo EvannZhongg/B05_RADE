@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, ChevronDown, FileJson, LoaderCircle, RefreshCw, X } from "lucide-react";
+import type { SceneMode } from "@rade/protocol";
 import { get } from "../api";
 import { ContextWindowIndicator, RuntimeIndicators } from "./RuntimeIndicators";
 import type { SessionRuntime } from "./useSessionRuntime";
@@ -14,6 +15,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
   const [listRevision, setListRevision] = useState(0);
   const [listError, setListError] = useState("");
   const [filename, setFilename] = useState("");
+  const [mode, setMode] = useState<SceneMode>("rethink");
   const [preview, setPreview] = useState<ScenePreview | null>(null);
   const [previewError, setPreviewError] = useState("");
 
@@ -72,7 +74,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
     <div className="composer">
       {runtime.sceneTask?.status === "completed" && <p role="status">{runtime.sceneTask.output_path} · 期望值 {runtime.sceneTask.expected_value.toPrecision(8)}</p>}
       {runtime.sceneTask?.status === "interrupted" && <p role="status">{runtime.sceneTask.error.message}</p>}
-      <label className="json-file-row">
+      <div className="json-file-row">
         <FileJson size={16} aria-hidden="true" />
         <select className="json-picker" aria-label="选择 input 场景" value={filename} onFocus={() => setListRevision((revision) => revision + 1)} onChange={(event) => {
           setFilename(event.currentTarget.value);
@@ -82,7 +84,13 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
           <option value="">{listError ? "场景列表读取失败" : filenames === null ? "正在读取 input/…" : filenames.length ? "选择 input/ 场景" : "input/ 暂无场景"}</option>
           {filenames?.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>
-      </label>
+        <select className="json-picker" aria-label="反思模式" value={mode} onChange={(event) =>
+          setMode(event.currentTarget.value === "norethink" ? "norethink" : "rethink")
+        }>
+          <option value="rethink">开启反思</option>
+          <option value="norethink">关闭反思</option>
+        </select>
+      </div>
       {(listError || (filename && previewError)) && <p className="json-file-error" role="alert">{listError || previewError}</p>}
       {filename && preview && <details className="json-preview">
         <summary>预览文件{preview.truncated ? "（部分）" : ""}</summary>
@@ -98,7 +106,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
           <ContextWindowIndicator window={runtime.contextWindow} cacheUsage={runtime.cacheUsage} />
           <button type="button" className="runtime-refresh" aria-label="重新加载运行环境" title="重新加载运行环境" disabled={refreshDisabled} onClick={runtime.refreshRuntime}><RefreshCw size={15} /></button>
           <button type="button" className="json-run" disabled={!filename || !runtime.canSubmitScene} onClick={async () => {
-            if (filename && await runtime.submitScene(filename)) {
+            if (filename && await runtime.submitScene(filename, mode)) {
               setFilename((current) => current === filename ? "" : current);
             }
           }}>运行</button>

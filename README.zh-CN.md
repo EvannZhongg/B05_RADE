@@ -72,6 +72,9 @@ RADE-server
 
 GUI 默认监听 <http://127.0.0.1:8736>。
 
+在 GUI 选择场景和反思模式，或在 TUI 使用 `/input rethink`、`/input norethink`。
+`/input` 默认开启反思。两种模式均将校验后的同名文件写入 `output/<mode>/`。
+
 `RADE-server` 管理 HTTP 服务、活动 Session 和 Bridge。同一配置目录通过进程锁保证单实例。
 
 ## 模块文档
@@ -117,6 +120,7 @@ Runtime 层：
 | `.RADE/agent_config.json` | 工具、上下文、记忆、子 Agent 和 MCP |
 | `.RADE/.env` | 配置引用的密钥和环境变量 |
 | `.RADE/prompts/` | 主 Agent、子 Agent、压缩与记忆 Prompt |
+| `.RADE/knowledge.sqlite3` | 跨 Session 共享的场景反思记录和知识版本 |
 | `.RADE/skills/` | standalone Skill |
 | `.RADE/plugins/` | Plugin capability package |
 | `.RADE/AGENTS.md` | 应用级运行指令 |

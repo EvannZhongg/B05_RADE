@@ -4,6 +4,7 @@ import { Box, Static, Text, useBoxMetrics } from 'ink';
 import type { DOMElement } from 'ink';
 import Spinner from 'ink-spinner';
 import { cacheHitPercent, formatArguments } from '@rade/protocol';
+import type { SceneMode } from '@rade/protocol';
 import type { PlanSnapshot, SettingsSnapshot } from '@rade/protocol/internal';
 import type { Entry, NavigationPicker as NavigationPickerState, State } from './state.js';
 
@@ -350,10 +351,13 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
   );
 }
 
-export function NavigationPicker({ picker }: { picker: NavigationPickerState }): React.ReactElement {
+export function NavigationPicker({ picker, sceneMode }: {
+  picker: NavigationPickerState;
+  sceneMode: SceneMode;
+}): React.ReactElement {
   const labels = {
     sessions: { title: 'Runs', empty: 'No saved runs.', action: 'switch' },
-    input: { title: 'Input scenes', empty: 'No scenes in input/.', action: 'run' },
+    input: { title: `Input scenes (${sceneMode})`, empty: 'No scenes in input/.', action: 'run' },
   }[picker.kind];
   const items = picker.kind === 'sessions'
     ? picker.list?.map((session) => ({ id: session.session_id, label: sessionLabel(session) }))

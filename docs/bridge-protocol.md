@@ -22,7 +22,8 @@ attachment and content-part arrays from transcript checkpoints and history.
 
 Protocol 10 starts scene tasks with `scene_task_start`. Scene task events report
 the persisted outcome of validation and export. Agent turns are internal to the
-task. The first mode is `rethink`.
+task. `scene_task_start` accepts the optional `mode` field with `rethink` and
+`norethink`. The default is `rethink`.
 
 Every `session_ready` advertises `protocol_version: 10`. Clients must check this
 before using the session. A breaking change to documented public fields or
@@ -211,12 +212,17 @@ For a contest scene, send `scene_input: "scene1_1.json"`. Runtime reads the UTF-
 file from `input/` relative to the Bridge process working directory. Filenames
 follow `scene<S>_<I>.json`, with `S` in 1–2 and `I` in 1–5. Runtime validates
 `P` and `v` and derives processing units from the rows of `P` and tasks from
-its columns. The user message contains
-the extracted `T`, `W`, `P`, and `V` features, a run-relative `source_path`,
-and the evaluated baseline. An invalid scene fails the task before a model call.
-After the reflection Turn returns, Runtime evaluates this task's candidates
-against the original input, exports the highest-value allocation to
-`output/rethink/<scene_input>`, and records the task result in the Session journal.
+its columns. The recorded input contains the extracted `T`, `W`, `P`, and `V`
+features, the mode, and a run-relative `source_path`. An invalid scene or mode
+fails the task before execution.
+
+- `norethink` runs the baseline solver and exports its allocation. The Agent
+  and knowledge tools are inactive, and the terminal event has `usage: null`.
+- `rethink` gives the evaluated baseline to the Agent. After the turn, Runtime
+  evaluates this task's candidates against the original input and exports the
+  highest-value allocation.
+
+Runtime writes `output/<mode>/<scene_input>` and records the task result in the Session journal.
 The latest task is available as `runtime_state.scene_task` after reopening.
 
 Candidates have `P[i][j] > 0`. The `T` and `W` features count tasks or
@@ -235,7 +241,7 @@ The share is defined for nonnegative values with a positive total and is
 ## Scene task lifecycle
 
 ```text
-client → scene_task_start(turn_id, scene_input)
+client → scene_task_start(turn_id, scene_input, mode?)
        ← scene_task_received(turn_id)
        ← runtime_state(starting/running), context/model/tool/... events
        ← runtime_state(idle or failed)
@@ -243,8 +249,8 @@ client → scene_task_start(turn_id, scene_input)
 ```
 
 `scene_task_received` acknowledges enqueueing, not model startup or persistence.
-Clients should submit one turn at a time and use `user_steer` for new input during
-execution. The transport does not convert `scene_task_start` into steering. Steering
+Clients should submit one task at a time and use `user_steer` for new input during
+`rethink` execution. The transport does not convert `scene_task_start` into steering. Steering
 receipt is `user_steer_received` or `user_steer_rejected`, identified by both IDs;
 only `user_steer_applied` means Core consumed it. Accepted steering can remain
 unapplied when the turn ends. Stale cancellation IDs have no effect.

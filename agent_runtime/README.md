@@ -27,7 +27,7 @@ RuntimeHost
 - 已装配的 Agent（含其 Tool）与执行路由
 - Memory、MCP Client Manager、后台 Job 和上下文窗口
 
-`ExecutionPlaneManager.ensure()` 在首个 `scene_task_start` 到来时延迟装配。复用条件是运行、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
+`ExecutionPlaneManager.ensure()` 在首个 `rethink` 场景任务或显式刷新时装配。复用条件是运行、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
 
 空闲时可调用 `RuntimeHost.refresh_runtime()` 显式强制重新装配，即使上述输入未变化也会重建执行面，重新读取 Prompt、Skill、Plugin Agent，并重连 MCP、重新发现工具。该操作保留当前 Session、Journal 和 Plan，不调用模型、不创建 Turn；结果通过 `starting → idle/failed` 反馈。装配失败不会发布半成品，可修正后再次刷新；旧执行面关闭后的失败不恢复旧资源。正常 Turn 仍沿用原有变更检测。
 
@@ -91,14 +91,27 @@ stdio 的相对 cwd 基于运行文件目录解析，未配置时使用该目录
 
 `SceneTaskRunner` 保证一个 Host 同时只有一个活动场景任务，并统一处理：
 
-- 尚在排队或已经运行的 steer
+- 尚在排队或已经运行的 `rethink` 任务的 steer
 - 排队取消、活动取消和 Host shutdown
 - Runtime phase 回调
-- 运行基线和反思 Turn，从本次实验选出期望值最高的合法分配
-- 原子写入 `output/rethink/<输入文件名>`，将任务终态写入 Session Journal
-- 成功交付后的长期记忆 reconcile
+- 通过现有实验执行器运行基线；`rethink` 额外运行一次 Agent Turn，并从本次实验选出期望值最高的合法分配
+- 原子写入 `output/<mode>/<输入文件名>`，将任务终态写入 Session Journal
+- `rethink` 成功交付后的长期记忆 reconcile
 
 `RuntimeCallbacks` 是 Runtime 对宿主的窄接口，用于发布事件、phase、计划与 MCP 状态，以及请求授权或向用户提问。
+
+### 反思与知识
+
+`rethink` Turn 提供 `knowledge_query`、`reflection_propose` 和 `knowledge_explain`。
+Agent 提交假设、结论、两个本次任务的实验 ID 和相对期望值变化方向。
+Runtime 从 Journal 与实验文件取得证据，`rade_tasks.knowledge.KnowledgeService`
+校验来源和分配，复算期望值并验证变化方向。假设和结论原文作为反思记录保留。
+
+SQLite 文件 `knowledge.sqlite3` 位于配置目录，由多个 Session 共享。
+正式知识以场景范围和两个策略配置版本为键，按任务规模、单元相对数量和候选密度检索。
+同场景、同方向的重复证据保留来源并指向原记录。新观察产生新的知识版本。
+观测方向不一致时，当前版本标记为冲突并退出常规检索。通过 `knowledge_explain`
+可按 ID 查阅验证状态、历史版本及关联实验。
 
 ## 配置与默认资源
 

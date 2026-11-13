@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from agent_core.tools import JSONValue, Tool, ToolDefinition, ToolExecutionContext
+from rade_tasks.knowledge import KnowledgeService
 
 from .experiments import ExperimentRunner
 from .scene_input import SceneInput
@@ -13,6 +14,7 @@ from .scene_input import SceneInput
 class SceneToolContext(ToolExecutionContext):
     scene: SceneInput | None = None
     experiments: ExperimentRunner | None = None
+    knowledge: KnowledgeService | None = None
 
 
 class QuerySceneTool(Tool):

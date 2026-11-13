@@ -1,6 +1,7 @@
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput, useWindowSize } from 'ink';
 import type { Incoming, Outgoing } from '@rade/protocol/internal';
+import type { SceneMode } from '@rade/protocol';
 import { BridgeClient } from '@rade/client';
 import { COMMANDS, parseCommand } from './commands.js';
 import { Prompt } from './input.js';
@@ -31,6 +32,7 @@ export function App(props: AppProps): React.ReactElement {
   const [selection, setSelection] = useState<SessionSelection>({ sessionId: null, channelId: 'session-1' });
   const [settingsMode, setSettingsMode] = useState<'model' | 'provider' | null>(null);
   const [modelChoice, setModelChoice] = useState(0);
+  const [sceneMode, setSceneMode] = useState<SceneMode>('rethink');
   const [elapsed, setElapsed] = useState(0);
   const bridgeRef = useRef<BridgeClient<Incoming, Outgoing> | null>(null);
   const activeChannel = useRef('session-1');
@@ -191,7 +193,7 @@ export function App(props: AppProps): React.ReactElement {
           if (inputBusy) return;
           const filename = picker.list[picker.selectedIndex];
           const turnId = 'turn-' + ++turnCounter.current;
-          send({ type: 'scene_task_start', turn_id: turnId, scene_input: filename });
+          send({ type: 'scene_task_start', turn_id: turnId, scene_input: filename, mode: sceneMode });
           dispatch({ type: 'picker_closed' });
           dispatch({ type: 'submit', turnId, text: filename });
         } else {
@@ -264,12 +266,15 @@ export function App(props: AppProps): React.ReactElement {
     // while the Session opens, but do not let a command overtake its initial
     // execution snapshot and then get reset back to idle by that snapshot.
     if (state.status === 'opening') return;
-    const command = parseCommand(value)?.command.name;
-    if (!command) return;
+    const parsed = parseCommand(value);
+    if (!parsed) return;
+    const command = parsed.command.name;
     if (state.status === 'session_unavailable' && command !== '/sessions' && command !== '/new') return;
     if (inputBusy && command !== '/model' && command !== '/provider') return;
+    if (command === '/input' && !['', 'rethink', 'norethink'].includes(parsed.argument)) return;
     setDraft('');
     if (command === '/input') {
+      setSceneMode(parsed.argument === 'norethink' ? 'norethink' : 'rethink');
       dispatch({ type: 'picker_opened', kind: 'input' });
       send({ type: 'list_input_scenes' });
     } else if (command === '/sessions') {
@@ -312,7 +317,7 @@ export function App(props: AppProps): React.ReactElement {
 
         {state.picker ? (
           <Box flexShrink={0}>
-            <NavigationPicker picker={state.picker} />
+            <NavigationPicker picker={state.picker} sceneMode={sceneMode} />
           </Box>
         ) : null}
         {settingsMode === 'model' && state.settings ? <Box flexShrink={0}><ModelPicker settings={state.settings} selectedIndex={modelChoice} /></Box> : null}

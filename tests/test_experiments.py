@@ -13,6 +13,7 @@ from agent_runtime.scene_input import prepare_scene_input
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
 from rade_tasks.algorithms.implementations.marginal_greedy import solve
 from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES
+from rade_tasks.knowledge import KnowledgeService
 from rade_tasks.scene import SceneState
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 
@@ -23,7 +24,7 @@ def strategy(tmp_path, monkeypatch):
         "from pathlib import Path\n"
         "from time import sleep\n"
         "def solve(scene, parameters, *, seed):\n"
-        "    assert scene.P == ((0.8, 0.7), (1, 0)) and scene.v == (10, 10)\n"
+        "    assert scene.P == ((0.8, 0.7), (1, 0)) and scene.v in ((10, 10), (10, 9))\n"
         "    assert seed == 42\n"
         "    mode = parameters['mode']\n"
         "    if mode in ('timeout', 'cancel'):\n"
@@ -186,30 +187,54 @@ class TestExperimentBridge(BridgeTestCase):
 
         def respond(request, *_):
             names = {tool.name for tool in request.tools}
-            self.assertTrue({"strategy_list", "experiment_run", "experiment_get", "read_file"} <= names)
+            self.assertTrue({
+                "strategy_list", "experiment_run", "experiment_get", "read_file",
+                "knowledge_query", "reflection_propose", "knowledge_explain",
+            } <= names)
             results = {
                 item.tool_call_id: json.loads(item.content)["output"]
                 for item in bridge.host.sessions.session.items if item.role == "tool"
             }
+            if "query" not in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall("query", "knowledge_query", {}),))
+            assert results["query"]["knowledge"] == []
             if "discover" not in results:
                 source.unlink()
                 return LLMResponse(content=None, tool_calls=(ToolCall("discover", "strategy_list", {}),))
+            if "baseline" not in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "baseline", "experiment_run", {"strategy_id": "fixture", "config_id": "baseline"},
+                ),))
+            baseline_id = results["baseline"]["experiment_id"]
+            jobs = bridge.host.planes.current.jobs
+            if "measured-baseline" not in results:
+                if jobs.get(baseline_id).status != "completed":
+                    return LLMResponse(content="Waiting for baseline")
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "measured-baseline", "experiment_get", {"experiment_id": baseline_id},
+                ),))
             if "candidate" not in results:
-                return LLMResponse(content=None, tool_calls=tuple(
-                    ToolCall(mode, "experiment_run", {"strategy_id": "fixture", "config_id": mode})
-                    for mode in ("baseline", "candidate")
-                ))
-            if "read-allocation" in results:
+                assert results["measured-baseline"]["metrics"]["expected_value"] == 10
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "candidate", "experiment_run", {"strategy_id": "fixture", "config_id": "candidate"},
+                ),))
+            if "reflection" in results:
                 return LLMResponse(content="Evaluated")
+            if "read-allocation" in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall("reflection", "reflection_propose", {
+                    "hypothesis": "Different assignments could improve expected value.",
+                    "conclusion": "The candidate profile improved expected value by 7.",
+                    "reference_experiment_id": results["baseline"]["experiment_id"],
+                    "experiment_id": results["candidate"]["experiment_id"],
+                    "expected_value_effect": "improved",
+                }),))
             if "comparison" in results:
                 return LLMResponse(content=None, tool_calls=(ToolCall(
                     "read-allocation", "read_file", {"path": results["comparison"]["result_ref"]},
                 ),))
             candidate_id = results["candidate"]["experiment_id"]
-            baseline_id = results["baseline"]["experiment_id"]
-            jobs = bridge.host.planes.current.jobs
-            if any(jobs.get(job_id).status != "completed" for job_id in (candidate_id, baseline_id)):
-                return LLMResponse(content="Waiting for experiments")
+            if jobs.get(candidate_id).status != "completed":
+                return LLMResponse(content="Waiting for candidate")
             return LLMResponse(content=None, tool_calls=(ToolCall("comparison", "experiment_get", {
                 "experiment_id": candidate_id,
                 "baseline_experiment_id": baseline_id,
@@ -221,7 +246,7 @@ class TestExperimentBridge(BridgeTestCase):
                 patch.object(plane.provider, "count_input_tokens", return_value=1),
                 patch.object(plane.provider, "stream_cancellable", side_effect=respond),
             ):
-                bridge.run_scene_task({"turn_id": "scene", "scene_input": source.name})
+                bridge.run_scene_task({"turn_id": "scene", "scene_input": source.name, "mode": "rethink"})
 
         events = emitted(stdout)
         assert events[-1]["type"] == "scene_task_completed", events[-1]
@@ -252,6 +277,14 @@ class TestExperimentBridge(BridgeTestCase):
         assert result["baseline_expected_value"] == 10.0
         assert result["expected_value"] == 17.0
         assert result["experiment_id"] == comparison["experiment_id"]
+        reflection = results["reflection"]
+        assert reflection["status"] == "verified"
+        assert reflection["source"] == {
+            "session_id": session.session_id, "task_id": result["task_id"], "filename": source.name,
+            "scene_digest": result["scene_digest"],
+            "source_path": json.loads(session.items[0].content)["source_path"],
+        }
+        assert reflection["evidence"][1]["experiment_id"] == result["experiment_id"]
         output_path = root / "output" / "rethink" / source.name
         assert Path(result["output_path"]) == output_path
         assert json.loads(output_path.read_text(encoding="utf-8")) == {"allocation": [1, 0]}
@@ -262,3 +295,98 @@ class TestExperimentBridge(BridgeTestCase):
         self.addCleanup(jobs.close)
         runner = ExperimentRunner((), jobs, plane.files)
         assert runner.get(comparison["experiment_id"], results["baseline"]["experiment_id"]) == comparison
+
+        second_source = inputs / "scene1_2.json"
+        second_source.write_text('{"P":[[0.8,0.7],[1,0]],"v":[10,9]}', encoding="utf-8")
+        other_bridge, other_stdout = self.make_bridge([], root)
+        other_bridge.open_session(message)
+        other_session = other_bridge.host.sessions.session
+        assert other_session.session_id != session.session_id
+
+        def reuse_knowledge(_request, *_):
+            results = {
+                item.tool_call_id: json.loads(item.content)["output"]
+                for item in other_session.items if item.role == "tool"
+            }
+            if "query" not in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall("query", "knowledge_query", {}),))
+            knowledge, = results["query"]["knowledge"]
+            assert knowledge["knowledge_id"] == reflection["knowledge_id"]
+            if "explain" not in results:
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "explain", "knowledge_explain", {"id": knowledge["knowledge_id"], "version": 1},
+                ),))
+            assert results["explain"]["recent_evidence"] == [reflection]
+            if "reuse" not in results:
+                profile = knowledge["alternative"]
+                return LLMResponse(content=None, tool_calls=(ToolCall("reuse", "experiment_run", {
+                    "strategy_id": profile["strategy_id"], "config_id": profile["config_id"],
+                }),))
+            return LLMResponse(content="Found prior evidence")
+
+        with patch("agent_runtime.plane_manager.BUILTIN_STRATEGIES", (*BUILTIN_STRATEGIES, self.strategy)):
+            other_plane = other_bridge.host.planes.ensure(other_bridge.host.sessions)
+            with (
+                patch.object(other_plane.provider, "count_input_tokens", return_value=1),
+                patch.object(other_plane.provider, "stream_cancellable", side_effect=reuse_knowledge),
+            ):
+                other_bridge.run_scene_task({"turn_id": "reuse", "scene_input": second_source.name})
+        terminal = emitted(other_stdout)[-1]
+        assert terminal["type"] == "scene_task_completed", terminal
+        assert terminal["task"]["expected_value"] == pytest.approx(16.3)
+        assert terminal["task"]["experiment_id"] != terminal["task"]["baseline_experiment_id"]
+
+
+class TestSceneModes(BridgeTestCase):
+    def test_norethink_runs_only_the_baseline_without_an_agent_or_knowledge(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        bridge, stdout = self.make_bridge([], root)
+        bridge.open_session(open_session_message(root))
+        with (
+            patch.object(bridge.host.planes, "ensure", side_effect=AssertionError("Agent assembly")),
+            patch.object(KnowledgeService, "_connect", side_effect=AssertionError("knowledge access")),
+        ):
+            bridge.run_scene_task({"turn_id": "baseline", "scene_input": "scene1_1.json", "mode": "norethink"})
+
+        terminal = emitted(stdout)[-1]
+        assert terminal["type"] == "scene_task_completed", terminal
+        assert terminal["usage"] is None
+        task = terminal["task"]
+        assert task["mode"] == "norethink"
+        assert task["experiment_id"] == task["baseline_experiment_id"]
+        assert task["expected_value"] == task["baseline_expected_value"]
+        output = root / "output" / "norethink" / "scene1_1.json"
+        assert Path(task["output_path"]) == output
+        assert json.loads(output.read_text(encoding="utf-8")) == {"allocation": [0, 1]}
+        assert not (root / "output" / "rethink").exists()
+        assert not (root / "knowledge.sqlite3").exists()
+        session = bridge.host.sessions.session
+        assert len(session.jobs) == 1
+        assert not session.turns
+        restored = bridge.host.sessions.store.load(session.session_id)
+        assert restored.journal[-1].payload == task
+        assert json.loads(restored.items[0].content)["filename"] == "scene1_1.json"
+
+    def test_unknown_mode_fails_without_assembling_the_agent(self):
+        bridge, stdout = self.make_bridge([])
+        bridge.open_session(open_session_message(bridge.host.config_directory))
+        with patch.object(bridge.host.planes, "ensure", side_effect=AssertionError("Agent assembly")):
+            bridge.run_scene_task({"turn_id": "invalid", "scene_input": "scene1_1.json", "mode": "../rethink"})
+        terminal = emitted(stdout)[-1]
+        assert terminal["type"] == "scene_task_failed"
+        assert terminal["error"]["message"] == "mode must be norethink or rethink"
+
+    def test_queued_baseline_only_task_rejects_steering_and_accepts_cancel(self):
+        bridge, stdout = self.make_bridge([])
+        bridge.open_session(open_session_message(bridge.host.config_directory))
+        bridge.submit({
+            "type": "scene_task_start", "turn_id": "baseline",
+            "scene_input": "scene1_1.json", "mode": "norethink",
+        })
+        bridge.submit({"type": "user_steer", "turn_id": "baseline", "steer_id": "s", "text": "try another profile"})
+        bridge.submit({"type": "cancel", "turn_id": "baseline"})
+        bridge.run_scene_task(bridge.read_message())
+        assert emitted(stdout)[-4]["type"] == "scene_task_received"
+        assert emitted(stdout)[-3]["type"] == "user_steer_rejected"
+        assert emitted(stdout)[-1]["type"] == "scene_task_cancelled"
+        assert not bridge.host.sessions.session.jobs

@@ -118,10 +118,12 @@ export type BackgroundJob = {
   details: Record<string, string>;
 };
 
+export type SceneMode = 'norethink' | 'rethink';
+
 export type SceneTask = {
   task_id: string;
   filename: string;
-  mode: 'rethink';
+  mode: SceneMode;
   scene_digest?: string;
 } & (
   | { status: 'running' }
@@ -263,7 +265,7 @@ export type Outgoing =
       // Omitted to use the provider selected in the configuration file.
       provider?: string;
     }
-  | { type: 'scene_task_start'; turn_id: string; scene_input: string }
+  | { type: 'scene_task_start'; turn_id: string; scene_input: string; mode?: SceneMode }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
   | { type: 'provider_set'; provider: string }
   | { type: 'runtime_refresh' }

@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
-from agent_runtime.scene_input import list_scene_inputs
+from agent_runtime.scene_input import DEFAULT_SCENE_MODE, list_scene_inputs
 from agent_runtime.scene_task_runner import latest_scene_task
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
@@ -117,7 +117,7 @@ class Bridge:
         if message_type == "scene_task_start":
             turn_id = message.get("turn_id")
             if isinstance(turn_id, str):
-                self.host.scene_tasks.enqueue(turn_id)
+                self.host.scene_tasks.enqueue(turn_id, message.get("mode", DEFAULT_SCENE_MODE))
                 self.emit(**scene_task_received_message(turn_id))
         self._messages.put(message)
 
@@ -380,6 +380,7 @@ class Bridge:
         self._checkpoint_turn = turn_id
         outcome = self.host.run_scene_task(
             turn_id, message.get("scene_input"), self._input_directory, self._output_directory,
+            mode=message.get("mode", DEFAULT_SCENE_MODE),
         )
         self._jobs.clear()
         self._emit_runtime_state(

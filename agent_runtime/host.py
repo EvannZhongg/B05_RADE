@@ -6,10 +6,12 @@ from pathlib import Path
 from agent_core import (
     AgentEvent, ContextWindowEvent, UnitCompletedEvent,
 )
+from rade_tasks.knowledge import KnowledgeService
 
 from .callbacks import RuntimeCallbacks
 from .config import load_model_options
 from .plane_manager import ExecutionPlaneManager
+from .scene_input import DEFAULT_SCENE_MODE
 from .scene_task_runner import SceneTaskOutcome, SceneTaskRunner, latest_scene_task
 from .session_controller import SessionRuntimeController
 from .services import RuntimeServices
@@ -35,7 +37,9 @@ class RuntimeHost:
         self.sessions = SessionRuntimeController(
             self.config_directory, services.environment, runtime_callbacks,
         )
-        self.scene_tasks = SceneTaskRunner(runtime_callbacks)
+        self.scene_tasks = SceneTaskRunner(
+            runtime_callbacks, KnowledgeService(self.config_directory / "knowledge.sqlite3"),
+        )
 
     def _require_idle(self) -> None:
         if self.scene_tasks.turn_id is not None:
@@ -90,12 +94,14 @@ class RuntimeHost:
 
     def run_scene_task(
         self, turn_id: str, filename: object, input_directory: Path, output_directory: Path,
+        *, mode: object = DEFAULT_SCENE_MODE,
     ) -> SceneTaskOutcome:
         session, files = self.sessions.session, self.sessions.files
         assert session is not None and files is not None
         return self.scene_tasks.run(
             turn_id, filename, input_directory, output_directory, session, files,
             lambda control: self.planes.ensure(self.sessions, cancellation=control),
+            mode=mode,
         )
 
     def close(self) -> None:

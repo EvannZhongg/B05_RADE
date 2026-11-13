@@ -20,7 +20,7 @@ export const COMMANDS: Command[] = [
   },
   {
     name: '/input',
-    description: 'Select and run a scene from input/',
+    description: 'Select a scene from input/ (rethink or norethink)',
   },
   {
     name: '/model',

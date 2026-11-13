@@ -7,7 +7,6 @@ from typing import Callable
 from agent_core import (
     Agent,
     JobManager,
-    JobStatusEvent,
     MemoryManager,
     MemoryReconciler,
     McpConfig,
@@ -39,6 +38,7 @@ from .execution_plane import ExecutionPlane
 from .experiments import ExperimentRunner
 from .experiment_tools import ExperimentGetTool, ExperimentRunTool, StrategyListTool
 from .instructions import load_runtime_instructions
+from .knowledge_tools import KnowledgeExplainTool, KnowledgeQueryTool, ReflectionProposeTool
 from .plugins import PluginAgent, PluginManager
 from .role_tools import resolve_role_tools
 from .scene_tool import QuerySceneTool, SceneToolContext
@@ -122,6 +122,7 @@ class ExecutionPlaneManager:
             catalog = catalog.extend((
                 *mcp.wait_ready(cancellation), QuerySceneTool(),
                 StrategyListTool(), ExperimentRunTool(), ExperimentGetTool(),
+                KnowledgeQueryTool(), ReflectionProposeTool(), KnowledgeExplainTool(),
             ))
             role_tools = {}
             if agent_config.tools.is_enabled("subagent"):
@@ -224,17 +225,7 @@ class ExecutionPlaneManager:
 
             jobs = JobManager(session.session)
             plane.jobs = jobs
-            jobs.set_update_callback(
-                lambda update: self.callbacks.on_event(
-                    JobStatusEvent(
-                        job_id=update.job_id,
-                        kind=update.kind,
-                        status=update.status,
-                        details=update.details,
-                    ),
-                    update.turn_id,
-                )
-            )
+            jobs.set_update_callback(self.callbacks.on_job_update)
             subagents = self._subagent_runtime(
                 agent_config,
                 catalog,

@@ -20,6 +20,7 @@ from agent_core.hooks import HookRunner
 from agent_core.tools import ToolSet
 
 from .experiment_tools import ExperimentGetTool, ExperimentRunTool, StrategyListTool
+from .knowledge_tools import KnowledgeExplainTool, KnowledgeQueryTool, ReflectionProposeTool
 from .scene_tool import QuerySceneTool, SceneToolContext
 
 if TYPE_CHECKING:
@@ -65,6 +66,9 @@ class ExecutionPlane:
                 StrategyListTool.name,
                 ExperimentRunTool.name,
                 ExperimentGetTool.name,
+                KnowledgeQueryTool.name,
+                ReflectionProposeTool.name,
+                KnowledgeExplainTool.name,
             ),
             context,
         )

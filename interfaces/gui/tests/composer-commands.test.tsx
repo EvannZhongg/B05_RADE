@@ -95,7 +95,7 @@ describe("Scene composer", () => {
     await act(async () => run().click());
     expect(sent.at(-1)).toEqual({
       type: "scene_task_start", turn_id: "turn-1",
-      scene_input: "scene1_1.json",
+      scene_input: "scene1_1.json", mode: "rethink",
     });
   });
 
@@ -107,10 +107,13 @@ describe("Scene composer", () => {
     await act(async () => run().click());
     expect(sent).toEqual([]);
     await receive(snapshot);
+    const mode = container.querySelector<HTMLSelectElement>('[aria-label="反思模式"]')!;
+    mode.value = "norethink";
+    await act(async () => mode.dispatchEvent(new Event("change", { bubbles: true })));
     await act(async () => run().click());
     expect(sent).toEqual([{
       type: "scene_task_start", turn_id: "turn-1",
-      scene_input: "scene2_1.json",
+      scene_input: "scene2_1.json", mode: "norethink",
     }]);
   });
 });

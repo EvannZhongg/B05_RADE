@@ -13,6 +13,7 @@ class ExperimentRecord:
     seed: int
     timeout_seconds: int
     scene_digest: str
+    task_id: str
     status: str
     elapsed_seconds: float | None
     solver_elapsed_seconds: float | None
@@ -29,6 +30,7 @@ def query_experiment(
     experiment = lookup(experiment_id)
     result = asdict(experiment)
     del result["scene_digest"]
+    del result["task_id"]
     del result["allocation_digest"]
     if baseline_experiment_id is None:
         return result

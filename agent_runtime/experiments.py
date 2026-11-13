@@ -41,6 +41,7 @@ class ExperimentRunner:
                 "seed": str(profile.seed),
                 "timeout_seconds": str(profile.timeout_seconds),
                 "scene_digest": scene.digest,
+                "task_id": turn_id,
             },
         )
         return {"experiment_id": handle.job_id, "status": handle.status, "elapsed_seconds": 0.0}
@@ -84,14 +85,25 @@ class ExperimentRunner:
     def allocations(self, scene: SceneInput, experiment_ids: Iterable[str]) -> Iterable[tuple[str, object]]:
         for experiment_id in experiment_ids:
             record = self._record(experiment_id)
-            if record.scene_digest != scene.digest or not record.valid or record.result_ref is None:
-                continue
-            try:
-                data = self._files.resolve_path(record.result_ref).read_bytes()
-            except (OSError, ValueError):
-                continue
-            if sha256(data).hexdigest() == record.allocation_digest:
-                yield experiment_id, json.loads(data)["allocation"]
+            if record.scene_digest == scene.digest:
+                allocation = self._read_allocation(record)
+                if allocation is not None:
+                    yield experiment_id, allocation
+
+    def evidence(self, experiment_id: str) -> tuple[ExperimentRecord, object]:
+        record = self._record(experiment_id)
+        return record, self._read_allocation(record)
+
+    def _read_allocation(self, record: ExperimentRecord) -> object:
+        if not record.valid or record.result_ref is None:
+            return None
+        try:
+            data = self._files.resolve_path(record.result_ref).read_bytes()
+        except (OSError, ValueError):
+            return None
+        if sha256(data).hexdigest() == record.allocation_digest:
+            return json.loads(data)["allocation"]
+        return None
 
     def _record(self, experiment_id: str) -> ExperimentRecord:
         try:
@@ -116,6 +128,7 @@ class ExperimentRunner:
             seed=int(details["seed"]),
             timeout_seconds=int(details["timeout_seconds"]),
             scene_digest=details["scene_digest"],
+            task_id=details["task_id"],
             status=cast(str, summary.get("status", job.status)),
             elapsed_seconds=job.elapsed_seconds,
             solver_elapsed_seconds=cast(float | None, summary.get("solver_elapsed_seconds")),

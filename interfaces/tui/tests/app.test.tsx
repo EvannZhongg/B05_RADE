@@ -279,13 +279,13 @@ describe('App', () => {
     expect(turns()).toHaveLength(0);
     stdin.write('\u001b');
     await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
-    await typeDraft(stdin, lastFrame, '/input');
+    await typeDraft(stdin, lastFrame, '/input norethink');
     stdin.write('\r');
     await waitFor(() => expect(lastFrame()).toContain('❯ ' + sceneFilename));
     stdin.write('\u001b[B');
     await waitFor(() => expect(lastFrame()).toContain('❯ scene2_1.json'));
     stdin.write('\r');
-    await waitFor(() => expect(turns()[0]).toMatchObject({ scene_input: 'scene2_1.json' }));
+    await waitFor(() => expect(turns()[0]).toMatchObject({ scene_input: 'scene2_1.json', mode: 'norethink' }));
   });
 
   it('keeps an opening draft without submitting before runtime synchronization', async () => {

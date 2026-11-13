@@ -171,7 +171,7 @@ pre { overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-famil
 .plan-step small { display: block; margin-top: 1px; color: #929aa8; font-size: 10px; }
 .composer { position: relative; border: 1px solid #dfe4ed; border-radius: 12px; padding: 15px 15px 10px; background: #fff; box-shadow: 0 3px 15px #20385c04; }
 .composer:focus-within { border-color: #a7b5d2; box-shadow: 0 0 0 3px #687fab08; }
-.json-file-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 0 12px; }
+.json-file-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; padding: 8px 0 12px; }
 .json-picker, .json-run { display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; padding: 7px 11px; border: 1px solid #dfe4ed; border-radius: 7px; background: #f3f5f9; color: #40568a; font-size: 12px; cursor: pointer; }
 .json-picker:hover, .runtime-refresh:hover:not(:disabled) { background: #edf1f8; }
 .runtime-refresh { display: grid; place-items: center; flex-shrink: 0; width: 27px; height: 27px; border: 0; border-radius: 6px; background: transparent; color: #647590; cursor: pointer; }

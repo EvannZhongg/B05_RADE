@@ -31,7 +31,7 @@ TUI 与 `RADE-server` 各自管理一个常驻 Bridge 进程。宿主通过协�
 
 Journal 写入权被占用、运行标识或配置无效、文件系统错误导致打开失败时，Bridge 返回 `session_open_failed`，保持协议连接并允许 `list_sessions` 或重新发送 `open_session`。前端在收到 `session_ready` 前不得请求历史记录；在初始 `runtime_state` 前不得提交执行命令。同一应用宿主内打开已有会话会附着原 Bridge，模型变更通过显式协议消息执行，不另建 Session 写者。
 
-Provider、MCP、Tool 和 Agent 仍由 Runtime 在首个 `scene_task_start` 到来时延迟初始化。
+Runtime 在首个 `rethink` 场景任务或显式刷新时装配 Provider、MCP、Tool 和 Agent。`norethink` 任务直接运行基线实验。
 
 每个通道持有独立 RuntimeHost、命令队列、事件序号与用户问题等待者，不同通道并发执行。空闲时可以再次发送 `open_session`，在同一个通道内切换会话。Runtime 释放旧会话的任务和 Journal，按装配输入决定是否复用重型资源；Bridge 重新发送 `session_ready` 和 `runtime_state` 同步新会话。
 

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useExternalStoreRuntime } from "@assistant-ui/react";
-import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase, type SceneTask } from "@rade/protocol";
+import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase, type SceneMode, type SceneTask } from "@rade/protocol";
 import { releaseActiveSession, type ModelOption, type Session } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
@@ -359,7 +359,7 @@ export function useSessionRuntime({
     connect({ attachOnly: true, takeover: true });
   }
 
-  async function submitScene(filename: string): Promise<boolean> {
+  async function submitScene(filename: string, mode: SceneMode): Promise<boolean> {
     if (!canSubmitScene || runtimeIsActive(runtimePhaseRef.current)) return false;
     const startsSession = !itemsRef.current.some(
       (item) => item.role === "user"
@@ -377,7 +377,7 @@ export function useSessionRuntime({
     const socket = socketRef.current ?? connect();
     awaitingSessionActivityRef.current = startsSession;
     try {
-      await socket.sendSceneTask({ type: "scene_task_start", turn_id: activeTurnIdRef.current, scene_input: filename });
+      await socket.sendSceneTask({ type: "scene_task_start", turn_id: activeTurnIdRef.current, scene_input: filename, mode });
     } catch (error) {
       showPendingUserItem(null);
       activeTurnIdRef.current = null;

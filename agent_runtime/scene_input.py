@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from typing import Literal, cast
 from uuid import uuid4
 
 from agent_core import Workspace
@@ -13,6 +14,8 @@ from rade_tasks.scene import SceneState
 
 
 SCENE_FILENAME = re.compile(r"scene[12]_[1-5]\.json")
+SceneMode = Literal["norethink", "rethink"]
+DEFAULT_SCENE_MODE: SceneMode = "rethink"
 
 
 @dataclass(frozen=True)
@@ -20,6 +23,14 @@ class SceneInput:
     text: str
     state: SceneState
     digest: str
+    filename: str
+    source_path: str
+
+
+def validate_scene_mode(mode: object) -> SceneMode:
+    if mode not in ("norethink", "rethink"):
+        raise ValueError("mode must be norethink or rethink")
+    return cast(SceneMode, mode)
 
 
 def list_scene_inputs(input_directory: Path) -> list[str]:
@@ -54,4 +65,4 @@ def prepare_scene_input(input_directory: Path, filename: str, files: Workspace) 
         ensure_ascii=False,
         indent=2,
     )
-    return SceneInput(text, state, sha256(data).hexdigest())
+    return SceneInput(text, state, sha256(data).hexdigest(), filename, source_path)

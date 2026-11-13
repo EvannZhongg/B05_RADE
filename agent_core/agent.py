@@ -193,7 +193,6 @@ class Agent:
         self,
         user_input: str,
         on_event: Callable[[AgentEvent], None] | None = None,
-        attachments: tuple[AttachmentPart, ...] = (),
         turn_id: str | None = None,
         turn_control: TurnControl | None = None,
         input_source: str = "user",
@@ -204,7 +203,6 @@ class Agent:
             result = self._run(
                 user_input,
                 on_event,
-                attachments,
                 turn_id,
                 turn_control,
                 input_source,
@@ -239,7 +237,6 @@ class Agent:
         self,
         user_input: str,
         on_event: Callable[[AgentEvent], None] | None,
-        attachments: tuple[AttachmentPart, ...],
         turn_id: str | None,
         turn_control: TurnControl | None,
         input_source: str,
@@ -287,7 +284,6 @@ class Agent:
             "user",
             user_input,
             timestamp_utc=request_timestamp_utc,
-            attachments=attachments,
         )
         append_hook_feedback(self._session, input_feedback)
         while True:

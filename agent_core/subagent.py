@@ -9,7 +9,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Callable, Iterable
 
 from .config import AgentConfig
-from .content import AttachmentPart
 from .llm import LLMProvider
 from .memory import MemoryManager
 from .prompting import render_subagent_prompt
@@ -173,8 +172,6 @@ class SubagentRuntime:
             tools=tools,
             context=context,
         )
-        # The child receives only the task text plus whatever the parent
-        # was last shown, never the parent's transcript.
         with store.open_journal(session.session_id) as sink:
             session.attach_journal_sink(sink)
             try:
@@ -183,7 +180,6 @@ class SubagentRuntime:
                     on_event=(
                         _SubagentProgress(on_progress) if on_progress is not None else None
                     ),
-                    attachments=_latest_attachments(parent.session),
                     turn_control=(
                         TurnControl(external_cancelled=lambda: cancellation.cancelled)
                         if cancellation is not None
@@ -252,20 +248,3 @@ class _SubagentProgress:
             "recent_tools": [dict(call) for call in self._recent_tools],
             "text": self._text,
         })
-
-
-def _latest_attachments(session: Session) -> tuple[AttachmentPart, ...]:
-    """Return the attachments the parent was last shown by the user.
-
-    Only what the person actually attached is inherited. A message the
-    runtime synthesized to carry a tool's images belongs to the parent's
-    own investigation, and passing it down would both hide the user's
-    real attachment and spend the child's context on an image its task
-    never mentioned.
-    """
-    for item in reversed(session.items):
-        if item.role == "user" and item.origin == "conversation":
-            return tuple(
-                part for part in item.parts if isinstance(part, AttachmentPart)
-            )
-    return ()

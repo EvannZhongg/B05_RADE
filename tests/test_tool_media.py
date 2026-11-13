@@ -10,97 +10,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_core.content import FilePart, ImagePart, TextPart
+from agent_core.content import ImagePart
 from agent_core.session import Message, Session
 from agent_core.session_store import JsonlSessionStore
-from agent_core.subagent import _latest_attachments
-
-
-class ToolMediaInheritanceTest(unittest.TestCase):
-    """A sub-agent inherits the user's attachment, not the parent's."""
-
-    def session_with(self, *items: Message) -> Session:
-        session = Session()
-        session.items.extend(items)
-        return session
-
-    def user_message(self, *parts) -> Message:
-        return Message(role="user", content=tuple(parts))
-
-    def media_message(self, *parts) -> Message:
-        return Message(
-            role="user", content=tuple(parts), origin="tool_media"
-        )
-
-    def test_a_media_message_does_not_shadow_the_user_attachment(self) -> None:
-        """The child's task refers to what the person attached."""
-        session = self.session_with(
-            self.user_message(
-                TextPart(text="compare these"),
-                ImagePart(path="typed.png"),
-            ),
-            Message(role="assistant", content="looking"),
-            self.media_message(
-                TextPart(text="[Tool output]"),
-                ImagePart(path="found.png"),
-            ),
-        )
-
-        self.assertEqual(
-            _latest_attachments(session), (ImagePart(path="typed.png"),)
-        )
-
-    def test_an_interaction_does_not_shadow_the_user_attachment(self) -> None:
-        session = Session()
-        attachment = ImagePart(
-            path="tmp/typed.png",
-            filename="typed.png",
-            size_bytes=123,
-        )
-        session.begin_turn("turn-1")
-        session.add_item(
-            "user",
-            "inspect this",
-            attachments=(attachment,),
-        )
-        session.add_item("assistant", "Which area?")
-        session.record_user_interaction(
-            "Question: Which area?\nUser answer: header",
-            "question_response",
-        )
-
-        self.assertEqual(_latest_attachments(session), (attachment,))
-
-    def test_no_attachment_when_the_user_sent_none(self) -> None:
-        """A tool's image must not be mistaken for a user attachment."""
-        session = self.session_with(
-            self.user_message(TextPart(text="what is in the repo?")),
-            self.media_message(ImagePart(path="found.png")),
-        )
-
-        self.assertEqual(_latest_attachments(session), ())
-
-    def test_the_newest_user_attachment_still_wins(self) -> None:
-        session = self.session_with(
-            self.user_message(ImagePart(path="old.png")),
-            self.media_message(ImagePart(path="found.png")),
-            self.user_message(ImagePart(path="new.png")),
-        )
-
-        self.assertEqual(
-            _latest_attachments(session), (ImagePart(path="new.png"),)
-        )
-
-    def test_a_file_attachment_is_inherited_by_the_child(self) -> None:
-        attachment = FilePart(
-            path="attachments/report.pdf",
-            filename="report.pdf",
-            mime_type="application/pdf",
-            size_bytes=123,
-        )
-        session = self.session_with(self.user_message(attachment))
-
-        self.assertEqual(_latest_attachments(session), (attachment,))
 
 
 class ToolMediaPersistenceTest(unittest.TestCase):

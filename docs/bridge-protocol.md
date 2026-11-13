@@ -1,4 +1,4 @@
-# Public Bridge protocol, major 7
+# Public Bridge protocol, major 8
 
 This is the local client API for third-party frontends. Install `rade-agent`,
 start **`RADE-bridge`** as a child process, and exchange UTF-8 newline-delimited
@@ -17,7 +17,7 @@ There is no fixed small line limit: checkpoints can contain the full transcript.
 
 Protocol 7 selects contest scenes by filename from the Bridge process working directory's `input/`.
 
-Every `session_ready` advertises `protocol_version: 7`. Clients must check this
+Every `session_ready` advertises `protocol_version: 8`. Clients must check this
 before using the session. A breaking change to documented public fields or
 semantics increments this major and is recorded in this document. Additive fields
 and event kinds may appear within a major; ignore unknown fields/events. This is
@@ -30,13 +30,13 @@ an explicit channel, except process startup, fatal transport errors and shutdown
 
 The process initializes configuration and warms the default provider SDK, tokenizer
 and TLS trust context once, without resolving credentials or calling a model. It
-then emits `{"type":"bridge_ready","protocol_version":7}`. A host can start this
+then emits `{"type":"bridge_ready","protocol_version":8}`. A host can start this
 process during application startup and keep it alive across session creation.
 
 Create a channel by sending its first command:
 
 ```json
-{"type":"channel_command","channel_id":"chat-1","command":{"type":"open_session","workspace":"/absolute/workspace","session_id":null}}
+{"type":"channel_command","channel_id":"chat-1","command":{"type":"open_session","session_id":null}}
 ```
 
 All subsequent session commands use that same `channel_command` envelope. Session
@@ -95,19 +95,17 @@ Bridge. Stdio has no `after_event` replay command or reconnect-to-process API.
 Send the opening command first:
 
 ```json
-{"type":"open_session","workspace":"/absolute/workspace","session_id":null}
+{"type":"open_session","session_id":null}
 ```
 
-`session_id: null` creates a session; an existing ID resumes a stored session.
-Use an existing workspace directory accessible to the Bridge. Prefer absolute
-paths; relative paths resolve in the Bridge's cwd. A resumed session's stored
-workspace takes precedence. Optional `provider` selects a configured provider;
-otherwise the stored provider or configured default is used. `provider` is a
-configuration ID, not an arbitrary model name or credential.
+The `session_id` identifies the run directory `.RADE/runs/<run_id>/`.
+Pass `null` to allocate an ID, or an ID to open that run.
+Optional `provider` selects a configured provider. When omitted, the Runtime
+uses the run's saved provider or the application default.
 
 Successful open emits, in order:
 
-1. `session_ready`: protocol major, actual `session_id`, `workspace`, `provider`,
+1. `session_ready`: protocol major, actual `session_id`, `provider`,
    `model`, `resumed`, and `message_count`. Its `transcript`
    contains the restored conversation.
 2. `runtime_state`: the initial authoritative snapshot, initially `inactive`.
@@ -122,13 +120,12 @@ provider credentials. Configure credentials in the installed provider config or
 its referenced environment variables before a model turn; this API does not
 prompt interactively or invent credentials.
 
-Opening failures caused by a writer conflict, invalid workspace/configuration,
+Opening failures caused by a writer conflict, invalid run identifier or configuration,
 or filesystem error emit `session_open_failed` with the requested `session_id`
 (null when creating a session) and `error: {type, message}`. Writer conflicts
 use `type: "SessionInUseError"`. No ready/sync pair follows that failure.
-The channel stays connected; `list_workspaces` or another `open_session` is
-allowed. `list_sessions` is also allowed when a workspace browsing context
-exists. A failed rebind retains the previously opened session and execution
+The channel stays connected and accepts `list_sessions` or another
+`open_session`. A failed rebind retains the previously opened session and execution
 state; the failure event includes its complete `runtime` snapshot and commands
 can continue against that session. An initial opening failure has no retained
 session or runtime snapshot. Unexpected opening errors are fatal. A fresh
@@ -171,8 +168,8 @@ Normal turns still check configuration changes automatically before executing.
 | `failed` | Execution plane startup failed, or a fatal process error occurred. |
 
 The snapshot also includes `turn_id`, `provider`,
-`context_window`, `cache_usage`, `jobs`, `plan`, optional
-`workspace` and `runtime_warnings`. A standalone `runtime_state` or embedded
+`context_window`, `cache_usage`, `jobs`, `plan` and optional
+`runtime_warnings`. A standalone `runtime_state` or embedded
 `runtime` replaces the prior snapshot. Embedded snapshots are complete, not
 patches. Render state from these snapshots; do not infer it from model text,
 Tool messages, commands sent or terminal events. `idle` alone does not complete a
@@ -183,18 +180,16 @@ turn: it is emitted before the terminal event. The process may have queued input
 | Command | Payload / response |
 | --- | --- |
 | `open_session` | Above; `session_ready` then `runtime_state`, or opening failure. |
-| `user_turn` | `turn_id` and either `scene_input` or `text` with optional `attachments`; receipt and execution events below. |
+| `user_turn` | `turn_id` and either `scene_input` or `text`; receipt and execution events below. |
 | `user_steer` | Target `turn_id`, `steer_id`, `text`; received/rejected then applied if consumed. |
 | `cancel` | Target `turn_id`; matching queued/active turn is cancelled cooperatively. No immediate acknowledgment. |
 | `provider_set` | Configured `provider`; `provider_changed` with `provider`, `model`, `runtime`. |
-| `workspace_set` | `workspace`; `workspace_changed` with actual path and `runtime`. |
-| `list_sessions` | `sessions_listed.sessions`: current workspace session summaries. |
-| `list_workspaces` | `workspaces_listed.workspaces`: absolute workspace paths with stored conversation history, most recently active first. |
+| `list_sessions` | `sessions_listed.sessions`: saved run summaries. |
 | `list_input_scenes` | `input_scenes_listed.filenames`: sorted scene filenames in `input/`. The event includes `error` if listing fails. |
 | `load_session` | `session_items.items`: currently bound conversation. |
 | `session_snapshot` | `session_ready` then `runtime_state` for the existing Runtime; preserves its execution plane, Jobs, MCP and Journal writer. |
 
-Responses confirm the Runtime's actual changes. Changing provider/workspace may
+Responses confirm the Runtime's actual changes. Changing the provider may
 also emit `runtime_state: inactive`. Send these changes while idle. Commands other
 than steering and cancellation are serialized behind an active
 turn within that channel. There is no generic RPC or universal request ID. Serialize listing/history requests if matching responses matters.
@@ -202,27 +197,17 @@ Use the opening checkpoint to display initial history; `load_session` is an
 explicit refresh, not a stream replay or cursor acknowledgment.
 The session listing contains stored conversations; a newly opened empty Session
 can be absent from that list.
-The workspace listing uses the same stored conversation groups; empty sessions
-do not register a workspace. Listing does not change the current binding. To
-start chatting in a listed workspace, send `open_session` with its path and
-`session_id: null`, then wait for the ready/sync pair before sending `user_turn`.
-`workspace_set` instead moves the current session into the specified workspace.
-
 Session summaries include `session_id`, `input_preview` (a preview of the first
 user input), and `started_at` (the first run time in UTC).
 
-Attachments are local descriptors `{type: "image" | "file", path, filename,
-mime_type, size_bytes}`. Paths reference files readable by the Runtime under its
-Workspace and Session path rules; there is no binary upload transport. Runtime
-validates actual files and normalizes media metadata. Tool media events reference
-local images by the same convention.
+Tool media events reference files relative to the current run's `files/` directory.
 
 For a contest scene, send `scene_input: "scene1_1.json"`. Runtime reads the UTF-8
 file from `input/` relative to the Bridge process working directory. Filenames
 follow `scene<S>_<I>.json`, with `S` in 1–2 and `I` in 1–5. Runtime validates
 `P` and `v` and derives processing units from the rows of `P` and tasks from
 its columns. The user message contains
-the extracted `T`, `W`, `P`, and `V` features and a workspace-relative
+the extracted `T`, `W`, `P`, and `V` features and a run-relative
 `source_path` for exact calculations. An invalid scene fails the turn before a
 model call.
 
@@ -257,8 +242,8 @@ only `user_steer_applied` means Core consumed it. Accepted steering can remain
 unapplied when the turn ends. Stale cancellation IDs have no effect.
 Do not resubmit after an ambiguous disconnect as though IDs made it idempotent.
 
-Workspace file writes (`apply_patch`, `edit_file`, `write_file`) execute directly
-and resolve paths within the current Workspace.
+File writes (`apply_patch`, `edit_file`, `write_file`) execute directly
+and resolve paths within the current run's `files/` directory.
 Tool errors can include optional structured `details`. An `apply_patch` commit
 failure reports `completed`, `failed`, `pending`, and `cause` there; completed
 operations remain applied. The same details are retained in Session tool results.
@@ -345,9 +330,9 @@ Forced termination cannot guarantee completed persistence.
 
 ```text
 spawn RADE-bridge (pipes)
-receive bridge_ready; check protocol_version == 7
+receive bridge_ready; check protocol_version == 8
 send channel_command(chat-1, open_session)
-receive channel_event(chat-1, session_ready); check protocol_version == 7; apply checkpoint
+receive channel_event(chat-1, session_ready); check protocol_version == 8; apply checkpoint
 receive channel_event(chat-1, runtime_state); apply snapshot
 send channel_command(chat-1, user_turn) with a fresh turn_id
 receive/render events

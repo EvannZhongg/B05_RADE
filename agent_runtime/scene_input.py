@@ -3,13 +3,12 @@
 import json
 import re
 from dataclasses import dataclass
-from io import BytesIO
 from pathlib import Path
+from uuid import uuid4
 
 from agent_core import Workspace
+from agent_core.atomic import atomic_write_bytes
 from rade_tasks.scene import SceneState
-
-from .attachments import store_attachment
 
 
 SCENE_FILENAME = re.compile(r"scene[12]_[1-5]\.json")
@@ -42,20 +41,16 @@ def read_scene_input(input_directory: Path, filename: str) -> bytes:
     return path.read_bytes()
 
 
-def prepare_scene_input(input_directory: Path, filename: object, workspace: Workspace) -> SceneInput:
-    """Build user message text and keep exact source data for workspace tools."""
+def prepare_scene_input(input_directory: Path, filename: object, files: Workspace) -> SceneInput:
+    """Build user message text and retain the exact scene input for file tools."""
     if not isinstance(filename, str):
         raise ValueError("user_turn.scene_input must be a scene filename")
     data = read_scene_input(input_directory, filename)
     state = SceneState(data.decode("utf-8"))
-    source = store_attachment(
-        BytesIO(data),
-        workspace,
-        filename,
-        "application/json",
-    )
+    source_path = f"scenes/{uuid4().hex}/{filename}"
+    atomic_write_bytes(files.resolve_path(source_path), data)
     text = json.dumps(
-        {"filename": source["filename"], "source_path": source["path"], **state.summary()},
+        {"filename": filename, "source_path": source_path, **state.summary()},
         ensure_ascii=False,
         indent=2,
     )

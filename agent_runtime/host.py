@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from agent_core import (
-    AgentEvent, AttachmentPart, ContextWindowEvent, UnitCompletedEvent, Workspace,
+    AgentEvent, ContextWindowEvent, UnitCompletedEvent,
 )
 
 from .callbacks import RuntimeCallbacks
@@ -43,11 +43,11 @@ class RuntimeHost:
         if self.turns.turn_id is not None:
             raise RuntimeError("cannot change runtime during a turn")
 
-    def open_session(self, workspace: Path, session_id: str | None = None,
+    def open_session(self, session_id: str | None = None,
                      provider: str | None = None) -> bool:
         self._require_idle()
-        with self.sessions.open_session(workspace, session_id, provider) as resumed:
-            self.planes.unbind_session()
+        with self.sessions.open_session(session_id, provider) as resumed:
+            self.planes.close()
         return resumed
 
     def change_provider(self, provider: str) -> tuple[bool, str]:
@@ -62,17 +62,6 @@ class RuntimeHost:
             self.planes.close()
             self.sessions.change_provider(provider)
         return changed, models[provider]
-
-    def change_workspace(self, path: Path) -> bool:
-        self._require_idle()
-        if self.sessions.session is None:
-            raise RuntimeError("session is not initialized")
-        workspace = Workspace(path)
-        changed = workspace != self.sessions.workspace
-        if changed:
-            self.planes.close()
-            self.sessions.change_workspace(workspace)
-        return changed
 
     def refresh_runtime(self) -> tuple[str, str]:
         self._require_idle()
@@ -94,13 +83,11 @@ class RuntimeHost:
         self.callbacks.on_event(event, turn_id)
 
     def run_turn(
-        self, turn_id: str, text: str | Callable[[], SceneInput], *,
-        attachments: Callable[[], tuple[AttachmentPart, ...]] = lambda: (),
+        self, turn_id: str, text: str | Callable[[], SceneInput],
     ) -> TurnResult:
         return self.turns.run_turn(
             turn_id, text,
             lambda: self.planes.ensure(self.sessions, cancellation=self.turns.control),
-            attachments,
         )
 
     def close(self) -> None:

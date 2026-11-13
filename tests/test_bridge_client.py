@@ -155,9 +155,9 @@ class ExternalBridgeClientTest(unittest.TestCase):
         return peer
 
     def open(self, peer, session_id=None):
-        peer.send({"type": "open_session", "workspace": str(self.external), "session_id": session_id})
+        peer.send({"type": "open_session", "session_id": session_id})
         ready = peer.until("session_ready")
-        self.assertEqual(ready["protocol_version"], 7)
+        self.assertEqual(ready["protocol_version"], 8)
         self.assertEqual(peer.until("runtime_state")["phase"], "inactive")
         return ready
 

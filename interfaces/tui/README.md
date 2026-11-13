@@ -6,13 +6,9 @@
 
 ```bash
 RADE
-RADE --workspace ~/projects/my-project
-RADE --temporary
 ```
 
-未传 `--workspace` 时使用当前目录。`--temporary` 由 Python 启动器在配置的 `scratch_workspace_root` 下创建持久保留的 RADE-managed Workspace，再把解析后的路径交给 TUI；它不能与 `--workspace` 同时使用。
-
-`interfaces/launch.py` 负责在项目根目录初始化 `.RADE/`、定位 Node 和已构建的 TUI bundle，并通过 `RADE_PYTHON` 告诉前端应使用哪个 Python 解释器启动 Bridge。Bridge 继承启动目录，会话 Workspace 由协议消息单独指定。
+`interfaces/launch.py` 负责在项目根目录初始化 `.RADE/`、定位 Node 和已构建的 TUI bundle，并通过 `RADE_PYTHON` 告诉前端应使用哪个 Python 解释器启动 Bridge。Bridge 继承启动目录，运行记录保存在 `.RADE/runs/<run_id>/`。
 
 ## 交互模型
 
@@ -32,8 +28,8 @@ TUI 在启动或切换 Session 时先发送 `open_session`，收到首个 `runti
 
 | 命令 | 作用 |
 | --- | --- |
-| `/sessions` | 列出并切换当前 Workspace 的历史 Session |
-| `/workspaces` | 列出有历史会话的 Workspace，选择后在目标工作区新建 Session |
+| `/sessions` | 列出并切换历史运行 |
+| `/new` | 新建运行 |
 | `/input` | 从启动目录的 `input/` 选择并运行赛题场景 |
 | `/model` | 切换当前 Session 的 Provider |
 | `/provider` | 查看 Provider、Skill、Plugin 与 MCP 配置概览 |

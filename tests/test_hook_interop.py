@@ -46,8 +46,8 @@ class HookInteropTest(BridgeTestCase):
         }))
         return bridge, stdout
 
-    def install_rule(self, filename, name="rule"):
-        destination = self.root / ".RADE" / f"hookify.{name}.json"
+    def install_rule(self, bridge, filename, name="rule"):
+        destination = bridge.host.sessions.files.path / ".RADE" / f"hookify.{name}.json"
         destination.parent.mkdir(exist_ok=True)
         shutil.copyfile(self.plugin / "examples" / filename, destination)
 
@@ -68,8 +68,8 @@ class HookInteropTest(BridgeTestCase):
             "Suggested rule",
             "Done",
         ])
-        (self.root / "sample.txt").write_text("source")
         bridge, stdout = self.open()
+        (bridge.host.sessions.files.path / "sample.txt").write_text("source")
         bridge.run_turn({"turn_id": "review", "text": "Use hookify"})
         messages = emitted(stdout)
         self.assertTrue(any(message["type"] == "turn_completed" for message in messages), messages)
@@ -80,11 +80,11 @@ class HookInteropTest(BridgeTestCase):
         self.assertEqual(len(self.main.requests), 5)
         self.assertNotIn("_hook_command", bridge.host.planes.current.catalog.names)
         self.assertTrue(all(tool.name != "_hook_command" for request in self.main.requests for tool in request.tools))
-        journals = list((self.root / "sessions").rglob("subagents/*/*.jsonl"))
+        journals = list((self.root / "runs").rglob("subagents/*/*.jsonl"))
         self.assertEqual(len(journals), 1)
         child_events = [json.loads(line) for line in journals[0].read_text(encoding="utf-8").splitlines()]
         self.assertTrue(any(event["payload"].get("input", {}).get("source") == "delegation" for event in child_events))
-        self.assertEqual(len(list((self.root / "sessions").rglob("*.jsonl"))), 2)
+        self.assertEqual(len(list((self.root / "runs").rglob("*.jsonl"))), 2)
 
     def test_rule_edits_apply_next_turn_and_refresh_removes_disabled_hooks(self):
         self.main = MockProvider([
@@ -95,11 +95,11 @@ class HookInteropTest(BridgeTestCase):
         bridge, stdout = self.open()
         bridge.run_turn({"turn_id": "one", "text": "write"})
         plane = bridge.host.planes.current
-        self.assertEqual((self.root / "project/.env").read_text(), "one")
-        self.install_rule("block-sensitive-file.json")
+        self.assertEqual((bridge.host.sessions.files.path / "project/.env").read_text(), "one")
+        self.install_rule(bridge, "block-sensitive-file.json")
         bridge.run_turn({"turn_id": "two", "text": "write again"})
         self.assertIs(bridge.host.planes.current, plane)
-        self.assertEqual((self.root / "project/.env").read_text(), "one")
+        self.assertEqual((bridge.host.sessions.files.path / "project/.env").read_text(), "one")
         self.assertTrue(any(message["type"] == "tool_result" and message["error"] and message["error"]["type"] == "HookDenied" for message in emitted(stdout)))
         manifest = json.loads((self.plugin / "plugin.json").read_text(encoding="utf-8"))
         manifest["enabled"] = False
@@ -109,8 +109,6 @@ class HookInteropTest(BridgeTestCase):
         self.assertNotIn("repo-review-kit:writing-rules", [s.identifier for s in bridge.host.planes.current.skills])
 
     def test_stop_requires_actual_successful_test_and_resets_between_turns(self):
-        self.install_rule("require-tests.json")
-        (self.root / "test_sample.py").write_text("import unittest\nclass Sample(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n")
         self.main = MockProvider([
             "I mention pytest but have not run it.",
             calls(ToolCall("test", "shell", {"command": "python -m unittest"})),
@@ -118,22 +116,24 @@ class HookInteropTest(BridgeTestCase):
             "Next turn", "Still no tests",
         ])
         bridge, stdout = self.open()
+        self.install_rule(bridge, "require-tests.json")
+        (bridge.host.sessions.files.path / "test_sample.py").write_text("import unittest\nclass Sample(unittest.TestCase):\n    def test_ok(self): self.assertTrue(True)\n")
         bridge.run_turn({"turn_id": "test", "text": "test"})
         self.assertTrue(any(message["type"] == "turn_completed" for message in emitted(stdout)), emitted(stdout))
         bridge.run_turn({"turn_id": "next", "text": "new work"})
         failures = [message for message in emitted(stdout) if message["type"] == "turn_failed"]
         self.assertEqual(failures[-1]["error"]["type"], "HookRejectedError")
 
-    def test_session_rebinding_reuses_definitions_without_turn_state(self):
+    def test_run_rebinding_loads_definitions_without_turn_state(self):
         self.main = MockProvider(["first", "second"])
         bridge, _ = self.open()
         bridge.run_turn({"turn_id": "first", "text": "first"})
         plane = bridge.host.planes.current
         first = bridge.host.sessions.session
-        bridge.host.open_session(self.root, session_id="other")
+        bridge.host.open_session(session_id="other")
         result = bridge.host.run_turn("second", "second")
         self.assertEqual(result.status, "completed")
-        self.assertIs(bridge.host.planes.current, plane)
+        self.assertIsNot(bridge.host.planes.current, plane)
         second = bridge.host.sessions.session
         self.assertEqual(len([event for event in first.journal if event.event_type == "hook_finished"]), 2)
         self.assertEqual(len([event for event in second.journal if event.event_type == "hook_finished"]), 2)

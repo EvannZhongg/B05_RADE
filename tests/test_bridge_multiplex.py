@@ -126,7 +126,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         channel = self.bridge.open_channel(key)
         channel.send({**self.opening, "session_id": session_id or key})
         ready, _ = await self.until(channel, "session_ready")
-        self.assertEqual(ready["protocol_version"], 7)
+        self.assertEqual(ready["protocol_version"], 8)
         await self.until(channel, "runtime_state")
         return channel
 
@@ -144,7 +144,7 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
         second.send({"type": "user_turn", "turn_id": "next", "text": "still-alive"})
         await self.until(second, "turn_completed")
         await second.close()
-        store = JsonlSessionStore(self.root / "sessions")
+        store = JsonlSessionStore(self.root / "runs")
         self.assertEqual(store.load("one").turns["same"].status, "cancelled")
         self.assertEqual(store.load("two").turns["same"].status, "completed")
         self.assertEqual([item.content for item in store.load("two").items if item.role == "user"], ["second", "still-alive"])
@@ -174,14 +174,14 @@ class MultiplexBridgeTest(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(await channel.read())
             await channel.close()
 
-    async def test_workspace_relative_tools_use_their_own_session_root(self):
+    async def test_relative_tools_use_their_own_run_files(self):
         channels = []
         for name in ("alpha", "beta"):
-            workspace = self.root / name
-            workspace.mkdir()
+            workspace = self.root / "runs" / name / "files"
+            workspace.mkdir(parents=True)
             (workspace / "marker.txt").write_text(name, encoding="utf-8")
             channel = self.bridge.open_channel(name)
-            channel.send({**self.opening, "session_id": name, "workspace": str(workspace)})
+            channel.send({**self.opening, "session_id": name})
             await self.until(channel, "runtime_state")
             channel.send({"type": "user_turn", "turn_id": "t", "text": "read-workspace"})
             channels.append(channel)

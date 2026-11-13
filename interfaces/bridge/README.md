@@ -26,10 +26,10 @@ TUI 与 `RADE-server` 各自管理一个常驻 Bridge 进程。宿主通过协�
 
 进程预热默认 Provider SDK、tokenizer 与 TLS 信任上下文后发送 `bridge_ready`，不解析凭据或调用模型。每条会话命令以 `channel_command` 携带 `channel_id` 与 `command`，事件以 `channel_event` 携带同一通道 ID 与 `event`。每个通道的第一条命令必须是 `open_session`。Bridge 调用 `RuntimeHost.open_session()` 建立轻量 Session 控制面，然后依次发送：
 
-1. `session_ready`：Session、Workspace 和 Provider 已恢复。
+1. `session_ready`：运行、Session 和 Provider 已恢复。
 2. `runtime_state`：当前执行面的权威快照，也是前端发送后续命令前的同步屏障。
 
-Journal 写入权被占用、工作区或配置无效、文件系统错误导致打开失败时，Bridge 返回 `session_open_failed`，保持协议连接并允许 `list_workspaces` 或重新发送 `open_session`；存在工作区浏览上下文时也允许 `list_sessions`。前端在收到 `session_ready` 前不得请求历史记录；在初始 `runtime_state` 前不得提交执行命令。同一应用宿主内打开已有会话会附着原 Bridge，模型或工作区变更通过显式协议消息执行，不另建 Session 写者。
+Journal 写入权被占用、运行标识或配置无效、文件系统错误导致打开失败时，Bridge 返回 `session_open_failed`，保持协议连接并允许 `list_sessions` 或重新发送 `open_session`。前端在收到 `session_ready` 前不得请求历史记录；在初始 `runtime_state` 前不得提交执行命令。同一应用宿主内打开已有会话会附着原 Bridge，模型变更通过显式协议消息执行，不另建 Session 写者。
 
 Provider、MCP、Tool 和 Agent 仍由 Runtime 在首个 `user_turn` 到来时延迟初始化。
 
@@ -39,12 +39,12 @@ GUI、TUI 和 SDK 都使用这一常驻服务端。TUI 为访问过的会话保�
 
 切换前先取得目标会话的 Journal 并完成加载，成功后才释放原会话的任务与 Journal。切换失败时原会话及执行状态保持可用，`session_open_failed` 携带原会话的 `runtime` 快照；首次打开失败则没有可保留的会话与快照。
 
-`list_workspaces` 复用 Core 的历史会话分组，返回已有会话的工作区路径。选择工作区后发送该路径和 `session_id: null`，即可新建会话并在同步后直接对话；`list_sessions` 继续只列出当前工作区的历史会话。两种入口都通过 `open_session` 完成绑定，不使用会迁移当前会话的 `workspace_set`。
+`list_sessions` 列出已保存的运行。发送 `open_session` 和 `session_id: null` 可创建新运行。
 
 Bridge 路由的输入包括：
 
 - `user_turn`、`user_steer` 和 `cancel`
-- `provider_set` 和 `workspace_set`
+- `provider_set`
 - Session 列表与历史加载
 - 设置读取及 Provider、Agent、路由更新
 - 进程级 `close_channel` 与 `shutdown`，分别关闭一个或全部 Runtime
@@ -55,15 +55,11 @@ Bridge 把 Core 的 `AgentEvent`、Runtime phase、计划、MCP 状态和结束�
 
 Bridge 维护的是协议侧投影，而不是另一套 Runtime 状态。它负责：
 
-- 发布包含 phase、turn、授权、提问、Job、计划、上下文窗口、会话累计缓存用量、Workspace 路径和 Runtime warning 的 `runtime_state`
+- 发布包含 phase、turn、授权、提问、Job、计划、上下文窗口、会话累计缓存用量和 Runtime warning 的 `runtime_state`
 - 为事件分配序号，并发送与会话内容绑定的 transcript 检查点及续传游标
 - 将同步的授权和用户提问等待转换为协议 request / response
 - 把运行中的新输入转发为 steer
 - 把异常转换成结构化 `turn_failed` 或 `fatal`
-
-## Workspace 辅助
-
-`managed_workspaces.py` 提供 RADE 管理的 scratch Workspace 创建、识别与安全删除规则。它由启动器和 GUI 工作区接口复用，不参与 Agent 的 Workspace 文件访问语义。
 
 ## 模块索引
 
@@ -74,6 +70,5 @@ Bridge 维护的是协议侧投影，而不是另一套 Runtime 状态。它负�
 | `bridge.py` | 单通道消息路由、Runtime 回调、交互等待和状态投影 |
 | `protocol.py` | Python 端编解码与 Core event → 协议消息转换 |
 | `event_stream.py` | 事件序号、会话检查点与续传游标 |
-| `managed_workspaces.py` | scratch Workspace 生命周期辅助 |
 
 TypeScript 消息类型位于 [`interfaces/protocol`](../protocol/README.md)。修改消息结构时必须同步 Python 定义、TypeScript 类型、前端处理和相关测试。

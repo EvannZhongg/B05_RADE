@@ -20,8 +20,8 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 `agent_runtime` 是共享的应用 Runtime；Bridge 以 `python -m interfaces.bridge` 作为独立进程运行，由前端宿主启动，是前端与 Runtime 之间的唯一通道，两端用 newline-delimited JSON 交换协议消息。
 
 * 依赖方向为 `interfaces/* → agent_runtime → agent_core` 和 `agent_runtime → rade_tasks`。`agent_core` 不得导入 Runtime、领域模块或 `interfaces`，`agent_runtime` 不得导入 `interfaces`，`rade_tasks` 独立于 Core、Runtime、Bridge 和前端。
-* 驱动 Agent、执行 Tool只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变 Workspace 或 Session 的 Tool。
-* 前端对 Core 的复用仅限只读能力（如 Session 读取、Workspace 路径解析、只读 Tool 的文件列举）；执行语义不得在前端复制。
+* 驱动 Agent、执行 Tool只能经由 Bridge 协议；前端不得运行 Agent Loop，也不得执行会改变运行文件或 Session 的 Tool。
+* 前端对 Core 的复用仅限只读能力（如 Session 读取、运行文件路径解析、只读 Tool 的文件列举）；执行语义不得在前端复制。
 * TUI 与 GUI 共享 Agent Runtime。GUI 宿主通过 `interfaces/session_host.py` 管理 Bridge 进程、活动 Session 和页面附着。
 * `RADE-server`（`interfaces/application_host.py`）在初始化配置前取得配置目录级进程锁，负责启动 Bridge 和 HTTP，并在退出时关闭两者。单实例判断使用该锁。
 * 取消、Session 与 Tool 执行语义只实现一次，不得由两个前端各维护一套。
@@ -51,7 +51,7 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 * 计划状态与跨 Turn 的计划恢复
 * 后台 Jobs 与 Turn 控制（steer、cancel 的语义与终止条件）
 * 媒体与附件处理（图片探测、文本模型的附件路径提示）
-* Workspace Instruction 的数据类型与 fingerprint（读取时机与来源顺序由 `agent_runtime` 决定）
+* Runtime Instruction 的数据类型与 fingerprint（读取时机与来源顺序由 `agent_runtime` 决定）
 * 子 Agent Runtime 与角色注册表
 * Provider 抽象、MCP 客户端机制
 
@@ -66,15 +66,15 @@ GUI (React) ── HTTP / WebSocket ── RADE-server
 `agent_runtime` 是唯一把 Core 拼装成可运行 Runtime 的地方，负责：
 
 * 选择 Provider，读取 `provider_config.json` 与 `agent_config.json`，并处理配置写入
-* 初始化配置目录、安装内置 Skill 与 Plugin、读取 Prompt 模板与 Workspace Instructions
+* 初始化配置目录、安装内置 Skill 与 Plugin、读取 Prompt 模板与 Runtime Instructions
 * 组装 Tool Catalog、按角色 select、注入宿主命令执行器
 * MCP Server 生命周期
 * 发现 Plugin：把其声明的 Skill、MCP 与 Agent 组件加 namespace 后交给对应子系统
 * 子 Agent 角色注册表
-* Workspace 绑定、Session 存储位置、取消与持久化时机
-* 一次装配由一个 `ExecutionPlaneManager` 原子持有；Provider、Workspace、配置或 Instructions 变化时整体重建
+* 按 `.RADE/runs/<run_id>/` 存储 Session Journal、运行配置与中间产物。现阶段沿用 Session ID 作为 run ID，文件 Tool 的根目录为运行目录下的 `files/`。
+* 一次装配由一个 `ExecutionPlaneManager` 原子持有；运行、Provider、配置或 Instructions 变化时整体重建
 * 交互 Turn 生命周期（含取消与 steer）
-* 场景输入适配由 `agent_runtime/scene_input.py` 负责，包含文件访问、原始附件保存和消息组装。场景任务接入 Runtime 后，由 Runtime 调用领域逻辑，并接入现有 Agent 执行、Session 持久化和取消机制。
+* 场景输入适配由 `agent_runtime/scene_input.py` 负责，包含文件访问、场景快照保存和消息组装。场景任务接入 Runtime 后，由 Runtime 调用领域逻辑，并接入现有 Agent 执行、Session 持久化和取消机制。
 
 约束：
 
@@ -110,7 +110,7 @@ Bridge 把 `AgentEvent` 与运行状态翻译为协议消息，并转发用户�
 
 * 所有工具使用统一接口和注册机制。
 * Tool 本身只负责自身能力，不包含 Agent 决策逻辑。
-* Shell 和命令 Hook 使用当前用户的宿主权限执行，文件修改通过内置文件 Tool 的 Workspace 路径规则。
+* Shell 和命令 Hook 使用当前用户的宿主权限执行，文件修改通过内置文件 Tool 的 运行文件路径规则。
 * 不允许模型绕过 Tool 系统直接执行系统操作。
 * Tool 的输入、输出和错误应使用结构化数据。
 * 输出超出预算的 Tool 由 Runtime 落盘为 Session Artifact，前端不参与截断或存储决策。

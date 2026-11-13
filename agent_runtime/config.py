@@ -23,7 +23,7 @@ PROMPT_FILENAMES = (
     "Soul.md",
     "SubAgent.md",
     "Consolidator.md",
-    "WorkspaceMemory.md",
+    "RunMemory.md",
 )
 
 
@@ -43,35 +43,15 @@ class PromptTemplates:
     system: str
     subagent: str
     consolidator: str
-    workspace_memory: str
+    run_memory: str
 
 
 def default_config_directory() -> Path:
     return Path.cwd() / ".RADE"
 
 
-def load_scratch_workspace_root(path: Path) -> Path:
-    with path.open(encoding="utf-8") as file:
-        document = json.load(file)
-    if not isinstance(document, dict):
-        raise ValueError(f"configuration must be a JSON object: {path}")
-    value = document.get("scratch_workspace_root")
-    if value is None:
-        raise ValueError(
-            "missing required config field 'scratch_workspace_root' in "
-            f"{path}; add a path such as 'workspaces/scratch'"
-        )
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(
-            "config field 'scratch_workspace_root' must be a non-empty "
-            f"path in {path}"
-        )
-    root = Path(value.strip()).expanduser()
-    return (path.parent / root).resolve()
-
-
 def memory_store(directory: Path) -> MemoryStore:
-    return MemoryStore(directory / "sessions")
+    return MemoryStore(directory / "runs")
 
 
 def load_runtime_skills(directory: Path, plugins: "PluginManager") -> SkillRegistry:
@@ -163,8 +143,8 @@ def load_prompt_templates(directory: Path) -> PromptTemplates:
         consolidator=(
             (directory / "Consolidator.md").read_text(encoding="utf-8").strip()
         ),
-        workspace_memory=(
-            (directory / "WorkspaceMemory.md").read_text(encoding="utf-8").strip()
+        run_memory=(
+            (directory / "RunMemory.md").read_text(encoding="utf-8").strip()
         ),
     )
 

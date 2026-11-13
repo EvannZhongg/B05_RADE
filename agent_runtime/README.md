@@ -1,6 +1,6 @@
 # Agent Runtime
 
-`agent_runtime` 是 RADE 唯一的应用 Runtime 装配层。它读取应用配置和 Workspace 状态，把 [`agent_core`](../agent_core/README.md) 的机制组装成 Bridge 可调用的运行实例，但不实现 Agent 决策逻辑。
+`agent_runtime` 是 RADE 唯一的应用 Runtime 装配层。它读取应用配置和运行状态，把 [`agent_core`](../agent_core/README.md) 的机制组装成 Bridge 可调用的运行实例，但不实现 Agent 决策逻辑。
 
 ## Runtime 入口
 
@@ -8,7 +8,7 @@
 
 ```text
 RuntimeHost
-├── SessionRuntimeController   Session、Workspace、Provider 与计划
+├── SessionRuntimeController   运行、Session、Provider 与计划
 ├── ExecutionPlaneManager     Agent、Tool、MCP 连接、Memory、Job 等原子装配
 └── TurnRunner                turn、steer、cancel 与结束结果
 ```
@@ -21,13 +21,13 @@ RuntimeHost
 
 `ExecutionPlane` 持有一次完整执行所需的对象：
 
-- Workspace 与选定的 Provider 名称
+- 运行文件目录与选定的 Provider 名称
 - 已解析的 Agent 配置及配置 fingerprint
-- Workspace Instructions 及其 fingerprint
+- Runtime Instructions 及其 fingerprint
 - 已装配的 Agent（含其 Tool）与执行路由
 - Memory、MCP Client Manager、后台 Job 和上下文窗口
 
-`ExecutionPlaneManager.ensure()` 在首个 `user_turn` 到来时延迟装配。复用条件是 Workspace、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
+`ExecutionPlaneManager.ensure()` 在首个 `user_turn` 到来时延迟装配。复用条件是运行、Provider 名称、解析后的 Agent 配置、配置 fingerprint、Instructions fingerprint 与有效 MCP 配置全部一致；任一变化时旧 plane 整体关闭并在下一次使用时重新创建。关闭时由执行面关闭其 MCP 连接及 stdio 子进程。
 
 空闲时可调用 `RuntimeHost.refresh_runtime()` 显式强制重新装配，即使上述输入未变化也会重建执行面，重新读取 Prompt、Skill、Plugin Agent，并重连 MCP、重新发现工具。该操作保留当前 Session、Journal 和 Plan，不调用模型、不创建 Turn；结果通过 `starting → idle/failed` 反馈。装配失败不会发布半成品，可修正后再次刷新；旧执行面关闭后的失败不恢复旧资源。正常 Turn 仍沿用原有变更检测。
 
@@ -35,7 +35,7 @@ RuntimeHost
 
 - 创建当前 Session 选中的主 Provider
 - 使用 OpenAI SDK 按配置装配 Chat Completions 或 Responses
-- 为执行面建立一个以当前 Workspace 为工作目录的宿主命令执行器
+- 为执行面建立一个以当前运行的 `files/` 为工作目录的宿主命令执行器
 - 从内置 Catalog 按主 Agent 和子 Agent 角色选择 Tool
 - 注入 Session、Plan、Memory、命令执行器、图片和用户交互能力
 - 加载 standalone Skill、Plugin Skill、Plugin Agent 与 MCP Server
@@ -48,11 +48,11 @@ RuntimeHost
 
 Manager 在后台线程中并发连接 Server，装配其他依赖后通过 `wait_ready()` 获取经过 allowlist 过滤的 `McpTool`。启动超时或失败仅将对应 Server 标记为 unavailable；工具名冲突仅拒绝冲突 Server 的整组工具，不留下部分注册结果。
 
-主 Agent 与子 Agent 通过同一执行面的 Tool Catalog 和上下文调用 MCP，取消走共享的 Turn 控制。相同装配输入下切换 Session 可复用执行面；Provider、Workspace、配置、Instructions 或有效 MCP 配置变化时，旧执行面连同 MCP 连接一起关闭，随后重新启动和发现工具。
+主 Agent 与子 Agent 通过同一执行面的 Tool Catalog 和上下文调用 MCP，取消走共享的 Turn 控制。切换运行时重建执行面。Provider、配置、Instructions 或有效 MCP 配置变化时，旧执行面连同 MCP 连接一起关闭，随后重新启动和发现工具。
 
-Server 初始化返回的 `instructions` 由 Manager 在成功注册时保存为执行面内的固定快照。主 Agent 与子 Agent 按实际选出的 MCP ToolSet 取得相关 Server 的完整说明，在创建 Agent 时追加到 system prompt 的 Workspace Instructions 与 Skill 目录之后、Memory 和压缩摘要之前。说明保留 Server 身份及原文，不另行列举工具名，不覆盖执行、授权或任务约束；无可见工具、无说明或注册失败的 Server 不注入。说明顺序不受连接完成顺序影响，不随 Turn、计划或 Jobs 更新，也不由历史压缩摘要替代。
+Server 初始化返回的 `instructions` 由 Manager 在成功注册时保存为执行面内的固定快照。主 Agent 与子 Agent 按实际选出的 MCP ToolSet 取得相关 Server 的完整说明，在创建 Agent 时追加到 system prompt 的 Runtime Instructions 与 Skill 目录之后、Memory 和压缩摘要之前。说明保留 Server 身份及原文，不另行列举工具名，不覆盖执行、授权或任务约束；无可见工具、无说明或注册失败的 Server 不注入。说明顺序不受连接完成顺序影响，不随 Turn、计划或 Jobs 更新，也不由历史压缩摘要替代。
 
-stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace；Plugin Server 的 cwd 由 PluginLoader 解析到 Plugin 根目录。streamable HTTP 直接使用当前 Runtime 的环境与配置 headers。
+stdio 的相对 cwd 基于运行文件目录解析，未配置时使用该目录；Plugin Server 的 cwd 由 PluginLoader 解析到 Plugin 根目录。streamable HTTP 直接使用当前 Runtime 的环境与配置 headers。
 
 ### 子 Agent 的 MCP 选择
 
@@ -80,7 +80,7 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 
 `SessionRuntimeController` 在 `open_session` 时完成轻量控制面初始化：
 
-- 创建或恢复 Session，并绑定 Workspace
+- 创建或恢复运行与 Session
 - 选择显式、Session 已保存或默认的 Provider
 - 连接 append-only Journal sink
 - 恢复计划
@@ -106,18 +106,16 @@ stdio 的相对 cwd 基于 Workspace 解析，未配置时使用当前 Workspace
 | 路径 | 用途 |
 | --- | --- |
 | `provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
-| `agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Instructions 与 scratch Workspace |
+| `agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Instructions |
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
-| `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`WorkspaceMemory.md` |
+| `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`RunMemory.md` |
 | `skills/` | standalone Skill |
 | `plugins/` | Plugin 安装目录 |
-| `AGENTS.md` | 项目级 Workspace Instruction |
+| `AGENTS.md` | 应用级运行指令 |
 
 初始化时从仓库内的 [`defaults/`](defaults) 补齐缺失的配置、Prompt 和 Skill，并创建用于手动安装插件的 `plugins/` 目录。
 
 Skill 仅从配置目录下的 `skills/` 和 `plugins/` 加载，默认分别为 `.RADE/skills/` 和 `.RADE/plugins/`。先注册 standalone Skill，再注册启用的插件通过 `plugin.json` 声明的 Skill。插件 Skill 使用 `<plugin>:<skill>` 标识，同一标识保留最先注册的 Skill。
-
-`scratch_workspace_root` 的相对路径以配置目录为基准，默认为 `workspaces/scratch`。
 
 子 Agent（含插件角色）、上下文压缩和长期记忆合并共用当前 Session 选中的主 Provider。上下文压缩复用原请求前缀。压缩和记忆调用直接写入所属 Session 的 JSONL Journal，记录实际模型、任务、状态、耗时和用量，不进入对话上下文；子 Agent 调用保存在子 Session 中。模型请求超时和额外重试次数来自 `agent_config.json` 的 `provider` 字段。
 
@@ -141,16 +139,9 @@ Qwen 和 Ollama 预设使用 Chat Completions。使用本地 Ollama 时，请将
 
 GUI HTTP API 和 Bridge 设置消息都复用该服务。
 
-## Workspace Instructions
+## Runtime Instructions
 
-`instructions.py` 在每个执行面检查点读取：
-
-1. `.RADE/AGENTS.md`
-2. `agent_config.json.workspace_instruction_files` 指定的 Workspace 根目录文件
-
-默认 Workspace 文件为 `CLAUDE.md` 和 `AGENTS.md`。来源按上述顺序从高到低排列；只读取 Workspace 根目录，不递归子目录，也不向父目录搜索。
-
-内容进入主 Agent 与子 Agent 的 system context，不写入会话 transcript，也不参与历史压缩。文件内容或配置列表变化会改变 fingerprint，并触发 Execution Plane 重建。
+`instructions.py` 读取 `.RADE/AGENTS.md`，以内容和来源计算 fingerprint。指令进入主 Agent 与子 Agent 的 system prompt。修改后在下一个执行面检查点重新装配。
 
 ## Plugin 与扩展发现
 
@@ -183,9 +174,9 @@ GUI HTTP API 和 Bridge 设置消息都复用该服务。
 standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plugin 专用执行路径。
 装配、静态校验、错误隔离与文件变更的完整边界见 [Plugin 组件互通](../docs/plugin-interop.md)。
 
-## 附件
+## 运行目录
 
-`attachments.py` 负责 GUI 上传落盘、文件命名和图片格式探测，并验证提交的附件位于当前 Workspace。Runtime 将附件转换为 Core 的 `ImagePart` 或 `FilePart`。`read_image` 产生的图片作为模型观察结果写入 Journal，并通过 `tool_media` 事件发给前端。
+`.RADE/runs/<run_id>/` 保存当前运行。现阶段协议的 `session_id` 即 `run_id`。目录根部存放 JSONL Journal、`session.json`、记忆和子 Agent 记录。文件工具和 Shell 以 `files/` 为工作目录，场景输入快照、工具超长输出及求解文件都在其中。Runtime 启动场景 Turn 时将只读 `SceneState` 绑定到该 Turn 的 `query_scene`。
 
 ## 模块索引
 
@@ -195,14 +186,14 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 | `services.py` | 进程内共享的配置服务、环境重载与 Settings |
 | `execution_plane.py` | 一次原子装配的资源容器 |
 | `plane_manager.py` | Execution Plane 创建、复用、失效与关闭 |
-| `session_controller.py` | Session、Workspace、Provider 与计划绑定 |
+| `session_controller.py` | 运行、Session、Provider 与计划绑定 |
 | `turn_runner.py` | Turn、steer、cancel 和结果 |
 | `role_tools.py` | 把角色声明在装配完成的 Catalog 与 MCP 选择上展开为 ToolSet |
 | `config.py` | 配置目录初始化、Provider 与 Prompt 读取 |
 | `settings.py` | 配置快照、校验、写入和 fingerprint |
 | `plugins.py` | Plugin manifest、Skill、MCP、Agent 与 Hook component 发现 |
-| `instructions.py` | Workspace Instructions 来源读取与 fingerprint |
-| `attachments.py` | 入站附件解析 |
+| `instructions.py` | Runtime Instructions 来源读取与 fingerprint |
+| `scene_input.py` | 场景输入、快照与用户消息 |
 | `callbacks.py` | Runtime 对宿主的回调接口 |
 
 ## Plugin Hooks

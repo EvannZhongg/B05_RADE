@@ -16,7 +16,7 @@ from agent_core import (
     SubagentRuntime,
     HostCommandExecutor,
     Workspace,
-    WorkspaceInstructions,
+    RuntimeInstructions,
     builtin_catalog,
     load_agent_config,
     merge_mcp_servers,
@@ -36,7 +36,7 @@ from .config import (
     memory_store,
 )
 from .execution_plane import ExecutionPlane
-from .instructions import load_workspace_instructions
+from .instructions import load_runtime_instructions
 from .plugins import PluginAgent, PluginManager
 from .role_tools import resolve_role_tools
 from .scene_tool import QuerySceneTool, SceneToolContext
@@ -61,8 +61,7 @@ class ExecutionPlaneManager:
     ) -> ExecutionPlane:
         if (
             session.session is None
-            or session.store is None
-            or session.workspace is None
+            or session.files is None
             or session.provider_name is None
         ):
             raise RuntimeError("received 'user_turn' before 'open_session'")
@@ -72,11 +71,7 @@ class ExecutionPlaneManager:
         config_fingerprint = configuration_fingerprint(
             self._config_directory
         )
-        instructions = load_workspace_instructions(
-            self._config_directory,
-            session.workspace,
-            agent_config.workspace_instruction_files,
-        )
+        instructions = load_runtime_instructions(self._config_directory)
         plugins = PluginManager.discover(self._config_directory / "plugins")
         plugin_mcp_servers, mcp_warnings = (
             plugins.load_mcp_servers() if agent_config.mcp.enabled else ((), ())
@@ -89,29 +84,27 @@ class ExecutionPlaneManager:
         if (
             not force and plane is not None and plane.mcp.config == mcp_config
             and plane.matches(
-                workspace=session.workspace,
+                files=session.files,
                 provider_name=session.provider_name,
                 agent_config=agent_config,
                 configuration_fingerprint=config_fingerprint,
                 instructions=instructions,
             )
         ):
-            if plane.agent is None:
-                self._bind_session(plane, session)
             return plane
         if plane is not None:
             self.close()
 
         self.callbacks.on_phase("starting", ())
         config_path = self._config_path
-        workspace = session.workspace
+        files = session.files
         config = load_config(config_path, session.provider_name)
         plugin_agents, agent_warnings = plugins.load_agents()
         hook_definitions, hook_warnings = plugins.load_hooks()
         from agent_core.mcp.manager import McpClientManager
 
         mcp = McpClientManager(
-            mcp_config, workspace.path,
+            mcp_config, files.path,
             on_status=self.callbacks.on_mcp_status,
         )
         with ExitStack() as startup:
@@ -120,7 +113,7 @@ class ExecutionPlaneManager:
             skills = load_runtime_skills(self._config_directory, plugins)
             prompts = load_prompt_templates(self._config_directory / "prompts")
 
-            main_provider = self._provider_for(config, workspace, agent_config)
+            main_provider = self._provider_for(config, files, agent_config)
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
             catalog = builtin_catalog()
@@ -154,7 +147,7 @@ class ExecutionPlaneManager:
                 resolved_agents.append(agent)
 
             plane = ExecutionPlane(
-                workspace=workspace,
+                files=files,
                 provider_name=session.provider_name,
                 agent_config=agent_config,
                 configuration_fingerprint=config_fingerprint,
@@ -164,7 +157,7 @@ class ExecutionPlaneManager:
                 skills=skills,
                 prompts=prompts,
                 plugin_agents=tuple(resolved_agents),
-                command_executor=HostCommandExecutor(workspace.path),
+                command_executor=HostCommandExecutor(files.path),
                 mcp=mcp,
                 hooks=HookRunner(hook_definitions),
                 role_tools=role_tools,
@@ -186,7 +179,7 @@ class ExecutionPlaneManager:
     def _bind_session(self, plane: ExecutionPlane, session: SessionRuntimeController) -> None:
         try:
             agent_config = plane.agent_config
-            workspace = plane.workspace
+            files = plane.files
             if session.session is None:
                 raise RuntimeError("session is not initialized")
             main_provider = plane.provider
@@ -200,8 +193,8 @@ class ExecutionPlaneManager:
             memory_context = None
             if agent_config.memory.enabled:
                 store = memory_store(self._config_directory)
-                store.initialize(workspace.path)
-                memory_context = store.load(workspace.path)
+                store.initialize(session.session.session_id)
+                memory_context = store.load(session.session.session_id)
             memory = None
 
             def create_memory(
@@ -209,12 +202,12 @@ class ExecutionPlaneManager:
             ) -> MemoryManager:
                 assert store is not None
                 return MemoryManager(
-                    workspace.path,
+                    session.session.session_id,
                     store,
                     MemoryReconciler(
                         main_provider,
-                        workspace_prompt=prompts.workspace_memory,
-                        workspace_max_tokens=agent_config.memory.workspace_max_tokens,
+                        prompt=prompts.run_memory,
+                        max_tokens=agent_config.memory.max_tokens,
                         on_auxiliary_call=partial(
                             owner.auxiliary_model_completed, model=main_provider.model_name,
                         ),
@@ -249,9 +242,9 @@ class ExecutionPlaneManager:
                 create_memory if store is not None else None,
             )
             context = SceneToolContext(
-                workspace=workspace,
+                workspace=files,
                 session=session.session,
-                sessions_directory=session.sessions_directory,
+                run_directory=files.path.parent,
                 command_executor=plane.command_executor,
                 vision_input=(
                     "image" in main_provider.capabilities.input_modalities
@@ -271,7 +264,6 @@ class ExecutionPlaneManager:
                 session=session.session,
                 system_prompt=render_system_prompt(
                     prompts.system,
-                    workspace,
                     skills,
                     instructions=instructions,
                     mcp_instructions=mcp.instructions_for(
@@ -289,19 +281,13 @@ class ExecutionPlaneManager:
             plane.tool_context = context
             plane.context_window = agent.context_window()
         except BaseException:
-            if self.current is plane:
-                self.current = None
             plane.close()
             raise
-
-    def unbind_session(self) -> None:
-        if self.current is not None:
-            self.current.unbind_session()
 
     def _provider_for(
         self,
         config: ModelConfig,
-        workspace: Workspace,
+        files: Workspace,
         agent_config,
     ) -> LLMProvider:
         from agent_core.providers import OpenAIProvider
@@ -312,7 +298,7 @@ class ExecutionPlaneManager:
             base_url=config.url,
             api_key=config.key,
             max_context_tokens=config.max_context_tokens,
-            media_root=workspace.path,
+            media_root=files.path,
             request_timeout_seconds=(
                 agent_config.provider.request_timeout_seconds
             ),
@@ -328,7 +314,7 @@ class ExecutionPlaneManager:
         provider: LLMProvider,
         subagent_prompt_template: str,
         consolidator_prompt: str,
-        workspace_instructions: WorkspaceInstructions,
+        runtime_instructions: RuntimeInstructions,
         plugin_agents: tuple[PluginAgent, ...],
         role_tools: dict[str, tuple[str, ...]],
         memory_factory: Callable[[Session], MemoryManager] | None,
@@ -366,7 +352,7 @@ class ExecutionPlaneManager:
             roles=registry,
             subagent_prompt_template=subagent_prompt_template,
             consolidator_prompt=consolidator_prompt,
-            workspace_instructions=workspace_instructions,
+            runtime_instructions=runtime_instructions,
             memory_factory=memory_factory,
         )
 

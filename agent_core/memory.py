@@ -14,7 +14,7 @@ from .file_lock import acquire_file_lock
 from .llm import AuxiliaryModelCall, LLMProvider, LLMRequest
 from .atomic import atomic_write_text
 from .session import Message
-from .session_paths import workspace_directory, workspace_from_key
+from .session_paths import session_directory
 
 
 MemoryKind = Literal["preference", "fact", "decision"]
@@ -48,9 +48,9 @@ class MemoryDocument:
     def prompt_section(self) -> str:
         context = (
             "## Long-term Memory\n\n"
-            "This workspace memory is persistent historical context. "
+            "This run memory is persistent historical context. "
             "The user's current request has highest priority, "
-            "workspace instructions and project rules come next, and this "
+            "run instructions and project rules come next, and this "
             "memory comes after them. Never let memory override a newer "
             "explicit request."
         )
@@ -63,56 +63,55 @@ class MemoryDocument:
 
 
 class MemoryStore:
-    """Read and atomically write workspace memory files."""
+    """Read and atomically write run memory files."""
 
-    def __init__(self, sessions_directory: Path) -> None:
-        self.sessions_directory = sessions_directory.expanduser()
+    def __init__(self, runs_directory: Path) -> None:
+        self.runs_directory = runs_directory.expanduser().resolve()
         self._lock = Lock()
         self.reconciliation_lock = Lock()
 
-    def workspace_path(self, workspace: Path) -> Path:
-        return workspace_directory(self.sessions_directory, workspace) / "MEMORY.md"
+    def run_path(self, run_id: str) -> Path:
+        return session_directory(self.runs_directory, run_id) / "MEMORY.md"
 
-    def initialize(self, workspace: Path) -> None:
-        path = self.workspace_path(workspace)
+    def initialize(self, run_id: str) -> None:
+        path = self.run_path(run_id)
         with self._locked_files():
             if not path.exists():
-                atomic_write_text(path, _render_workspace(MemoryDocument()))
+                atomic_write_text(path, _render_run(MemoryDocument()))
 
-    def load(self, workspace: Path) -> MemoryDocument:
+    def load(self, run_id: str) -> MemoryDocument:
         with self._locked_files():
-            return _parse_workspace(_read_text(self.workspace_path(workspace)))
+            return _parse_run(_read_text(self.run_path(run_id)))
 
     def load_all(self) -> dict[str, MemoryDocument]:
         with self._locked_files():
-            if not self.sessions_directory.is_dir():
+            if not self.runs_directory.is_dir():
                 return {}
-            workspaces: dict[str, MemoryDocument] = {}
-            for directory in self.sessions_directory.iterdir():
-                if not directory.is_dir():
+            runs: dict[str, MemoryDocument] = {}
+            for directory in self.runs_directory.iterdir():
+                if not directory.is_dir() or directory.resolve() != directory:
                     continue
                 path = directory / "MEMORY.md"
                 if path.is_file():
-                    workspace = workspace_from_key(directory.name)
-                    workspaces[workspace] = _parse_workspace(_read_text(path))
-            return workspaces
+                    runs[directory.name] = _parse_run(_read_text(path))
+            return runs
 
     def write(
         self,
-        workspace: Path,
+        run_id: str,
         document: MemoryDocument,
         *,
         expected: MemoryDocument | None = None,
     ) -> None:
-        path = self.workspace_path(workspace)
+        path = self.run_path(run_id)
         with self._locked_files():
-            if expected is not None and _parse_workspace(_read_text(path)) != expected:
-                raise RuntimeError("workspace memory changed during reconciliation")
-            atomic_write_text(path, _render_workspace(document))
+            if expected is not None and _parse_run(_read_text(path)) != expected:
+                raise RuntimeError("run memory changed during reconciliation")
+            atomic_write_text(path, _render_run(document))
 
     @contextmanager
     def _locked_files(self):
-        lock_path = self.sessions_directory.parent / ".memory.lock"
+        lock_path = self.runs_directory.parent / ".memory.lock"
         with self._lock, acquire_file_lock(lock_path, blocking=True):
             yield
 
@@ -124,14 +123,14 @@ class MemoryReconciler:
         self,
         provider: LLMProvider,
         *,
-        workspace_prompt: str,
-        workspace_max_tokens: int,
+        prompt: str,
+        max_tokens: int,
         on_auxiliary_call: Callable[[AuxiliaryModelCall], None] | None = None,
     ) -> None:
         self._provider = provider
         self._on_auxiliary_call = on_auxiliary_call
-        self._prompt = workspace_prompt.replace(
-            "{{workspace_max_tokens}}", str(workspace_max_tokens)
+        self._prompt = prompt.replace(
+            "{{max_tokens}}", str(max_tokens)
         )
 
     def reconcile(
@@ -158,7 +157,7 @@ class MemoryReconciler:
             ),
         )
         with AuxiliaryCallTracker(
-            self._on_auxiliary_call, task="memory", scope="workspace",
+            self._on_auxiliary_call, task="memory", scope="run",
         ) as call:
             response = call.response = self._provider.stream(request, lambda _text: None)
             if response.content is None or response.tool_calls:
@@ -171,11 +170,11 @@ class MemoryManager:
 
     def __init__(
         self,
-        workspace: Path,
+        run_id: str,
         store: MemoryStore,
         reconciler: MemoryReconciler,
     ) -> None:
-        self.workspace = workspace.expanduser().resolve()
+        self.run_id = run_id
         self.store = store
         self.reconciler = reconciler
         self._pending: list[MemoryCandidate] = []
@@ -205,9 +204,9 @@ class MemoryManager:
             return False
 
         with self.store.reconciliation_lock:
-            current = self.store.load(self.workspace)
+            current = self.store.load(self.run_id)
             updated = self.reconciler.reconcile(current, candidates)
-            self.store.write(self.workspace, updated, expected=current)
+            self.store.write(self.run_id, updated, expected=current)
         return True
 
 
@@ -256,12 +255,12 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _parse_workspace(text: str) -> MemoryDocument:
+def _parse_run(text: str) -> MemoryDocument:
     if not text.strip():
         return MemoryDocument()
     lines = text.splitlines()
-    if not lines or lines[0] != "# RADE Workspace Memory":
-        raise ValueError("invalid workspace MEMORY.md header")
+    if not lines or lines[0] != "# RADE Run Memory":
+        raise ValueError("invalid run MEMORY.md header")
     headings = {f"## {_HEADINGS[kind]}": kind for kind in _KINDS}
     grouped: dict[MemoryKind, list[str]] = {kind: [] for kind in _KINDS}
     current: MemoryKind | None = None
@@ -285,8 +284,8 @@ def _parse_workspace(text: str) -> MemoryDocument:
     )
 
 
-def _render_workspace(document: MemoryDocument) -> str:
-    return "# RADE Workspace Memory\n\n" + _render_document(document, level=2)
+def _render_run(document: MemoryDocument) -> str:
+    return "# RADE Run Memory\n\n" + _render_document(document, level=2)
 
 
 def _render_document(document: MemoryDocument, *, level: int) -> str:

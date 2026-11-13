@@ -134,7 +134,7 @@ class OpenAIProviderTest(unittest.TestCase):
             result = provider.stream(self.request(), lambda _: None)
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                store = JsonlSessionStore(root / "sessions")
+                store = JsonlSessionStore(root / "runs")
                 session = Session("test-session")
                 session.begin_turn("turn-1")
                 session.add_item("user", "ping")
@@ -142,8 +142,8 @@ class OpenAIProviderTest(unittest.TestCase):
                                  provider_data=result.provider_data)
                 session.add_item("tool", "pong", tool_call_id="call_1")
                 session.finish_turn("completed")
-                store.bind_workspace(session.session_id, root)
-                store.append_events(session.session_id, session.journal, workspace=root)
+
+                store.append_events(session.session_id, session.journal)
                 restored = store.load(session.session_id)
                 self.assertEqual(restored.items[1].provider_data, result.provider_data)
                 self.assertNotIn("provider_data", message_to_dict(restored.items[1], include_provider_data=False))

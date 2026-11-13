@@ -16,26 +16,19 @@ import { initialState, reducer, type State } from './state.js';
 
 export type AppProps = {
   python: string;
-  workspace: string;
 };
 
 type SessionSelection = {
-  workspace: string;
   sessionId: string | null;
   channelId: string;
 };
-
-/** Keep Windows paths unambiguous on the newline-delimited JSON channel. */
-function protocolPath(path: string): string {
-  return path.replaceAll('\\', '/');
-}
 
 export function App(props: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { rows } = useWindowSize();
   const [state, dispatch] = useReducer(reducer, initialState);
   const [draft, setDraft] = useState('');
-  const [selection, setSelection] = useState<SessionSelection>({ workspace: props.workspace, sessionId: null, channelId: 'session-1' });
+  const [selection, setSelection] = useState<SessionSelection>({ sessionId: null, channelId: 'session-1' });
   const [settingsMode, setSettingsMode] = useState<'model' | 'provider' | null>(null);
   const [modelChoice, setModelChoice] = useState(0);
   const [elapsed, setElapsed] = useState(0);
@@ -72,7 +65,7 @@ export function App(props: AppProps): React.ReactElement {
         dispatch({ type: 'message', message });
         if (message.type === 'session_ready') client.send({ type: 'load_session' }, channelId);
         if (message.type === 'session_open_failed') {
-          client.send({ type: message.error.type === 'SessionInUseError' ? 'list_sessions' : 'list_workspaces' }, activeChannel.current);
+          client.send({ type: 'list_sessions' }, activeChannel.current);
         }
       },
       onChannelClosed: (channelId) => {
@@ -108,7 +101,7 @@ export function App(props: AppProps): React.ReactElement {
       bridgeRef.current = null;
       client.shutdown();
     };
-  }, [props.python, props.workspace]);
+  }, [props.python]);
 
   useEffect(() => {
     const client = bridgeRef.current;
@@ -118,11 +111,10 @@ export function App(props: AppProps): React.ReactElement {
     } else {
       client.send({
         type: 'open_session',
-        workspace: protocolPath(selection.workspace),
         session_id: selection.sessionId,
       }, selection.channelId);
     }
-  }, [selection, props.python, props.workspace]);
+  }, [selection, props.python]);
 
   function send(message: Outgoing): void {
     bridgeRef.current?.send(message, activeChannel.current);
@@ -156,7 +148,7 @@ export function App(props: AppProps): React.ReactElement {
     setModelChoice(index >= 0 ? index : 0);
   }, [settingsMode, state.provider, state.settings]);
 
-  const openSession = (workspace: string, sessionId: string | null): void => {
+  const openSession = (sessionId: string | null): void => {
     const current = currentState.current;
     if (current.sessionId !== null) {
       previousView.current = { channelId: activeChannel.current, state: current };
@@ -167,7 +159,7 @@ export function App(props: AppProps): React.ReactElement {
     const channelId = existing ?? `session-${++channelCounter.current}`;
     activeChannel.current = channelId;
     dispatch({ type: 'session_opening' });
-    setSelection({ workspace, sessionId, channelId });
+    setSelection({ sessionId, channelId });
   };
 
   useInput(
@@ -202,12 +194,9 @@ export function App(props: AppProps): React.ReactElement {
           send({ type: 'user_turn', turn_id: turnId, scene_input: filename });
           dispatch({ type: 'picker_closed' });
           dispatch({ type: 'submit', turnId, text: filename });
-        } else if (picker.kind === 'workspaces') {
-          const workspace = picker.list[picker.selectedIndex];
-          if (workspace) openSession(workspace, null);
         } else {
           const session = picker.list[picker.selectedIndex];
-          if (session) openSession(state.workspace || selection.workspace, session.session_id);
+          if (session) openSession(session.session_id);
         }
       }
     },
@@ -277,7 +266,7 @@ export function App(props: AppProps): React.ReactElement {
     if (state.status === 'opening') return;
     const command = parseCommand(value)?.command.name;
     if (!command) return;
-    if (state.status === 'session_unavailable' && command !== '/sessions' && command !== '/workspaces') return;
+    if (state.status === 'session_unavailable' && command !== '/sessions' && command !== '/new') return;
     if (inputBusy && command !== '/model' && command !== '/provider') return;
     setDraft('');
     if (command === '/input') {
@@ -286,9 +275,8 @@ export function App(props: AppProps): React.ReactElement {
     } else if (command === '/sessions') {
       send({ type: 'list_sessions' });
       dispatch({ type: 'picker_opened', kind: 'sessions' });
-    } else if (command === '/workspaces') {
-      send({ type: 'list_workspaces' });
-      dispatch({ type: 'picker_opened', kind: 'workspaces' });
+    } else if (command === '/new') {
+      openSession(null);
     } else if (command === '/model') {
       if (busy) return;
       setSettingsMode('model');
@@ -308,7 +296,7 @@ export function App(props: AppProps): React.ReactElement {
       <Box flexGrow={1} flexShrink={1} flexDirection="column" overflowY="hidden">
         {state.status !== 'opening' && state.entries.length === 0 ? (
           <Box flexShrink={0}>
-            <Text dimColor>RADE · {state.workspace}</Text>
+            <Text dimColor>RADE</Text>
           </Box>
         ) : null}
 
@@ -338,7 +326,7 @@ export function App(props: AppProps): React.ReactElement {
           focus
           busy={inputBusy}
           docked
-          commands={state.status === 'session_unavailable' ? COMMANDS.filter((command) => command.name === '/sessions' || command.name === '/workspaces') : COMMANDS}
+          commands={state.status === 'session_unavailable' ? COMMANDS.filter((command) => command.name === '/sessions' || command.name === '/new') : COMMANDS}
           placeholder={inputBusy ? 'Enter / for commands' : 'Enter /input to select a scene'}
         />
       )}

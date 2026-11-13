@@ -6,7 +6,7 @@ from functools import partial
 from threading import Lock
 from typing import Callable, Literal
 
-from agent_core import AgentCancelled, AttachmentPart, TokenUsage, TurnControl, runtime_error_info
+from agent_core import AgentCancelled, TokenUsage, TurnControl, runtime_error_info
 from agent_core.errors import RuntimeErrorInfo
 
 from .callbacks import RuntimeCallbacks
@@ -65,7 +65,6 @@ class TurnRunner:
         turn_id: str,
         text: str | Callable[[], SceneInput],
         ensure_plane: Callable[[], ExecutionPlane],
-        attachments: Callable[[], tuple[AttachmentPart, ...]],
     ) -> TurnResult:
         control = TurnControl()
         with self._lock:
@@ -102,7 +101,6 @@ class TurnRunner:
                 text,
                 turn_id=turn_id,
                 turn_control=control,
-                attachments=attachments(),
                 on_event=lambda event: self.callbacks.on_event(event, turn_id),
             )
             if memory is not None:

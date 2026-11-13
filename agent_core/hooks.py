@@ -175,8 +175,7 @@ class HookRunner:
                 "args": [expand(arg) for arg in definition.args],
             }))
             diagnostics = ToolResultNormalizer(
-                context.workspace, context.session.session_id,
-                sessions_directory=context.sessions_directory,
+                context.workspace,
                 artifact_directory=context.artifact_directory,
             ).normalize(result)
             if result.error is not None:

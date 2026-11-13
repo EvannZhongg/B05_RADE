@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from agent_core import JsonlSessionStore, Workspace
+from agent_core import JsonlSessionStore
 from agent_core.file_lock import acquire_file_lock
 from agent_runtime.config import default_config_directory, initialize_config_directory
 from agent_runtime.settings import SettingsStore
@@ -28,11 +28,9 @@ def application_lock(directory: Path) -> Iterator[None]:
 class ApplicationHost:
     def __init__(
         self,
-        workspace: Workspace,
         store: JsonlSessionStore,
         settings: SettingsStore,
     ) -> None:
-        self.workspace = workspace
         self.store = store
         self.settings = settings
         self.active_sessions = ActiveSessionRegistry(store, settings.directory)
@@ -49,7 +47,7 @@ class ApplicationHost:
             ) from error
 
         await serve_http(
-            self.workspace, self.store, self.settings, self.active_sessions,
+            self.store, self.settings, self.active_sessions,
         )
 
     async def serve(self) -> None:
@@ -61,18 +59,15 @@ class ApplicationHost:
 
 
 def run_application_host(
-    workspace: Path, config_directory: Path,
+    config_directory: Path,
 ) -> None:
     directory = config_directory.expanduser().resolve()
     with application_lock(directory):
         initialize_config_directory(directory)
-        selected_workspace = Workspace(workspace)
         host = ApplicationHost(
-            selected_workspace,
-            JsonlSessionStore(directory / "sessions"),
+            JsonlSessionStore(directory / "runs"),
             SettingsStore(directory),
         )
-        print(f"Workspace: {selected_workspace.path}")
         asyncio.run(host.serve())
 
 
@@ -85,14 +80,13 @@ def _interrupt(_signum: int, _frame: object) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="RADE-server")
     parser.add_argument("--config-directory", type=Path, default=default_config_directory())
-    parser.add_argument("--workspace", type=Path, default=Path.cwd())
     args = parser.parse_args(argv)
     signals = [signal.SIGTERM]
     if os.name == "nt":
         signals.append(signal.SIGBREAK)
     handlers = {sig: signal.signal(sig, _interrupt) for sig in signals}
     try:
-        run_application_host(args.workspace, args.config_directory)
+        run_application_host(args.config_directory)
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError, RuntimeError, ImportError) as error:

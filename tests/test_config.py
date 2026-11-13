@@ -15,7 +15,6 @@ from agent_runtime.config import (
     load_config,
     load_model_options,
     load_prompt_templates,
-    load_scratch_workspace_root,
     memory_store,
 )
 from agent_runtime.plugins import PluginManager
@@ -73,46 +72,9 @@ class ConfigTest(unittest.TestCase):
         store = memory_store(Path("/config"))
 
         self.assertEqual(
-            store.sessions_directory,
-            Path("/config/sessions"),
+            store.runs_directory,
+            Path("/config/runs").resolve(),
         )
-
-    def test_loads_and_expands_scratch_workspace_root(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "agent_config.json"
-            path.write_text(
-                json.dumps({"scratch_workspace_root": "~/scratch"}),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(
-                load_scratch_workspace_root(path),
-                Path("~/scratch").expanduser().resolve(),
-            )
-
-    def test_resolves_relative_scratch_workspace_root_from_config_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "agent_config.json"
-            path.write_text(
-                json.dumps({"scratch_workspace_root": "workspaces/scratch"}),
-                encoding="utf-8",
-            )
-
-            self.assertEqual(
-                load_scratch_workspace_root(path),
-                path.parent.resolve() / "workspaces" / "scratch",
-            )
-
-    def test_missing_scratch_workspace_root_has_an_actionable_error(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "agent_config.json"
-            path.write_text("{}", encoding="utf-8")
-
-            with self.assertRaisesRegex(
-                ValueError,
-                "missing required config field 'scratch_workspace_root'.*add a path",
-            ):
-                load_scratch_workspace_root(path)
 
     def test_initializes_packaged_default_configs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -129,7 +91,7 @@ class ConfigTest(unittest.TestCase):
                     config_directory / "prompts" / "Soul.md",
                     config_directory / "prompts" / "SubAgent.md",
                     config_directory / "prompts" / "Consolidator.md",
-                    config_directory / "prompts" / "WorkspaceMemory.md",
+                    config_directory / "prompts" / "RunMemory.md",
                     config_directory / "skills" / "plugin-creator",
                     config_directory / "skills" / "skill-creator",
                 ),
@@ -157,15 +119,7 @@ class ConfigTest(unittest.TestCase):
                 agent_config["provider"],
                 {"request_timeout_seconds": 300, "max_retries": 2},
             )
-            self.assertEqual(
-                agent_config["scratch_workspace_root"],
-                "workspaces/scratch",
-            )
             self.assertTrue(agent_config["mcp"]["enabled"])
-            self.assertEqual(
-                agent_config["workspace_instruction_files"],
-                ["CLAUDE.md", "AGENTS.md"],
-            )
             self.assertNotIn("skills", agent_config)
             self.assertEqual(
                 (config_directory / "AGENTS.md").read_text(encoding="utf-8"),
@@ -188,7 +142,7 @@ class ConfigTest(unittest.TestCase):
             self.assertIn("maximizes expected completed task value", prompts.system)
             self.assertIn("{{role}}", prompts.subagent)
             self.assertIn("compact replacement checkpoint", prompts.consolidator)
-            self.assertIn("currently bound workspace", prompts.workspace_memory)
+            self.assertIn("current run", prompts.run_memory)
             skill_directory = config_directory / "skills" / "skill-creator"
             self.assertTrue((skill_directory / "SKILL.md").is_file())
             self.assertTrue((skill_directory / "license.txt").is_file())
@@ -239,7 +193,7 @@ class ConfigTest(unittest.TestCase):
                     config_directory / "agent_config.json",
                     config_directory / "prompts" / "SubAgent.md",
                     config_directory / "prompts" / "Consolidator.md",
-                    config_directory / "prompts" / "WorkspaceMemory.md",
+                    config_directory / "prompts" / "RunMemory.md",
                     config_directory / "skills" / "plugin-creator",
                 ),
             )
@@ -271,7 +225,7 @@ class ConfigTest(unittest.TestCase):
             prompts.mkdir()
             for filename in (
                 "Soul.md", "SubAgent.md", "Consolidator.md",
-                "WorkspaceMemory.md",
+                "RunMemory.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
 
@@ -313,7 +267,7 @@ class ConfigTest(unittest.TestCase):
             prompts.mkdir()
             for filename in (
                 "Soul.md", "SubAgent.md", "Consolidator.md",
-                "WorkspaceMemory.md",
+                "RunMemory.md",
             ):
                 (prompts / filename).write_text(filename, encoding="utf-8")
 

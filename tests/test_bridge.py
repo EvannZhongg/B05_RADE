@@ -51,7 +51,6 @@ from agent_core.session_paths import session_directory
 from agent_core.projection import project_context_units
 from agent_core.providers import ModelProvider
 from agent_core.tools.config import ROLE_TOOL_NAMES, TOOL_NAMES
-from agent_runtime.attachments import parse_attachments as _parse_attachments
 from agent_runtime.host import RuntimeHost
 from agent_runtime.execution_plane import ExecutionPlane
 from interfaces.bridge.protocol import (
@@ -76,70 +75,6 @@ class ExecutionPlaneTest(unittest.TestCase):
         self.assertIs(ExecutionPlane.__hash__, object.__hash__)
 
 
-class AttachmentParsingTest(unittest.TestCase):
-    def test_parses_an_arbitrary_file_from_its_actual_workspace_state(self) -> None:
-        from agent_core import FilePart
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / ".RADE" / "attachments" / "data.bin"
-            path.parent.mkdir(parents=True)
-            path.write_bytes(b"binary data")
-
-            attachments = _parse_attachments(
-                [
-                    {
-                        "type": "file",
-                        "path": ".RADE/attachments/data.bin",
-                        "filename": "source.xlsx",
-                        "mime_type": "application/vnd.ms-excel",
-                        "size_bytes": 1,
-                    }
-                ],
-                Workspace(root),
-            )
-
-        self.assertEqual(
-            attachments,
-            (
-                FilePart(
-                    path=".RADE/attachments/data.bin",
-                    filename="source.xlsx",
-                    mime_type="application/vnd.ms-excel",
-                    size_bytes=11,
-                ),
-            ),
-        )
-
-    def test_image_bytes_override_a_file_type_claim(self) -> None:
-        from agent_core import ImagePart
-        from tests.image_fixtures import png_bytes
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / ".RADE" / "attachments" / "upload.bin"
-            path.parent.mkdir(parents=True)
-            path.write_bytes(png_bytes(4, 3))
-
-            attachments = _parse_attachments(
-                [
-                    {
-                        "type": "file",
-                        "path": ".RADE/attachments/upload.bin",
-                        "filename": "diagram.bin",
-                        "mime_type": "application/octet-stream",
-                        "size_bytes": 1,
-                    }
-                ],
-                Workspace(root),
-            )
-
-        self.assertEqual(attachments[0].type, "image")
-        self.assertIsInstance(attachments[0], ImagePart)
-        self.assertEqual(attachments[0].mime_type, "image/png")
-        self.assertEqual(attachments[0].filename, "diagram.bin")
-
-
 class ProtocolTest(unittest.TestCase):
     def test_initial_runtime_state_contract_and_independent_arrays(self) -> None:
         expected = {
@@ -158,10 +93,10 @@ class ProtocolTest(unittest.TestCase):
     def test_initial_runtime_state_preserves_attachment_context(self) -> None:
         totals = {"input_tokens": 100, "cache_read_tokens": 60}
         state = inactive_runtime_state(
-            provider="second", workspace="/workspace", cache_usage=totals, event_sequence=0,
+            provider="second", cache_usage=totals, event_sequence=0,
         )
         self.assertEqual(state, {
-            **inactive_runtime_state(), "provider": "second", "workspace": "/workspace",
+            **inactive_runtime_state(), "provider": "second",
             "cache_usage": totals, "event_sequence": 0,
         })
 
@@ -409,7 +344,6 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             session_ready_message(
                 session_id="s1",
-                workspace="/tmp/work",
                 provider="test",
                 model="test/model",
                 resumed=False,
@@ -417,9 +351,8 @@ class ProtocolTest(unittest.TestCase):
             ),
             {
                 "type": "session_ready",
-                "protocol_version": 7,
+                "protocol_version": 8,
                 "session_id": "s1",
-                "workspace": "/tmp/work",
                 "provider": "test",
                 "model": "test/model",
                 "resumed": False,
@@ -511,33 +444,29 @@ class DirectExecutionTest(BridgeTestCase):
         for name in ("apply_patch", "edit_file", "write_file"):
             with self.subTest(tool=name):
                 root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-                target = root / "file.txt"
-                target.write_bytes(b"old\n")
                 bridge, _ = self.make_bridge([], root)
                 bridge.open_session(open_session_message(root, agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": [],
                     "main_agent": {"tools": {name: True}},
                 }))
                 plane = bridge.host.planes.ensure(bridge.host.sessions)
 
+                target = bridge.host.sessions.files.path / "file.txt"
+                target.write_bytes(b"old\n")
                 result = plane.agent._tools.execute(write_call(name))
 
                 self.assertIsNone(result.error)
                 self.assertEqual(target.read_bytes(), b"new\n")
 
-    def test_shell_uses_the_workspace_as_cwd_and_can_write_outside_it(self) -> None:
+    def test_shell_uses_run_files_as_cwd_and_can_write_outside_it(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        workspace = root / "workspace"
-        workspace.mkdir()
         bridge, _ = self.make_bridge([], root)
-        bridge.open_session({**open_session_message(root, agent_config={
+        bridge.open_session(open_session_message(root, agent_config={
             "max_same_tool_calls": 5,
             "output_reserve_tokens": 100,
-            "workspace_instruction_files": [],
             "main_agent": {"tools": {"shell": True}},
-        }), "workspace": str(workspace)})
+        }))
         plane = bridge.host.planes.ensure(bridge.host.sessions)
         command = (
             "Set-Content -NoNewline -LiteralPath ../outside.txt -Value host"
@@ -549,40 +478,27 @@ class DirectExecutionTest(BridgeTestCase):
 
         self.assertIsNone(result.error)
         self.assertEqual(result.output["exit_code"], 0, result.output)
-        self.assertEqual((root / "outside.txt").read_text(encoding="utf-8"), "host")
+        self.assertEqual((bridge.host.sessions.files.path.parent / "outside.txt").read_text(encoding="utf-8"), "host")
 
 
 class BridgeConfigurationTest(BridgeTestCase):
     def test_bridge_changes_session_configuration_without_initializing_runtime(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        next_workspace = root / "next"
-        next_workspace.mkdir()
+
+
         bridge, stdout = self.make_bridge([], root)
         bridge.open_session(open_session_message(root, session_id="s"))
 
         bridge._set_provider({"type": "provider_set", "provider": "second"})
-        bridge._set_workspace(
-            {"type": "workspace_set", "workspace": str(next_workspace)}
-        )
-
         self.assertIsNone(bridge.host.planes.current)
         self.assertEqual(
-            JsonlSessionStore(root / "sessions").provider_for("s"),
+            JsonlSessionStore(root / "runs").provider_for("s"),
             "second",
         )
         self.assertEqual(
-            bridge.host.sessions.workspace.path,
-            next_workspace.resolve(),
-        )
-        self.assertEqual(
-            [message["type"] for message in emitted(stdout)[-4:]],
-            [
-                "provider_changed",
-                "runtime_state",
-                "workspace_changed",
-                "runtime_state",
-            ],
+            [message["type"] for message in emitted(stdout)[-2:]],
+            ["provider_changed", "runtime_state"],
         )
 
     def test_provider_change_closes_the_execution_plane_once(self) -> None:
@@ -611,39 +527,6 @@ class BridgeConfigurationTest(BridgeTestCase):
         self.assertIsNone(bridge.host.planes.current)
         close_jobs.assert_called_once_with()
         close_mcp.assert_called_once_with()
-
-    def test_workspace_change_closes_the_execution_plane_once(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        next_workspace = root / "next"
-        next_workspace.mkdir()
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(open_session_message(root, session_id="s"))
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-
-        with (
-            patch.object(
-                plane.jobs,
-                "close",
-                wraps=plane.jobs.close,
-            ) as close_jobs,
-            patch.object(
-                plane.mcp,
-                "close",
-                wraps=plane.mcp.close,
-            ) as close_mcp,
-        ):
-            bridge._set_workspace(
-                {
-                    "type": "workspace_set",
-                    "workspace": str(next_workspace),
-                }
-            )
-
-        self.assertIsNone(bridge.host.planes.current)
-        close_jobs.assert_called_once_with()
-        close_mcp.assert_called_once_with()
-
 
 class BridgeInteractionTest(BridgeTestCase):
     def test_runtime_state_contains_only_the_jobs_that_are_running(self) -> None:
@@ -712,7 +595,6 @@ class BridgeCancellationTest(BridgeTestCase):
                             lambda: SimpleNamespace(
                                 agent=WaitingAgent(), memory=None, computer=None, runtime_warnings=(),
                             ),
-                            lambda: (),
                         ))
                     except BaseException as error:
                         errors.append(error)
@@ -750,67 +632,23 @@ class BridgeCancellationTest(BridgeTestCase):
 
 
 class BridgeServeTest(BridgeTestCase):
-    def test_lists_workspaces_without_changing_the_open_session(self) -> None:
+    def test_lists_runs_without_changing_the_open_session(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        other = root / "other"
-        other.mkdir()
-        store = JsonlSessionStore(root / "sessions")
-        for workspace, session_id in ((root, "root-history"), (other, "other-history")):
+        store = JsonlSessionStore(root / "runs")
+        for session_id in ("first", "second"):
             session = Session(session_id)
             session.add_item("user", session_id)
-            store.bind_workspace(session_id, workspace)
-            store.append_events(session_id, session.journal, workspace=workspace)
-        opening = open_session_message(root)
+            store.append_events(session_id, session.journal)
+        opening = open_session_message(root, session_id="first")
         bridge, output = self.make_bridge([
             json.dumps(opening),
-            json.dumps({"type": "list_workspaces"}),
             json.dumps({"type": "list_sessions"}),
             json.dumps({"type": "shutdown"}),
         ], root)
         bridge.serve()
         messages = emitted(output)
-        self.assertEqual([message["type"] for message in messages], [
-            "session_ready", "runtime_state", "workspaces_listed", "sessions_listed",
-        ])
-        self.assertEqual(set(messages[2]["workspaces"]), {str(root.resolve()), str(other.resolve())})
-        self.assertEqual(messages[3]["sessions"], store.list_workspace_sessions(root))
-        self.assertEqual(bridge.host.sessions.workspace.path, root.resolve())
-        self.assertIsNone(bridge.host.planes.current)
-
-    def test_failed_workspace_open_allows_listing_and_opening_another_workspace(self) -> None:
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        opening = open_session_message(root, workspace=str(root / "deleted"))
-        bridge, output = self.make_bridge([
-            json.dumps(opening),
-            json.dumps({"type": "list_workspaces"}),
-            json.dumps({**opening, "workspace": str(root)}),
-            json.dumps({"type": "load_session"}),
-            json.dumps({"type": "shutdown"}),
-        ], root)
-        bridge.serve()
-        messages = emitted(output)
-        self.assertEqual([message["type"] for message in messages], [
-            "session_open_failed", "workspaces_listed", "session_ready", "runtime_state", "session_items",
-        ])
-        self.assertIsNone(messages[0]["session_id"])
-        self.assertEqual(messages[0]["error"]["type"], "ValueError")
-        self.assertEqual(messages[1]["workspaces"], [])
-        self.assertEqual(messages[2]["workspace"], str(root.resolve()))
-        self.assertEqual(messages[-1]["items"], [])
-
-    def test_stops_on_shutdown(self) -> None:
-        bridge, _ = self.make_bridge(['{"type": "shutdown"}'])
-        bridge.serve()
-
-    def test_stops_at_end_of_input(self) -> None:
-        bridge, _ = self.make_bridge([])
-        bridge.serve()
-
-    def test_does_not_swallow_an_external_keyboard_interrupt(self) -> None:
-        bridge, _ = self.make_bridge([])
-        with patch.object(bridge, "read_message", side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                bridge.serve()
+        self.assertEqual(messages[-1]["sessions"], store.list_sessions())
+        self.assertEqual(bridge.host.sessions.session.session_id, "first")
 
     def test_rejects_turn_before_open_session(self) -> None:
         bridge, _ = self.make_bridge(
@@ -825,20 +663,20 @@ class BridgeServeTest(BridgeTestCase):
             bridge.serve()
         self.assertEqual(emitted(stdout)[0]["type"], "fatal")
 
-    def test_answers_the_workspace_sessions_and_the_stored_conversation(
+    def test_answers_the_saved_runs_and_the_stored_conversation(
         self,
     ) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        store = JsonlSessionStore(root / "sessions")
+        store = JsonlSessionStore(root / "runs")
         session = Session("saved")
         session.begin_turn("t")
         session.add_item("user", "hello there")
         session.add_item("assistant", "hi")
         session.finish_turn("completed")
-        store.bind_workspace(session.session_id, root)
+
         store.append_events(
-            session.session_id, session.journal, workspace=root
+            session.session_id, session.journal
         )
 
         bridge, stdout = self.make_bridge(
@@ -1000,7 +838,7 @@ class InterruptedTurnTest(BridgeTestCase):
             for message in emitted(self.stdout)
             if message["type"] == "session_ready"
         )
-        self.store = JsonlSessionStore(self.root / "sessions")
+        self.store = JsonlSessionStore(self.root / "runs")
         session = self.bridge.host.sessions.session
         assert session is not None
         self.session = session
@@ -1079,8 +917,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(completed[0]["cache_usage"], totals)
         self.assertEqual(completed[0]["runtime"]["cache_usage"], totals)
         self.assertLess(completed[0]["event_sequence"], message["event_sequence"])
-        workspace = str(self.bridge.host.sessions.workspace.path)
-        self.bridge.open_session({"workspace": workspace, "session_id": self.session_id})
+        self.bridge.open_session({"session_id": self.session_id})
         self.assertEqual(emitted(self.stdout)[-1]["cache_usage"], totals)
 
     def test_running_checkpoint_contains_new_user_input_and_prior_turns(self) -> None:
@@ -1148,7 +985,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertAlmostEqual(features["P"]["positive_probability_mean"], 1.6 / 3, places=6)
         self.assertEqual(features["V"]["total_value"], 35)
         self.assertEqual(features["V"]["top_10_percent_value_share"], 0.714286)
-        source = self.root / features["source_path"]
+        source = self.bridge.host.sessions.files.path / features["source_path"]
         self.assertEqual(source.read_bytes(), text.encode("utf-8"))
         self.assertEqual(list(source.parent.iterdir()), [source])
         messages = emitted(self.stdout)
@@ -1159,7 +996,7 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(messages[-1]["type"], "turn_failed")
         self.assertEqual(messages[-1]["turn_id"], "invalid")
         self.assertIn("must be an array of length 2", messages[-1]["error"]["message"])
-        summary, = self.store.list_workspace_sessions(self.root)
+        summary, = self.store.list_sessions()
         self.assertIn("scene1_1.json", summary["input_preview"])
         self.assertEqual(
             summary["started_at"],
@@ -1272,7 +1109,7 @@ class InterruptedTurnTest(BridgeTestCase):
         completed = emitted(self.stdout)[-1]
         self.assertEqual(completed["type"], "turn_completed")
         self.assertEqual(completed["usage"]["input_tokens"], 100)
-        self.bridge.open_session({"workspace": str(self.root), "session_id": self.session_id})
+        self.bridge.open_session({"session_id": self.session_id})
         self.assertEqual(emitted(self.stdout)[-1]["cache_usage"],
                          {"input_tokens": 1700, "cache_read_tokens": 1350})
 
@@ -1552,7 +1389,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertEqual([item.content for item in gui.host.sessions.store.load("gui-session").items], ["GUI history"])
         for session_id in ("gui-session", "tui-session"):
             with self.assertRaises(SessionInUseError):
-                with JsonlSessionStore(root / "sessions").open_journal(session_id):
+                with JsonlSessionStore(root / "runs").open_journal(session_id):
                     pass
 
     def test_failed_target_preparation_preserves_the_current_binding(self) -> None:
@@ -1563,16 +1400,18 @@ class BridgeSessionOpenTest(BridgeTestCase):
         original = bridge.host.sessions.session
         original.add_item("user", "original history")
         plan = bridge.host.sessions.plan
-        for change in ({"workspace": str(root / "missing")}, {"provider": "unknown"}):
+        for change in ({"session_id": "../escape"}, {"provider": "unknown"}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 bridge.open_session({**opening, "session_id": "target", **change})
             self.assertIs(bridge.host.sessions.session, original)
             self.assertIs(bridge.host.sessions.plan, plan)
+        with JsonlSessionStore(root / "runs").open_journal("target"):
+            pass
         with patch.object(JsonlSessionStore, "load", side_effect=ValueError("invalid target journal")):
             with self.assertRaisesRegex(ValueError, "invalid target journal"):
                 bridge.open_session({**opening, "session_id": "target"})
         self.assertIs(bridge.host.sessions.session, original)
-        with JsonlSessionStore(root / "sessions").open_journal("target"):
+        with JsonlSessionStore(root / "runs").open_journal("target"):
             pass
         original.add_item("user", "still writable")
         self.assertEqual([item.content for item in bridge.host.sessions.store.load("original").items],
@@ -1582,94 +1421,38 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge.host.sessions.session.add_item("user", "reselected current session")
         self.assertEqual(len(bridge.host.sessions.store.load("original").items), 3)
 
-    def test_new_workspace_session_accepts_a_turn_and_preserves_both_workspaces_history(self) -> None:
+    def test_switching_runs_rebinds_files_journal_and_provider(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        other = root / "other"
-        other.mkdir()
-        opening = open_session_message(root)
-        bridge, output = self.make_bridge([], root)
-        bridge.open_session(opening)
-        original = bridge.host.sessions.session
-        original.add_item("user", "original history")
-        bridge.host.sessions.plan.update("original plan", (PlanStep("1", "original step", "pending"),))
-        bridge.open_session({**opening, "workspace": str(other)})
-        fresh = bridge.host.sessions.session
-        self.assertNotEqual(fresh.session_id, original.session_id)
-        self.assertEqual(fresh.items, [])
-        self.assertIsNone(bridge.host.sessions.plan.snapshot)
-        self.assertEqual(bridge.host.sessions.store.workspace_for(original.session_id), str(root.resolve()))
-
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertEqual(plane.agent._execution_context.workspace.path, other.resolve())
-        self.assertIs(plane.agent._execution_context.session, fresh)
-        plane.agent = SuccessfulAgent(fresh)
-        bridge.run_turn({"turn_id": "new-workspace-turn", "text": "hello new workspace"})
-        self.assertEqual(emitted(output)[-1]["type"], "turn_completed")
-        stored = bridge.host.sessions.store.load(fresh.session_id)
-        self.assertEqual(stored.workspace, str(other.resolve()))
-        self.assertEqual([item.content for item in stored.items], ["hello new workspace", "done"])
-        bridge._emit_sessions()
-        self.assertEqual(emitted(output)[-1]["sessions"][0]["session_id"], fresh.session_id)
-
-        bridge.open_session({**opening, "workspace": str(other), "session_id": original.session_id})
-        self.assertEqual(bridge.host.sessions.workspace.path, root.resolve())
-        self.assertEqual(bridge.host.sessions.session.items[0].content, "original history")
-        self.assertEqual(bridge.host.sessions.plan.snapshot.goal, "original plan")
-
-    def test_switching_sessions_reuses_resources_and_rebinds_all_session_state(self) -> None:
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bridge, output = self.make_bridge([], root)
-        opening = open_session_message(root)
+        bridge, _ = self.make_bridge([], root)
+        opening = open_session_message(root, session_id="first")
         bridge.open_session(opening)
         first_session = bridge.host.sessions.session
         first_session.add_item("user", "first conversation")
         bridge.host.sessions.plan.update("first plan", (PlanStep("1", "first step", "pending"),))
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        first_agent, first_jobs = plane.agent, plane.jobs
-        with (
-            patch.object(plane.mcp, "start") as start_mcp,
-            patch.object(plane.mcp, "close") as close_mcp,
-            patch.object(first_jobs, "close", wraps=first_jobs.close) as close_jobs,
-        ):
-            bridge.open_session(opening)
-            self.assertIsNone(plane.agent)
-            self.assertIsNone(emitted(output)[-1]["context_window"])
-            rebound = bridge.host.planes.ensure(bridge.host.sessions)
-            self.assertIs(rebound, plane)
-            self.assertIsNot(rebound.agent, first_agent)
-            self.assertIsNot(rebound.jobs, first_jobs)
-            context = rebound.agent._execution_context
-            self.assertIs(context.session, bridge.host.sessions.session)
-            self.assertEqual(context.session.items, [])
-            self.assertIsNone(context.plan.snapshot)
-            self.assertIs(context.command_executor, plane.command_executor)
-            close_jobs.assert_called_once()
-            start_mcp.assert_not_called()
-            close_mcp.assert_not_called()
+        first = bridge.host.planes.ensure(bridge.host.sessions)
+        first_files = root.resolve() / "runs" / "first" / "files"
+        self.assertEqual(first.files.path, first_files)
+        (first_files / "candidate.json").write_text("{}", encoding="utf-8")
 
-        bridge.open_session({**opening, "session_id": first_session.session_id})
+        with patch.object(first.mcp, "close", wraps=first.mcp.close) as close:
+            bridge.open_session({**opening, "session_id": "second", "provider": "second"})
+        close.assert_called_once()
+        second = bridge.host.planes.ensure(bridge.host.sessions)
+        self.assertEqual(second.files.path, root.resolve() / "runs" / "second" / "files")
+        self.assertFalse((second.files.path / "candidate.json").exists())
+        self.assertEqual(second.provider_name, "second")
+        self.assertEqual(second.agent._execution_context.session.items, [])
+        self.assertIsNone(second.agent._execution_context.plan.snapshot)
+
+        bridge.open_session(opening)
         restored = bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIs(restored, plane)
         self.assertEqual(restored.agent._execution_context.session.items[0].content, "first conversation")
         self.assertEqual(restored.agent._execution_context.plan.snapshot.goal, "first plan")
-        self.assertIs(restored.agent._execution_context.command_executor, plane.command_executor)
-
-    def test_switching_sessions_rebuilds_resources_for_a_different_workspace_or_provider(self) -> None:
-        for change in ("workspace", "provider"):
-            with self.subTest(change=change):
-                root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-                bridge, _ = self.make_bridge([], root)
-                opening = open_session_message(root)
-                bridge.open_session(opening)
-                first = bridge.host.planes.ensure(bridge.host.sessions)
-                other = root / "other"
-                other.mkdir()
-                opening[change] = str(other) if change == "workspace" else "second"
-                bridge.open_session(opening)
-                with patch.object(first.mcp, "close", wraps=first.mcp.close) as close:
-                    second = bridge.host.planes.ensure(bridge.host.sessions)
-                self.assertIsNot(first, second)
-                close.assert_called_once()
+        self.assertEqual(restored.files.path, first_files)
+        self.assertTrue((restored.files.path / "candidate.json").is_file())
+        self.assertEqual(restored.provider_name, "first")
+        self.assertTrue((first_files.parent / "first.jsonl").is_file())
+        self.assertTrue((first_files.parent / "session.json").is_file())
 
     def test_repeated_open_session_commands_use_the_same_bridge(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -1684,23 +1467,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         ready = [m for m in emitted(output) if m["type"] == "session_ready"]
         self.assertEqual([m["session_id"] for m in ready], ["first", "second"])
         self.assertEqual(bridge.host.sessions.session.session_id, "second")
-
-    def test_binding_failure_closes_retained_resources(self) -> None:
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        bridge, _ = self.make_bridge([], root)
-        opening = open_session_message(root)
-        bridge.open_session(opening)
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        bridge.open_session(opening)
-        with (
-            patch("agent_runtime.plane_manager.Agent", side_effect=ValueError("binding failed")),
-            patch.object(plane.mcp, "close", wraps=plane.mcp.close) as close,
-        ):
-            with self.assertRaisesRegex(ValueError, "binding failed"):
-                bridge.host.planes.ensure(bridge.host.sessions)
-        self.assertIsNone(bridge.host.planes.current)
-        self.assertIsNone(plane.jobs)
-        close.assert_called_once()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows journal ownership")
     def test_occupied_session_can_be_reselected_without_exiting_bridge(self) -> None:
@@ -1751,7 +1517,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertEqual(contender.host.sessions.session.items[0].content, "preserved")
 
     @unittest.skipUnless(sys.platform == "win32", "Windows journal ownership")
-    def test_journal_protection_follows_workspace_and_session_lifecycle(self) -> None:
+    def test_journal_protection_follows_run_lifecycle(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
         bridge, _ = self.make_bridge([], root)
@@ -1759,49 +1525,20 @@ class BridgeSessionOpenTest(BridgeTestCase):
         controller = bridge.host.sessions
         first = controller.session
         first.add_item("user", "keep this audit record")
-        original = next((root / "sessions").rglob(f"{first.session_id}.jsonl"))
+        original = next((root / "runs").rglob(f"{first.session_id}.jsonl"))
         with self.assertRaises(PermissionError):
             original.unlink()
 
-        moved_workspace = root / "moved"
-        moved_workspace.mkdir()
-        bridge.host.change_workspace(moved_workspace)
-        moved = next((root / "sessions").rglob(f"{first.session_id}.jsonl"))
-        self.assertFalse(original.exists())
-        with self.assertRaises(PermissionError):
-            moved.unlink()
-        first.add_item("assistant", "still persisted after move")
-
-        bridge.host.open_session(root)
-        with moved.open("a+b"):
+        bridge.host.open_session()
+        with original.open("a+b"):
             pass  # Switching sessions releases the former writer.
         second = controller.session
-        current = next((root / "sessions").rglob(f"{second.session_id}.jsonl"))
+        current = next((root / "runs").rglob(f"{second.session_id}.jsonl"))
         with self.assertRaises(PermissionError):
             current.unlink()
         bridge.close()
         current.unlink()
-        self.assertEqual(len(controller.store.load(first.session_id).items), 2)
-
-    @unittest.skipUnless(sys.platform == "win32", "Windows journal ownership")
-    def test_failed_workspace_move_keeps_original_journal_protected(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(open_session_message(root))
-        controller = bridge.host.sessions
-        session = controller.session
-        path = next((root / "sessions").rglob(f"{session.session_id}.jsonl"))
-        destination = root / "destination"
-        destination.mkdir()
-        with patch.object(controller.store, "bind_workspace", side_effect=OSError("move failed")):
-            with self.assertRaisesRegex(OSError, "move failed"):
-                bridge.host.change_workspace(destination)
-        with self.assertRaises(PermissionError):
-            path.unlink()
-        session.add_item("user", "persisted after failed move")
-        self.assertEqual(controller.store.load(session.session_id).items[0].content,
-                         "persisted after failed move")
+        self.assertEqual(len(controller.store.load(first.session_id).items), 1)
 
     def started_model(self, **extra: object) -> str:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -1822,8 +1559,8 @@ class BridgeSessionOpenTest(BridgeTestCase):
     def test_restores_the_session_provider_selection(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        store = JsonlSessionStore(root / "sessions")
-        store.set_provider("saved", "second", root)
+        store = JsonlSessionStore(root / "runs")
+        store.set_provider("saved", "second")
         bridge, stdout = self.make_bridge([], root)
 
         bridge.open_session(open_session_message(root, session_id="saved"))
@@ -1893,7 +1630,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertEqual([(event.event_type, r["scope"], r["model"], r["status"])
                           for event, r in zip(calls, records)], [
             ("compression_completed", None, "openai/second", "completed"),
-            ("memory_completed", "workspace", "openai/second", "completed"),
+            ("memory_completed", "run", "openai/second", "completed"),
         ])
         self.assertEqual(records[0]["usage"], {
             "input_tokens": 50, "output_tokens": 8, "total_tokens": 58,
@@ -1918,7 +1655,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
             agent_config={
                 "max_same_tool_calls": 5,
                 "output_reserve_tokens": 100,
-                "workspace_instruction_files": [],
                 "context": {"compression": {"keep_recent_units": 1}},
                 "main_agent": {"tools": {"subagent": True}},
                 "subagent_roles": {
@@ -1975,10 +1711,10 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertEqual(answer, "Finished inspection.")
         parent_session = bridge.host.sessions.session
         parent_directory = session_directory(
-            root / "sessions", root, parent_session.session_id,
+            root / "runs", parent_session.session_id,
         )
         child_path, = (parent_directory / "subagents").glob("*/*.jsonl")
-        child_store = JsonlSessionStore(parent_directory / "subagents", group_by_workspace=False)
+        child_store = JsonlSessionStore(parent_directory / "subagents")
         child = child_store.load(child_path.stem)
         calls = [event for event in child.journal
                  if event.event_type in {"compression_completed", "memory_completed"}]
@@ -1990,14 +1726,14 @@ class BridgeSessionOpenTest(BridgeTestCase):
         )
         self.assertEqual(
             (calls[1].event_type, records[1]["scope"], records[1]["model"], records[1]["status"]),
-            ("memory_completed", "workspace", "openai/second", "completed"),
+            ("memory_completed", "run", "openai/second", "completed"),
         )
         self.assertFalse(any(event.event_type in {"compression_completed", "memory_completed"}
                              for event in parent_session.journal))
         self.assertEqual(child.cache_usage, CacheUsage(600, 500))
         self.assertIsNone(parent_session.cache_usage)
         self.assertEqual(
-            plane.memory.store.load(root).facts,
+            plane.memory.store.load(plane.memory.run_id).facts,
             ("A durable fact.",),
         )
 
@@ -2016,7 +1752,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                         "max_retries": 4,
                     },
                     "scratch_workspace_root": str(root / "scratch"),
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
                     "main_agent": {"tools": {"subagent": True}},
                     "subagent_roles": {
                         "researcher": {
@@ -2091,12 +1826,12 @@ class BridgeSessionOpenTest(BridgeTestCase):
     def test_restores_the_session_plan_in_runtime_state(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        store = JsonlSessionStore(root / "sessions")
+        store = JsonlSessionStore(root / "runs")
         session = Session("saved")
-        store.bind_workspace(session.session_id, root)
+
         session.attach_journal_sink(
             lambda events: store.append_events(
-                session.session_id, events, workspace=root
+                session.session_id, events
             )
         )
         PlanManager(session).update(
@@ -2170,7 +1905,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 "max_same_tool_calls": 5,
                 "output_reserve_tokens": 100,
                 "scratch_workspace_root": str(config / "scratch"),
-                "workspace_instruction_files": ["AGENTS.md"],
                 "skills": {
                     "global_paths": ["shared-skills"],
                     "workspace_paths": [
@@ -2277,10 +2011,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": [
-                        "CLAUDE.md",
-                        "AGENTS.md",
-                    ],
                     "main_agent": {
                         "tools": {
                             name: False for name in TOOL_NAMES
@@ -2377,10 +2107,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": [
-                        "CLAUDE.md",
-                        "AGENTS.md",
-                    ],
                     "main_agent": {
                         "tools": {
                             name: False for name in TOOL_NAMES
@@ -2405,7 +2131,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         root = Path(directory)
         message = open_session_message(root)
         (root / "prompts" / "Soul.md").write_text(
-            "Custom prompt for {{workspace}}",
+            "Custom runtime prompt",
             encoding="utf-8",
         )
         bridge, _ = self.make_bridge([], root)
@@ -2417,29 +2143,24 @@ class BridgeSessionOpenTest(BridgeTestCase):
         prompt = request.system_prompt
         runtime_context = request.messages[0].content
 
-        self.assertTrue(prompt.startswith(f"Custom prompt for {root.resolve()}"))
+        self.assertTrue(prompt.startswith("Custom runtime prompt"))
+        self.assertNotIn(str(plane.files.path), prompt)
         self.assertNotIn("## Long-term Memory", prompt)
         self.assertIn("## Long-term Memory", runtime_context)
 
-    def test_injects_global_and_workspace_instructions_without_persisting_them(self) -> None:
+    def test_injects_runtime_instructions_without_persisting_them(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
         root = Path(directory)
-        workspace = root / "workspace"
-        workspace.mkdir()
         (root / "AGENTS.md").write_text("global rule", encoding="utf-8")
-        (workspace / "CLAUDE.md").write_text("claude rule", encoding="utf-8")
-        (workspace / "AGENTS.md").write_text("workspace rule", encoding="utf-8")
         bridge, _ = self.make_bridge([], root)
-
-        bridge.open_session(open_session_message(root, workspace=str(workspace)))
+        bridge.open_session(open_session_message(root))
         plane = bridge.host.planes.ensure(bridge.host.sessions)
 
         prompt = plane.agent._context._system_prompt
         session = bridge.host.sessions.session
         assert session is not None
 
-        self.assertLess(prompt.index("global rule"), prompt.index("claude rule"))
-        self.assertLess(prompt.index("claude rule"), prompt.index("workspace rule"))
+        self.assertIn("global rule", prompt)
         self.assertEqual(session.items, [])
         self.assertFalse(
             any(
@@ -2447,34 +2168,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 for event in session.journal
             )
         )
-
-    def test_uses_configured_workspace_instruction_files(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        workspace = root / "workspace"
-        workspace.mkdir()
-        (workspace / "PROJECT.md").write_text("project rule", encoding="utf-8")
-        (workspace / "AGENTS.md").write_text("not configured", encoding="utf-8")
-        bridge, _ = self.make_bridge([], root)
-        message = open_session_message(
-            root,
-            workspace=str(workspace),
-            agent_config={
-                "max_same_tool_calls": 5,
-                "output_reserve_tokens": 100,
-                "workspace_instruction_files": ["PROJECT.md"],
-                "main_agent": {"tools": {name: False for name in TOOL_NAMES}},
-            },
-        )
-
-        bridge.open_session(message)
-        plane = bridge.host.planes.ensure(bridge.host.sessions)
-        prompt = plane.agent._context._system_prompt
-
-        self.assertIn("project rule", prompt)
-        self.assertIn("<workspace>/PROJECT.md", prompt)
-        self.assertNotIn("not configured", prompt)
-        self.assertNotIn("<workspace>/AGENTS.md", prompt)
 
     def test_reuses_runtime_until_instructions_change_between_turns(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -2504,9 +2197,9 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge, _ = self.make_bridge([], root)
         bridge.open_session(open_session_message(root))
         first_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        store = MemoryStore(root / "sessions")
+        store = MemoryStore(root / "runs")
         store.write(
-            root,
+            bridge.host.sessions.session.session_id,
             MemoryDocument(preferences=("Prefer concise responses.",)),
         )
         (root / "MEMORY.md").write_text(
@@ -2532,33 +2225,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
         self.assertIn("Prefer concise responses.", runtime_context)
         self.assertNotIn("Legacy shared fact.", runtime_context)
         self.assertIn("current request has highest priority", runtime_context)
-
-    def test_rebuilds_runtime_when_the_configured_instruction_list_changes(self) -> None:
-        directory = self.enterContext(tempfile.TemporaryDirectory())
-        root = Path(directory)
-        (root / "PROJECT.md").write_text("project rule", encoding="utf-8")
-        bridge, _ = self.make_bridge([], root)
-        bridge.open_session(open_session_message(root))
-        first_plane = bridge.host.planes.ensure(bridge.host.sessions)
-        config = json.loads(
-            (root / "agent_config.json").read_text(encoding="utf-8")
-        )
-        config["workspace_instruction_files"] = ["PROJECT.md"]
-        (root / "agent_config.json").write_text(
-            json.dumps(config),
-            encoding="utf-8",
-        )
-
-        second_plane = bridge.host.planes.ensure(bridge.host.sessions)
-
-        self.assertIsNot(second_plane, first_plane)
-        self.assertIn(
-            "project rule", second_plane.agent._context._system_prompt
-        )
-        self.assertIn(
-            "<workspace>/PROJECT.md",
-            second_plane.agent._context._system_prompt,
-        )
 
     def test_rebuilds_the_execution_plane_when_agent_config_changes(self) -> None:
         directory = self.enterContext(tempfile.TemporaryDirectory())
@@ -2637,7 +2303,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
         bridge, _ = self.make_bridge([], root)
         open_session_message(root, provider_config=config)
         (root / ".env").write_text("FIRST_KEY=first\n", encoding="utf-8")
-        bridge.open_session({"type": "open_session", "workspace": str(root), "session_id": None})
+        bridge.open_session({"type": "open_session", "session_id": None})
         first_plane = bridge.host.planes.ensure(bridge.host.sessions)
 
         (root / ".env").write_text("FIRST_KEY=second\n", encoding="utf-8")
@@ -2853,7 +2519,7 @@ class RuntimeRefreshTest(BridgeTestCase):
 
     def test_refresh_command_is_dispatched_without_a_user_turn(self) -> None:
         with patch.object(self.bridge, "read_message", side_effect=[
-            {"type": "open_session", "workspace": str(self.root), "session_id": None},
+            {"type": "open_session", "session_id": None},
             decode('{"type":"runtime_refresh"}'), None,
         ]):
             self.bridge.serve()
@@ -2873,7 +2539,6 @@ class SubagentRoleStartTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
                     "main_agent": {"tools": {"subagent": True}},
                     "subagent_roles": roles,
                 },
@@ -2925,7 +2590,6 @@ class SubagentRoleStartTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
                     "main_agent": {"tools": {"subagent": True}},
                     "subagent_roles": {
                         "researcher": {
@@ -2953,7 +2617,6 @@ class SubagentRoleStartTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": ["CLAUDE.md", "AGENTS.md"],
                     "main_agent": {"tools": {"subagent": True, "job_control": True}},
                     "subagent_roles": {
                         "researcher": {
@@ -3015,10 +2678,6 @@ class PluginAgentStartTest(BridgeTestCase):
                 agent_config={
                     "max_same_tool_calls": 5,
                     "output_reserve_tokens": 100,
-                    "workspace_instruction_files": [
-                        "CLAUDE.md",
-                        "AGENTS.md",
-                    ],
                     "main_agent": {"tools": {"subagent": True}},
                 },
                 provider_config={
@@ -3062,7 +2721,7 @@ class ReadImageAvailabilityTest(BridgeTestCase):
                 with patch.object(ModelProvider, "capabilities_for_model", capabilities_stub(VISION_MODEL)):
                     host = RuntimeHost(root)
                     self.addCleanup(host.close)
-                    host.open_session(Path(message["workspace"]))
+                    host.open_session()
                     plane = host.planes.ensure(host.sessions)
                 self.assertEqual(
                     "read_image" in {tool.name for tool in plane.agent._tools.definitions},

@@ -277,7 +277,7 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
   if (state.status === 'session_unavailable') {
     return (
       <Box flexShrink={0} paddingX={1}>
-        <Text color="yellow"> session unavailable · /sessions or /workspaces to choose another conversation</Text>
+        <Text color="yellow"> session unavailable · /sessions to choose a run or /new to start one</Text>
       </Box>
     );
   }
@@ -352,8 +352,7 @@ export function StatusBar({ state, elapsed }: { state: State; elapsed: number })
 
 export function NavigationPicker({ picker }: { picker: NavigationPickerState }): React.ReactElement {
   const labels = {
-    workspaces: { title: 'Workspaces', empty: 'No workspaces with conversation history.', action: 'new session' },
-    sessions: { title: 'Sessions', empty: 'No conversations in this workspace.', action: 'switch' },
+    sessions: { title: 'Runs', empty: 'No saved runs.', action: 'switch' },
     input: { title: 'Input scenes', empty: 'No scenes in input/.', action: 'run' },
   }[picker.kind];
   const items = picker.kind === 'sessions'

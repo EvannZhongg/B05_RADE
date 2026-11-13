@@ -1,6 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ComponentPropsWithoutRef } from "react";
 import type { FileMessagePartProps, ImageMessagePartProps } from "@assistant-ui/react";
-import { FileText } from "lucide-react";
 import { createSignedImageUrl } from "../../api";
 
 export const SessionIdContext = createContext<string | undefined>(undefined);
@@ -9,14 +8,11 @@ export function isRemoteMarkdownImage(src: string | undefined): boolean {
   return Boolean(src && /^https?:\/\//i.test(src));
 }
 
-export function FileAttachmentPart({ data, filename, mimeType }: FileMessagePartProps) {
-  return <a className="message-file" href={data} download={filename} title={mimeType}>
-    <FileText size={18} />
-    <span>{filename || "附件"}</span>
-  </a>;
+export function FileAttachmentPart({ filename }: FileMessagePartProps) {
+  return <span>{filename}</span>;
 }
 
-function WorkspaceImage({ path, sessionId, alt, className, ...props }: {
+function RunImage({ path, sessionId, alt, className, ...props }: {
   path: string;
   sessionId?: string;
 } & Omit<ComponentPropsWithoutRef<"img">, "src">) {
@@ -46,12 +42,12 @@ export function SignedImage({ image, filename, providerMetadata }: ImageMessageP
     && typeof metadata.session_id === "string"
     ? metadata.session_id
     : undefined;
-  return <WorkspaceImage path={image} sessionId={sessionId} alt={filename || "图片"} />;
+  return <RunImage path={image} sessionId={sessionId} alt={filename || "图片"} />;
 }
 
 export function MarkdownImage({ node: _node, src, alt, ...props }: ComponentPropsWithoutRef<"img"> & { node?: unknown }) {
   const sessionId = useContext(SessionIdContext);
   if (!src) return null;
   if (isRemoteMarkdownImage(src)) return <img {...props} src={src} alt={alt ?? ""} />;
-  return <WorkspaceImage {...props} path={src} sessionId={sessionId} alt={alt ?? "图片"} />;
+  return <RunImage {...props} path={src} sessionId={sessionId} alt={alt ?? "图片"} />;
 }

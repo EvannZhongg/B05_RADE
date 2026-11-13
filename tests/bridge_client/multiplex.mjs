@@ -53,7 +53,7 @@ async function until(channelId, kind) {
 
 function open(channelId) {
   client.send({
-    type: 'open_session', workspace: resolve(channelId), session_id: `sdk-${channelId}`, provider: 'fixture',
+    type: 'open_session', session_id: `sdk-${channelId}`, provider: 'fixture',
   }, channelId);
 }
 

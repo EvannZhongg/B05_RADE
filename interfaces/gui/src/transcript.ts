@@ -1,6 +1,6 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { CacheUsage, ContextWindow, Incoming } from "@rade/protocol/internal";
-import { attachmentDownloadUrl, type SessionItem } from "./api";
+import type { SessionItem } from "./api";
 
 /** A transcript item, plus the streaming state the live turn needs. */
 export type TranscriptItem = SessionItem & { streaming?: boolean };
@@ -183,16 +183,6 @@ export function applyMessage(
         },
       };
 
-    case "workspace_changed":
-      return {
-        items,
-        feedback: {
-          kind: "toast",
-          level: "info",
-          text: `工作区已切换为 ${message.workspace}`,
-        },
-      };
-
     case "model_completed":
     case "compression_completed":
       return { items, cacheUsage: message.cache_usage };
@@ -293,6 +283,7 @@ function itemParts(
   if (Array.isArray(item.content)) {
     for (const part of item.content) {
       if (part.type === "text") parts.push({ type: "text", text: part.text });
+      else if (item.origin !== "tool_media" && item.origin !== "tool_delivery") continue;
       else if (part.type === "image") parts.push({
         type: "image",
         image: part.path,
@@ -303,7 +294,7 @@ function itemParts(
       } as unknown as Part);
       else parts.push({
         type: "file",
-        data: attachmentDownloadUrl(part.path, part.filename, sessionId),
+        data: part.path,
         filename: part.filename,
         mimeType: part.mime_type,
         sourceType: "url",
@@ -354,7 +345,7 @@ export function toMessages(items: TranscriptItem[], sessionId?: string): ThreadM
   items.forEach((item, index) => {
     if (item.role === "tool") return;
     // The session id travels into the URL builder, so an image is
-    // addressed against the session's own workspace from the start.
+    // addressed against the run's files directory from the start.
     const parts = itemParts(item, results, sessionId);
 
     // Attachments a tool published arrive in a user-role item because that is the

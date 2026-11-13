@@ -155,7 +155,6 @@ class SkillRegistryTest(unittest.TestCase):
 
             prompt = render_system_prompt(
                 "System for {{workspace}}",
-                Workspace(root),
                 skills=load_skills(skills),
             )
 

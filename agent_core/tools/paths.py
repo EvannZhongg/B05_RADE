@@ -1,10 +1,4 @@
-"""Path resolution shared by the tools that read runtime files.
-
-Two roots are readable: the workspace, and the Runtime's Session root.
-Session artifacts are addressed with a ``.RADE/sessions/`` prefix even
-though they live outside the workspace, so one resolver serves both and
-every tool enforces the same containment rules.
-"""
+"""Path resolution shared by the tools that read run files."""
 
 from pathlib import Path
 
@@ -14,33 +8,11 @@ from ..path_utils import relative_to_root
 from .context import ToolExecutionContext
 
 
-SESSION_MARKER = Path(".RADE", "sessions")
-
-
 def resolve_readable_path(
     path: str,
     context: ToolExecutionContext,
 ) -> tuple[Path, str]:
-    """Resolve *path* to a real file location plus its display form.
-
-    A ``.RADE/sessions/...`` path is resolved against the Session root;
-    anything else is a workspace-relative path.  Both branches reject a
-    result that escapes its root, so a tool never has to repeat the
-    check.
-    """
-    relative = Path(path)
-    if relative == SESSION_MARKER or SESSION_MARKER in relative.parents:
-        sessions_directory = context.sessions_directory
-        resolved = (
-            sessions_directory / relative.relative_to(SESSION_MARKER)
-        ).resolve()
-        try:
-            relative_to_root(resolved, sessions_directory)
-        except ValueError as error:
-            raise ValueError(
-                "session artifact path must stay within sessions"
-            ) from error
-        return resolved, relative.as_posix()
+    """Resolve a path relative to the current run's files."""
     workspace = context.workspace
     resolved = workspace.resolve_path(path)
     return resolved, relative_to_root(resolved, workspace.path).as_posix()
@@ -56,18 +28,9 @@ def resolve_image(
     extension, because a provider that is handed ``image/png`` wrapping
     JPEG data rejects the whole request.
 
-    The stored path stays workspace-relative when the image lives in the
-    workspace, which keeps a session log portable between machines.  A
-    Session artifact has no workspace-relative form -- resolving one
-    against the workspace root would point at a file that does not exist
-    -- so it is stored absolute.
     """
-    resolved, _display = resolve_readable_path(path, context)
+    resolved, stored = resolve_readable_path(path, context)
     info = probe_image(resolved)
-    try:
-        stored = relative_to_root(resolved, context.workspace.path).as_posix()
-    except ValueError:
-        stored = str(resolved)
     return ImagePart(
         path=stored,
         mime_type=info.mime_type,

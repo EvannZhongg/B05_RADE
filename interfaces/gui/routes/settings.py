@@ -31,16 +31,16 @@ def create_settings_router(settings: SettingsStore) -> APIRouter:
     @router.get("/api/memory")
     def get_memory() -> dict[str, object]:
         try:
-            workspaces = memory_store(settings.directory).load_all()
+            runs = memory_store(settings.directory).load_all()
         except (OSError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return {
-            "workspaces": [
+            "runs": [
                 {
-                    "workspace": workspace_path,
+                    "run_id": run_id,
                     "memory": _memory_document_to_dict(document),
                 }
-                for workspace_path, document in sorted(workspaces.items())
+                for run_id, document in sorted(runs.items())
             ],
         }
 

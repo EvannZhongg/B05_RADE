@@ -6,7 +6,6 @@ import { PROTOCOL_VERSION } from '@rade/protocol';
 
 const jsonText = '{"P":[[0,0.5],[1,0],[0.25,0.75]],"v":[12,25]}';
 await mkdir('input', { recursive: true });
-await mkdir('workspace', { recursive: true });
 await writeFile('input/scene1_1.json', jsonText);
 await writeFile('input/other.json', jsonText);
 const messages = [];
@@ -76,8 +75,7 @@ function handleMessage(message) {
     assert.ok(message.transcript.items.length > 0);
     stage = 'failure';
     client.send({
-      type: 'user_turn', turn_id: 'failure', text: 'Invalid local attachment',
-      attachments: [{ type: 'file', path: 'missing.txt', filename: 'missing.txt', mime_type: 'text/plain', size_bytes: 1 }],
+      type: 'user_turn', turn_id: 'failure', scene_input: 'scene1_2.json',
     }, 'main');
   }
   if (message.type === 'turn_failed') {
@@ -103,12 +101,12 @@ const timeout = setTimeout(() => {
   console.error(JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
   void client.shutdown();
 }, 45000);
-client.send({ type: 'open_session', workspace: `${process.cwd()}/workspace`, session_id: null, provider: 'fixture' }, 'main');
+client.send({ type: 'open_session', session_id: null, provider: 'fixture' }, 'main');
 const result = await client.closed;
 clearTimeout(timeout);
 assert.equal(stage, 'done', JSON.stringify({ stage, messages, diagnostics: client.diagnostics() }));
 assert.deepEqual(problems, []);
-assert.equal(await readFile(`workspace/${sourcePath}`, 'utf8'), jsonText);
+assert.equal(await readFile(`.RADE/runs/${ready.session_id}/files/${sourcePath}`, 'utf8'), jsonText);
 assert.equal(result.code, 0);
 assert.equal(messages.filter(message => message.type === 'model_completed').length, 2);
 assert.ok(messages.some(message => message.type === 'assistant_delta' && message.text === '完成🙂'));

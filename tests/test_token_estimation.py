@@ -49,7 +49,7 @@ class InputAnchorTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             from pathlib import Path
             store = JsonlSessionStore(Path(directory))
-            store.append_events(self.session.session_id, self.session.journal, workspace=Path(directory))
+            store.append_events(self.session.session_id, self.session.journal)
             restored = store.load(self.session.session_id, recover=False)
         context = self.context_for(OpenAIProvider("gpt-5", base_url="https://one.example/v1"), restored)
         self.assertEqual(context.measure_input_tokens(self.request).tokens, 500)

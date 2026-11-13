@@ -16,7 +16,7 @@ class ProviderSelectionTest(unittest.TestCase):
             ModelConfig(model, url, "test-key", 100000, reasoning_effort="high", api=api),
             Workspace(Path(__file__).parent), AgentConfig(
                 max_same_tool_calls=5, output_reserve_tokens=100,
-                tools=ToolConfig(enabled=()), workspace_instruction_files=(),
+                tools=ToolConfig(enabled=()),
             ),
         )
 

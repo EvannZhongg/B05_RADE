@@ -1,4 +1,4 @@
-"""Workspace resources and their replaceable Session binding."""
+"""Resources owned by one run's execution plane."""
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -11,7 +11,7 @@ from agent_core import (
     JobManager,
     MemoryManager,
     Workspace,
-    WorkspaceInstructions,
+    RuntimeInstructions,
     SkillRegistry,
     ToolCatalog,
 )
@@ -29,13 +29,13 @@ if TYPE_CHECKING:
 
 @dataclass(eq=False)
 class ExecutionPlane:
-    """One resource assembly, with fresh Agent state for each Session binding."""
+    """One resource assembly bound to a run."""
 
-    workspace: Workspace
+    files: Workspace
     provider_name: str
     agent_config: AgentConfig
     configuration_fingerprint: str
-    instructions: WorkspaceInstructions
+    instructions: RuntimeInstructions
     provider: LLMProvider
     catalog: ToolCatalog
     skills: SkillRegistry
@@ -69,14 +69,14 @@ class ExecutionPlane:
     def matches(
         self,
         *,
-        workspace: Workspace,
+        files: Workspace,
         provider_name: str,
         agent_config: AgentConfig,
         configuration_fingerprint: str,
-        instructions: WorkspaceInstructions,
+        instructions: RuntimeInstructions,
     ) -> bool:
         return (
-            self.workspace == workspace
+            self.files == files
             and self.provider_name == provider_name
             and self.agent_config == agent_config
             and self.configuration_fingerprint
@@ -84,19 +84,16 @@ class ExecutionPlane:
             and self.instructions.fingerprint == instructions.fingerprint
         )
 
-    def unbind_session(self) -> None:
+    def close(self) -> None:
         jobs = self.jobs
         self.jobs = None
         self.agent = None
         self.tool_context = None
         self.memory = None
         self.context_window = None
-        if jobs is not None:
-            jobs.close()
-
-    def close(self) -> None:
         try:
-            self.unbind_session()
+            if jobs is not None:
+                jobs.close()
         finally:
             self.mcp.close()
 

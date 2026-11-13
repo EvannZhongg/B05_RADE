@@ -121,9 +121,9 @@ class Peer:
         self.process.stderr.close()
 
 
-def sample(peer, workspace, marker, assembly_only=False):
+def sample(peer, marker, assembly_only=False):
     opening = time.perf_counter()
-    peer.send({"type": "open_session", "workspace": str(workspace), "session_id": marker}, marker)
+    peer.send({"type": "open_session", "session_id": marker}, marker)
     ready, _, _ = peer.until("session_ready")
     peer.until("runtime_state")
     turn = time.perf_counter()
@@ -170,12 +170,9 @@ def benchmark(args):
         results = {"provider": provider, "model": chosen["model"], "baseline_commit": commit, "baseline": [], "resident": []}
         for mode, code in (("baseline", source), ("resident", ROOT)):
             config = root / mode / "config"
-            workspace = root / mode / "workspace"
-            workspace.mkdir(parents=True)
             config.mkdir(exist_ok=True)
             shutil.copyfile(code / "agent_runtime/defaults/agent_config.json", config / "agent_config.json")
             if args.assembly_only:
-                workspace = ROOT
                 agent = json.loads((args.config / "agent_config.json").read_text(encoding="utf-8"))
                 for name in ("prompts", "plugins", "skills"):
                     if (args.config / name).is_dir():
@@ -207,7 +204,7 @@ def benchmark(args):
                         if mode == "resident":
                             ready, _, _ = peer.until("bridge_ready")
                             results["resident_process_ready_ms"] = round((ready - peer.started) * 1000, 1)
-                    record = sample(peer, workspace, f"RADE-benchmark-{mode}-{index}", args.assembly_only)
+                    record = sample(peer, f"RADE-benchmark-{mode}-{index}", args.assembly_only)
                     results[mode].append(record)
                     print(json.dumps({"mode": mode, "sample": index + 1, **record}), flush=True)
                     if mode == "baseline":

@@ -16,14 +16,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from agent_core import JsonlSessionStore, Workspace
+from agent_core import JsonlSessionStore
 from agent_runtime.scene_input import list_scene_inputs, read_scene_input
 from agent_runtime.settings import SettingsStore
 from interfaces.session_host import ActiveSessionRegistry
 from .routes.media import create_media_router
 from .routes.sessions import create_sessions_router
 from .routes.settings import create_settings_router
-from .routes.workspace import WorkspaceResolver, create_workspace_router
+from .routes.run_files import create_run_files_router
 
 STATIC_PATH = Path(__file__).resolve().parent / "static"
 HOST = "127.0.0.1"
@@ -32,12 +32,10 @@ SCENE_PREVIEW_LENGTH = 12_000
 
 
 def create_app(
-    workspace: Workspace,
     store: JsonlSessionStore,
     settings: SettingsStore,
     active_sessions: ActiveSessionRegistry,
 ) -> FastAPI:
-    workspace_resolver = WorkspaceResolver(workspace, store)
     input_directory = Path.cwd().resolve() / "input"
 
     app = FastAPI(
@@ -51,11 +49,10 @@ def create_app(
         allowed_hosts=[HOST, "localhost"],
     )
     app.include_router(create_settings_router(settings))
-    app.include_router(create_workspace_router(workspace_resolver, settings))
-    app.include_router(create_media_router(workspace_resolver, active_sessions))
+    app.include_router(create_run_files_router(store))
+    app.include_router(create_media_router(store))
     app.include_router(
         create_sessions_router(
-            workspace_resolver,
             store,
             settings,
             active_sessions,
@@ -105,7 +102,6 @@ class HostedServer(uvicorn.Server):
 
 
 async def serve_http(
-    workspace: Workspace,
     store: JsonlSessionStore,
     settings: SettingsStore,
     active_sessions: ActiveSessionRegistry,
@@ -118,7 +114,7 @@ async def serve_http(
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((HOST, PORT))
         listener.listen(128)
-        app = create_app(workspace, store, settings, active_sessions)
+        app = create_app(store, settings, active_sessions)
         server = HostedServer(uvicorn.Config(app, host=HOST, port=PORT, lifespan="off"))
         print(f"RADE GUI: http://{HOST}:{PORT}")
         if not STATIC_PATH.is_dir():

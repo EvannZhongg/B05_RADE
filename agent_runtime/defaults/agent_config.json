@@ -6,11 +6,6 @@
     "request_timeout_seconds": 300,
     "max_retries": 2
   },
-  "scratch_workspace_root": "workspaces/scratch",
-  "workspace_instruction_files": [
-    "CLAUDE.md",
-    "AGENTS.md"
-  ],
   "context": {
     "compression": {
       "enabled": true,
@@ -46,7 +41,7 @@
   },
   "memory": {
     "enabled": true,
-    "workspace_max_tokens": 3000
+    "max_tokens": 3000
   },
   "mcp": {
     "enabled": true,

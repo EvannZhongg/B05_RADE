@@ -170,8 +170,6 @@ class Agent:
         self._execution_context = context
         self._tool_result_normalizer = ToolResultNormalizer(
             context.workspace,
-            session.session_id,
-            sessions_directory=context.sessions_directory,
             artifact_directory=context.artifact_directory,
         )
         if context.jobs is not None:

@@ -152,7 +152,7 @@ class JobControlTest(unittest.TestCase):
         self.assertNotIn("full output", json.dumps(before.to_dict()))
         self.assertEqual(self.jobs.list(), ())
         with tempfile.TemporaryDirectory() as directory:
-            store = JsonlSessionStore(Path(directory), group_by_workspace=False)
+            store = JsonlSessionStore(Path(directory))
             store.append_events(self.session.session_id, self.session.journal)
             recovered = JobManager(store.load("parent"))
             try:
@@ -199,10 +199,7 @@ class JobControlTest(unittest.TestCase):
                         )
 
                 with tempfile.TemporaryDirectory() as directory:
-                    self.jobs.set_result_normalizer(ToolResultNormalizer(
-                        self.context.workspace, self.session.session_id,
-                        sessions_directory=Path(directory),
-                    ))
+                    self.jobs.set_result_normalizer(ToolResultNormalizer(Workspace(Path(directory))))
                     arguments = {"command": "command", "background": True, "timeout_seconds": 1}
                     context = replace(self.context, command_executor=Executor())
                     handle = ShellTool().execute(arguments, context)
@@ -284,7 +281,7 @@ class JobControlTest(unittest.TestCase):
         self.assertEqual(writes[-1].payload["progress"], latest.progress)
         terminal = self.jobs.get(handle.job_id)
         with tempfile.TemporaryDirectory() as directory:
-            store = JsonlSessionStore(Path(directory), group_by_workspace=False)
+            store = JsonlSessionStore(Path(directory))
             store.append_events(self.session.session_id, self.session.journal)
             recovered = JobManager(store.load("parent"))
             try:

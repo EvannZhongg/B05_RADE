@@ -66,7 +66,7 @@ class SessionMigrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "sessions"
             workspace = Path(directory) / "workspace"
-            path = session_log_path(root, workspace, "session-1")
+            path = session_log_path(root, "session-1")
             usages = [
                 {"input_tokens": 10000, "output_tokens": 10, "total_tokens": 10010},
                 {"input_tokens": 100, "output_tokens": 10, "total_tokens": 110,
@@ -125,7 +125,7 @@ class SessionMigrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "sessions"
             workspace = Path(directory) / "workspace"
-            path = session_log_path(root, workspace, "session-1")
+            path = session_log_path(root, "session-1")
             path.parent.mkdir(parents=True)
             records = [
                 event(1, "turn_started", {"status": "running"}),

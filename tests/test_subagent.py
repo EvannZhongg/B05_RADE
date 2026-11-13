@@ -26,23 +26,22 @@ from agent_core import (
     ToolExecutionContext,
     TurnControl,
     Workspace,
-    WorkspaceInstruction,
-    WorkspaceInstructions,
+    RuntimeInstruction,
+    RuntimeInstructions,
     builtin_catalog,
 )
 from agent_core.llm import LLMRequest
 from agent_core.execution.process import CancellationSignal
-from agent_core.session_paths import session_directory, workspace_key
 
 
 SUBAGENT_CONFIG = AgentConfig(
     max_same_tool_calls=5,
     output_reserve_tokens=100,
     tools=ToolConfig(enabled=()),
-    workspace_instruction_files=(),
+
 )
 SUBAGENT_PROMPT = (
-    "Role {{role}}: {{role_description}}\nWorkspace: {{workspace}}"
+    "Role {{role}}: {{role_description}}"
 )
 CONSOLIDATOR_PROMPT = "Consolidate the conversation."
 
@@ -140,7 +139,7 @@ CODER = role(
 def runtime(
     catalog,
     roles,
-    instructions: WorkspaceInstructions | None = None,
+    instructions: RuntimeInstructions | None = None,
 ) -> SubagentRuntime:
     return SubagentRuntime(
         config=SUBAGENT_CONFIG,
@@ -148,8 +147,8 @@ def runtime(
         roles=SubagentRoleRegistry(roles),
         subagent_prompt_template=SUBAGENT_PROMPT,
         consolidator_prompt=CONSOLIDATOR_PROMPT,
-        workspace_instructions=(
-            instructions or WorkspaceInstructions((), "empty")
+        runtime_instructions=(
+            instructions or RuntimeInstructions((), "empty")
         ),
     )
 
@@ -159,7 +158,7 @@ def context(root: Path, roles, *, session: Session | None = None):
     return ToolExecutionContext(
         workspace=Workspace(root),
         session=session or Session(),
-        sessions_directory=root / "sessions",
+        run_directory=root / "run",
         subagents=runtime(catalog, roles),
     )
 
@@ -311,9 +310,7 @@ class SubagentToolTest(unittest.TestCase):
                 thread.join(3)
 
             store = JsonlSessionStore(
-                session_directory(tool_context.sessions_directory, root,
-                                  tool_context.session.session_id) / "subagents",
-                group_by_workspace=False,
+                tool_context.run_directory / "subagents"
             )
             transcript = next(store.directory.rglob("*.jsonl"))
             child = store.load(transcript.parent.name)
@@ -422,7 +419,7 @@ class SubagentToolTest(unittest.TestCase):
 
 
 class SubagentRuntimeTest(unittest.TestCase):
-    def test_inherits_workspace_instructions_in_system_prompt(self) -> None:
+    def test_inherits_runtime_instructions_in_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             provider = StaticProvider()
@@ -431,9 +428,9 @@ class SubagentRuntimeTest(unittest.TestCase):
                 "Reads.",
                 provider=provider,
             )
-            instructions = WorkspaceInstructions(
+            instructions = RuntimeInstructions(
                 (
-                    WorkspaceInstruction(
+                    RuntimeInstruction(
                         "<workspace>/AGENTS.md",
                         "subagents must follow this rule",
                     ),
@@ -443,7 +440,7 @@ class SubagentRuntimeTest(unittest.TestCase):
             tool_context = ToolExecutionContext(
                 workspace=Workspace(root),
                 session=Session(),
-                sessions_directory=root / "sessions",
+                run_directory=root / "run",
                 subagents=runtime(
                     builtin_catalog(),
                     (configured_role,),
@@ -476,20 +473,16 @@ class SubagentRuntimeTest(unittest.TestCase):
             )
 
             subagents = (
-                session_directory(
-                    tool_context.sessions_directory,
-                    tool_context.workspace.path,
-                    parent.session_id,
-                )
+                tool_context.run_directory
                 / "subagents"
             )
             transcripts = list(subagents.rglob("*.jsonl"))
             child_id = transcripts[0].parent.name
             child = JsonlSessionStore(
-                subagents, group_by_workspace=False
+                subagents
             ).load(child_id)
             visible_sessions = JsonlSessionStore(
-                tool_context.sessions_directory
+                tool_context.run_directory
             ).list_sessions()
 
         self.assertEqual(result, "child answer")
@@ -525,16 +518,12 @@ class SubagentRuntimeTest(unittest.TestCase):
             )
 
             subagents = (
-                session_directory(
-                    tool_context.sessions_directory,
-                    tool_context.workspace.path,
-                    parent.session_id,
-                )
+                tool_context.run_directory
                 / "subagents"
             )
             transcript = next(subagents.rglob("*.jsonl"))
             child = JsonlSessionStore(
-                subagents, group_by_workspace=False
+                subagents
             ).load(transcript.parent.name)
             tool_message = next(
                 item for item in child.items if item.role == "tool"
@@ -548,7 +537,7 @@ class SubagentRuntimeTest(unittest.TestCase):
                 output["next_cursor"], "generated_module_0199.py"
             )
 
-    def test_saves_child_tool_results_beside_the_child_transcript(self) -> None:
+    def test_saves_child_tool_results_under_run_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             parent = Session("parent")
@@ -563,7 +552,7 @@ class SubagentRuntimeTest(unittest.TestCase):
             tool_context = ToolExecutionContext(
                 workspace=Workspace(root),
                 session=parent,
-                sessions_directory=root / "sessions",
+                run_directory=root / "run",
                 subagents=runtime(catalog, (child_role,)),
             )
 
@@ -573,29 +562,24 @@ class SubagentRuntimeTest(unittest.TestCase):
             )
 
             subagents = (
-                session_directory(
-                    tool_context.sessions_directory,
-                    tool_context.workspace.path,
-                    parent.session_id,
-                )
+                tool_context.run_directory
                 / "subagents"
             )
             transcript = next(subagents.rglob("*.jsonl"))
             child_id = transcript.parent.name
-            artifact = transcript.parent / "call-child.txt"
+            artifact = root / "artifacts" / "subagents" / child_id / "call-child.txt"
             child = JsonlSessionStore(
-                subagents, group_by_workspace=False
+                subagents
             ).load(child_id)
             tool_message = next(
                 item for item in child.items if item.role == "tool"
             )
             artifact_path = (
-                f".RADE/sessions/{workspace_key(root)}/parent/subagents/"
+                "artifacts/subagents/"
                 f"{child_id}/call-child.txt"
             )
             misplaced_artifact = (
-                tool_context.sessions_directory
-                / workspace_key(root)
+                tool_context.run_directory
                 / child_id
                 / "call-child.txt"
             )
@@ -656,7 +640,7 @@ class SubagentRuntimeTest(unittest.TestCase):
             tool_context = ToolExecutionContext(
                 workspace=Workspace(root),
                 session=Session(),
-                sessions_directory=root / "sessions",
+                run_directory=root / "run",
                 subagents=subagents,
             )
             original_select = catalog.select
@@ -743,11 +727,7 @@ class SubagentRuntimeTest(unittest.TestCase):
                 )
 
             transcript_directory = (
-                session_directory(
-                    tool_context.sessions_directory,
-                    tool_context.workspace.path,
-                    parent.session_id,
-                )
+                tool_context.run_directory
                 / "subagents"
             )
             transcripts = list(transcript_directory.rglob("*.jsonl"))
@@ -755,8 +735,7 @@ class SubagentRuntimeTest(unittest.TestCase):
             for transcript in transcripts:
                 content = (
                     JsonlSessionStore(
-                        transcript.parent.parent,
-                        group_by_workspace=False,
+                        transcript.parent.parent
                     )
                     .load(transcript.parent.name)
                     .items[0]

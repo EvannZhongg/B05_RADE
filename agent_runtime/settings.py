@@ -25,7 +25,6 @@ from .config import (
     EXECUTION_CONFIG_FILENAMES,
     load_model_options,
     load_runtime_skills,
-    load_scratch_workspace_root,
 )
 from .plugins import PluginManager
 
@@ -228,7 +227,6 @@ class SettingsStore:
                 "max_same_tool_calls": agent_config.max_same_tool_calls,
                 "output_reserve_tokens": agent_config.output_reserve_tokens,
                 "max_generation_tokens": agent_config.max_generation_tokens,
-                "workspace_instruction_files": list(agent_config.workspace_instruction_files),
                 "tools": {name: agent_config.tools.is_enabled(name) for name in TOOL_NAMES},
                 "context": {
                     "compression": {
@@ -240,7 +238,7 @@ class SettingsStore:
                 },
                 "memory": {
                     "enabled": agent_config.memory.enabled,
-                    "workspace_max_tokens": agent_config.memory.workspace_max_tokens,
+                    "max_tokens": agent_config.memory.max_tokens,
                 },
                 "subagent_roles": {
                     name: {
@@ -408,7 +406,7 @@ class SettingsStore:
             raise ValueError("agent settings must be an object")
         allowed = {
             "max_same_tool_calls", "output_reserve_tokens", "max_generation_tokens",
-            "workspace_instruction_files", "tools", "context", "memory", "subagent_roles", "mcp_enabled",
+            "tools", "context", "memory", "subagent_roles", "mcp_enabled",
         }
         unknown = set(payload) - allowed
         if unknown:
@@ -416,7 +414,6 @@ class SettingsStore:
         document = _read_json(self.agent_path)
         for field in (
             "max_same_tool_calls", "output_reserve_tokens", "max_generation_tokens",
-            "workspace_instruction_files",
         ):
             if field in payload:
                 document[field] = payload[field]
@@ -530,7 +527,6 @@ class SettingsStore:
             with os.fdopen(descriptor, "w", encoding="utf-8") as file:
                 json.dump(document, file)
             load_agent_config(path)
-            load_scratch_workspace_root(path)
         finally:
             path.unlink(missing_ok=True)
 

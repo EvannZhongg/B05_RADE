@@ -1,6 +1,5 @@
 import { MessagePrimitive, useAuiState } from "@assistant-ui/react";
 import { CopyTextButton } from "../../CopyTextButton";
-import { FileAttachmentPart, SignedImage } from "./Attachments";
 import { MessageTimestamp } from "./messagePrimitives";
 
 export function UserMessage() {
@@ -11,7 +10,7 @@ export function UserMessage() {
     .join("\n"));
   return <MessagePrimitive.Root className="user-turn" data-message-id={String(itemIndex)}>
     <MessageTimestamp className="turn-timestamp" />
-    <div className="user-message"><MessagePrimitive.Parts components={{ File: FileAttachmentPart, Image: SignedImage }} /></div>
+    <div className="user-message"><MessagePrimitive.Parts /></div>
     <div className="user-message-meta">
       <CopyTextButton className="user-message-action" label="复制消息" getText={() => text} />
     </div>

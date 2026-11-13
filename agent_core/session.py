@@ -136,7 +136,6 @@ JournalSink = Callable[[tuple[JournalEvent, ...]], None]
 class Session:
     session_id: str = field(default_factory=lambda: str(uuid4()))
     items: list[Message] = field(default_factory=list)
-    workspace: str | None = None
     archived_summary: str | None = None
     archived_item_cursor: int = 0
     compression_count: int = 0

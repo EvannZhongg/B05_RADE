@@ -6,20 +6,13 @@ export type { SessionItem, SessionSummary };
 export type Session = {
   session_id: string;
   items: SessionItem[];
-  workspace?: string | null;
   provider?: string | null;
   context_window?: ContextWindow | null;
   cache_usage?: CacheUsage | null;
   event_sequence?: number;
   plan?: PlanSnapshot | null;
-  editable_user_messages?: EditableUserMessage[];
 };
-export type EditableUserMessage = { anchor_id: string; item_index: number };
-export type WorkspaceOption = { workspace: string; scratch?: boolean };
-export type WorkspaceSessions = WorkspaceOption & { sessions: SessionSummary[] };
 export type SessionSearchMatch = SessionSummary & {
-  workspace: string;
-  scratch: boolean;
   item_index: number;
   role: "user" | "assistant";
   has_more_in_session: boolean;
@@ -39,10 +32,9 @@ export type MemoryDocument = {
   decisions: string[];
 };
 export type MemorySnapshot = {
-  workspaces: { workspace: string; memory: MemoryDocument }[];
+  runs: { run_id: string; memory: MemoryDocument }[];
 };
 export type Directory = {
-  root: string;
   path: string;
   entries: { name: string; type: "directory" | "file" | "symlink" | "other" }[];
   has_more: boolean;
@@ -104,38 +96,12 @@ export async function releaseActiveSession(
   }
 }
 
-export async function selectWorkspace(): Promise<string | null> {
-  const response = await fetch("/api/select-workspace");
+export async function openRunFolder(sessionId: string): Promise<void> {
+  const response = await fetch(`${sessionUrl(sessionId)}/files/open`, { method: "POST" });
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail ?? `选择工作区失败 (${response.status})`);
+    throw new Error(error.detail ?? `打开运行文件夹失败 (${response.status})`);
   }
-  return (await response.json() as { workspace: string | null }).workspace;
-}
-
-export async function openWorkspaceFolder(workspace: string): Promise<void> {
-  const response = await fetch("/api/workspace/open", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ workspace }),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail ?? `打开工作区文件夹失败 (${response.status})`);
-  }
-}
-
-export async function createScratchWorkspace(sessionId: string): Promise<string> {
-  const response = await fetch("/api/workspaces/scratch", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ session_id: sessionId }),
-  });
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail ?? `临时工作区创建失败 (${response.status})`);
-  }
-  return (await response.json() as { workspace: string }).workspace;
 }
 
 export async function createSignedImageUrl(
@@ -154,13 +120,4 @@ export async function createSignedImageUrl(
     throw new Error(error.detail ?? `图片加载失败 (${response.status})`);
   }
   return (await response.json() as { url: string }).url;
-}
-
-export function attachmentDownloadUrl(path: string, filename: string, sessionId?: string): string {
-  const query = new URLSearchParams();
-  if (sessionId) query.set("session_id", sessionId);
-  query.set("download_name", filename);
-  const prefix = ".RADE/attachments/";
-  if (!path.startsWith(prefix)) return path;
-  return `/api/attachments/${encodeURIComponent(path.slice(prefix.length))}?${query}`;
 }

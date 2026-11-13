@@ -79,9 +79,6 @@ describe("process folding", () => {
     expect(applyMessage([], {
       type: "provider_changed", provider: "next", model: "next/model",
     }).cacheUsage).toBeUndefined();
-    expect(applyMessage([], {
-      type: "workspace_changed", workspace: "/next",
-    }).cacheUsage).toBeUndefined();
   });
 
   it("uses compression totals without changing the transcript or ending the turn", () => {
@@ -190,14 +187,14 @@ it("shows session occupancy as actionable feedback without changing the transcri
   expect(applied.finished).toBeUndefined();
 });
 
-it("shows workspace opening errors without reporting session occupancy", () => {
+it("shows run opening errors without reporting session occupancy", () => {
   const items: TranscriptItem[] = [{ role: "user", content: "stored history" }];
   const applied = applyMessage(items, {
     type: "session_open_failed", session_id: null,
-    error: { type: "ValueError", message: "workspace must be an existing directory" },
+    error: { type: "ValueError", message: "Invalid session directory" },
   });
   expect(applied.items).toBe(items);
-  expect(applied.feedback?.text).toBe("workspace must be an existing directory");
+  expect(applied.feedback?.text).toBe("Invalid session directory");
 });
 
 describe("isTurnActivity", () => {
@@ -675,9 +672,8 @@ describe("applyMessage", () => {
     for (const message of [
       {
         type: "session_ready" as const,
-        protocol_version: 7 as const,
+        protocol_version: 8 as const,
         session_id: "s1",
-        workspace: "/tmp",
         provider: "test",
         model: "m",
         resumed: false,

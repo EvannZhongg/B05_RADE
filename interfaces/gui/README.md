@@ -11,33 +11,30 @@ uv sync --extra server
 # 或：python -m pip install -e ".[server]"
 ```
 
-其中包含 Uvicorn 的 WebSocket 后端，Windows 上还包含用于通过 Explorer 打开 Workspace 文件夹的 `pywin32`；三个平台使用相同命令。若缺少 WebSocket 后端，HTTP 适配器会提示安装命令。
+其中包含 Uvicorn 的 WebSocket 后端，Windows 上还包含用于通过 Explorer 打开运行文件夹的 `pywin32`；三个平台使用相同命令。若缺少 WebSocket 后端，HTTP 适配器会提示安装命令。
 
 ## 启动
 
 ```bash
 RADE-server
-RADE-server --workspace ~/projects/my-project
 ```
 
-默认监听 <http://127.0.0.1:8736>。`interfaces/application_host.py` 初始化 `.RADE/`、默认 Workspace、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
+默认监听 <http://127.0.0.1:8736>。`interfaces/application_host.py` 初始化 `.RADE/`、Session Store 和 Settings Store，然后启动 Bridge 和 HTTP 服务。
 
-从项目根目录启动 `RADE-server` 后，在对话区的 `选择 input/ 场景` 下拉框中选择、预览并运行场景。列表读取启动目录下的 `input/`，文件名使用 `scene<S>_<I>.json`，其中 `S` 为 1 或 2，`I` 为 1–5。切换会话工作区时继续使用同一个输入目录。
+从项目根目录启动 `RADE-server` 后，在对话区的 `选择 input/ 场景` 下拉框中选择、预览并运行场景。列表读取启动目录下的 `input/`，文件名使用 `scene<S>_<I>.json`，其中 `S` 为 1 或 2，`I` 为 1–5。
 
 ## 服务端
 
 `interfaces/application_host.py` 管理Session Host 和 HTTP 的生命周期，并向 `server.py` 注入活动 Session 注册表；`server.py` 组装 GUI 应用和路由，管理 HTTP 监听与 Uvicorn 的启停。HTTP 适配器职责包括：
 
-- 列出、读取和删除按 Workspace 分组的 Session
+- 列出、读取和删除运行历史
 - 通过共享 Session Host 为活动 Session 创建、复用和关闭通道
 - 通过 WebSocket 双向转发共享协议
 - 管理单 Session 的页面附着、事件续传和显式 takeover
-- 选择普通 Workspace，创建与回收 scratch Workspace
 - 提供已脱敏设置快照及配置更新 API
 - 展示长期记忆
-- 从某条历史用户消息的锚点创建分支 Session（fork），源 Session 保持不变
-- 上传附件、下载文件和签发短期图片访问 URL
-- 提供限制在当前 Session Workspace 内的文件树，并在系统文件管理器中打开该 Workspace
+- 为运行中的工具图片签发短期访问 URL
+- 提供限制在当前运行的 `files/` 内的文件树，并在系统文件管理器中打开运行文件目录
 - 列出 `input/` 场景并提供 JSON 预览
 
 `ActiveSessionRegistry` 按 Session 保存后台运行的 `ActiveSession`。页面切换或临时断线不会取消 Turn；重新连接可以从 Bridge 分配的 `event_sequence` 继续。宿主缓存 Bridge 的完整运行快照和 transcript 检查点。一个 Session 同时只有一个控制页面，新页面只有显式 takeover 才替换现有 attachment。
@@ -46,9 +43,9 @@ HTTP / WebSocket 路由按模块拆分：
 
 | 模块 | 路由范围 |
 | --- | --- |
-| `routes/sessions.py` | Session 查询与历史搜索、删除、fork、active session 与 `/api/session` WebSocket |
-| `routes/workspace.py` | Workspace 选择、scratch 创建、文件树和打开文件夹 |
-| `routes/media.py` | 附件上传、签名图片和附件下载 |
+| `routes/sessions.py` | Session 查询与历史搜索、删除、active session 与 `/api/session` WebSocket |
+| `routes/run_files.py` | 浏览和打开当前运行的文件目录 |
+| `routes/media.py` | 工具图片签名与展示 |
 | `routes/settings.py` | 模型、设置、路由更新和长期记忆读取 |
 
 服务端非路由模块：
@@ -58,15 +55,15 @@ HTTP / WebSocket 路由按模块拆分：
 | `../application_host.py` | 配置目录级进程锁、Session Host 与 HTTP 生命周期 |
 | `server.py` | FastAPI 应用与路由组装、HTTP 监听与 Uvicorn 生命周期 |
 | `../session_host.py` | 活动 Session 注册表、控制附着与事件续传 |
-| `windows_folders.py` | 通过 Windows Explorer 定位并打开 Workspace 文件夹 |
+| `windows_folders.py` | 通过 Windows Explorer 定位并打开运行文件夹 |
 
 常驻 Bridge 进程的生命周期、通道收发与故障广播由宿主侧模块 `interfaces/bridge_process.py` 提供；GUI 只决定何时创建、附着与关闭，不实现协议语义。
 
-服务端直接复用 Core 的只读 Session / Workspace 能力和 Runtime 的设置、场景读取能力，唯一的 Session 写入是 fork：Session Store 复制锚点所在 Turn 之前的 Journal 生成新 Session，并记录来源和锚点。所有会改变 Session 或 Workspace 执行状态的 Agent 操作经 Bridge 协议完成。
+服务端复用 Core 的运行记录和文件路径解析能力。Agent 操作经 Bridge 协议执行。
 
 ## 前端
 
-React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树。多个 Session 会稳定挂载，因此可以并行执行并在页面内切换。编辑历史用户消息不会改写原会话：GUI 以该消息为锚点创建分支 Session，先在源会话中预览待提交的内容，创建成功后再切换过去。
+React 应用提供可折叠的 Session 列表、对话区和运行文件树。多个 Session 会稳定挂载，因此可以并行执行并在页面内切换。
 
 切换到其他会话时，只断开空闲会话的 WebSocket，保留其 Bridge、Provider 和 MCP；返回后附着已有 Runtime。离开浏览器页面时释放该页面持有的空闲会话，删除会话和关闭应用宿主也会释放资源。关闭会话通道不会结束常驻 Bridge；新会话复用已加载的 SDK、tokenizer 和 TLS 上下文，仍有独立执行面。应用宿主退出时才关闭进程及全部通道。
 
@@ -76,8 +73,7 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 - 等待首个 `runtime_state` 同步屏障
 - 回放 Journal 并把协议事件投影为 assistant-ui 消息
 - 管理流式文本、reasoning、Tool、计划、Job 和 Context Window
-- 选择并预览 `input/` 场景，提交后可停止运行。支持修改 Provider 和 Workspace
-- 上传附件并提交文本或 attachment-only Turn
+- 选择并预览 `input/` 场景，提交后可停止运行。支持修改 Provider
 - 在重连期间合并待应用的本地选择与服务端权威状态
 
 主要前端模块：
@@ -85,7 +81,7 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 | 模块 | 职责 |
 | --- | --- |
 | `src/main.tsx` | React 入口 |
-| `src/App.tsx` | 应用布局、多 Session、设置入口和 Workspace 分组 |
+| `src/App.tsx` | 应用布局、多 Session、设置入口与运行历史 |
 | `src/Chat.tsx` | 单 Session 对话容器 |
 | `src/chat/useSessionRuntime.ts` | 协议连接与 assistant-ui Runtime 适配 |
 | `src/chat/runtimeState.ts` | Job 与计划的运行状态投影 |
@@ -93,19 +89,17 @@ React 应用提供可折叠的 Session 列表、对话区和 Workspace 文件树
 | `src/chat/Transcript.tsx` | transcript 视口与滚动 |
 | `src/chat/TurnNavigation.tsx` | 按 Turn 跳转的导航条 |
 | `src/session.ts` | 浏览器到服务端的 WebSocket client 与 JSON 消息接口 |
-| `src/chat/Composer.tsx` | 输入、附件、Provider 和 Workspace 控件 |
+| `src/chat/Composer.tsx` | 场景选择与 Provider 控件 |
 | `src/chat/Messages/` | assistant、user、Tool 与媒体消息渲染 |
 | `src/chat/RuntimeIndicators/` | Context Window、计划和后台 Job |
-| `src/Workspace.tsx` | Workspace 文件树与逐项复制相对路径 |
+| `src/RunFiles.tsx` | 运行文件树与逐项复制相对路径 |
 | `src/CopyTextButton.tsx` | 复制按钮（代码块、表格与文件树共用） |
 | `src/Settings.tsx` | Provider、Agent、Memory、Skill、Plugin、MCP、Schedule 设置页 |
 | `src/api.ts` | HTTP API 类型与请求函数 |
 
-## 附件与媒体
+## 工具媒体
 
-上传的文件保存在当前 Workspace 的 `.RADE/attachments/`。Session 只持久化稳定的 Workspace 相对路径、文件名、MIME type 和大小。
-
-浏览器不直接获得任意本地路径。图片显示前向服务端换取短期签名 URL；附件下载和文件树读取也会校验目标属于该 Session 的 Workspace。图片作为视觉附件进入模型，其他文件由 Agent 通过 Workspace Tool 读取。
+工具产出的运行图片通过短期签名 URL 展示。图片路径和文件树请求都以该运行的 `files/` 目录为根。
 
 ## 设置与运行状态
 

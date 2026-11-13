@@ -13,7 +13,7 @@ let connection: SessionSocketOptions;
 const onTurnEnd = vi.fn();
 const onSessionAvailable = vi.fn();
 const noop = () => {};
-const session = { session_id: "commands", workspace: "/workspace", items: [] };
+const session = { session_id: "commands", items: [] };
 const providers = [{ id: "test", model: "test/model" }];
 
 vi.mock("../src/session", () => ({
@@ -27,7 +27,7 @@ vi.mock("../src/session", () => ({
 
 function TestComposer() {
   const runtime = useSessionRuntime({
-    session, selected: true, contextWindow: null, workspaceOptions: [], backgroundActive: false,
+    session, selected: true, contextWindow: null, backgroundActive: false,
     providers, provider: "test", onProviderChange: noop, onBusyChange: noop,
     onContextWindowChange: noop, onSessionAvailable, onTurnEnd,
   });

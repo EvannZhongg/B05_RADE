@@ -4,7 +4,7 @@
   <a href="README.md">English</a> &middot; <b>简体中文</b>
 </div>
 
-RADE 是一个开源的轻量级个人 Agent 应用。它提供本地 Workspace 操作、会话持久化、上下文管理、长期记忆、计划、子 Agent 和 Skill、Plugin、MCP 扩展能力，并提供 TUI 与 GUI。
+RADE 是一个开源的轻量级个人 Agent 应用。它提供运行文件操作、会话持久化、上下文管理、长期记忆、计划、子 Agent 和 Skill、Plugin、MCP 扩展能力，并提供 TUI 与 GUI。
 
 ```text
 TUI ────────────────── Bridge ── agent_runtime ── agent_core
@@ -20,13 +20,13 @@ RADE-server（常驻宿主）
 
 ## 主要能力
 
-- **直接本地执行**：Shell 和命令 Hook 以当前用户的宿主权限运行，工作目录为当前 Workspace。内置文件 Tool 在 Workspace 内解析操作路径。
+- **直接本地执行**：Shell 和命令 Hook 以当前用户的宿主权限运行，工作目录为本次运行的 `files/` 目录。内置文件 Tool 在本次运行的 `files/` 目录内解析操作路径。
 - **完整 Agent Loop**：支持流式响应、Tool 批次、上下文压缩、steer、取消、计划和后台 Job。
 - **可恢复 Session**：对话和执行事件写入 append-only JSONL Journal，TUI 与 GUI 可读取同一类 Session。
-- **长期记忆**按 Workspace 保存偏好、事实与决策。
-- **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。子 Agent、上下文压缩和记忆使用当前主 Agent 选中的 Provider。支持视觉输入的模型可以读取 Workspace 图片。
+- **长期记忆**按运行保存偏好、事实与决策。
+- **模型与媒体**通过 OpenAI SDK 使用 Chat Completions 或 Responses。子 Agent、上下文压缩和记忆使用当前主 Agent 选中的 Provider。支持视觉输入的模型可以读取运行文件中的图片。
 - **扩展系统**：支持 standalone Skill、Plugin 提供的 Skill / Agent / MCP / [Hook](docs/plugin-hooks.md) 组件，以及独立 MCP Server。
-- **两个交互入口**分别是终端中的 TUI 和浏览器中的 GUI。GUI 提供多会话管理、附件、文件树、设置和记忆。
+- **两个交互入口**分别是终端中的 TUI 和浏览器中的 GUI。GUI 提供多会话管理、运行文件树、设置和记忆。
 
 ## 快速开始
 
@@ -114,14 +114,13 @@ Runtime 层：
 | 路径 | 内容 |
 | --- | --- |
 | `.RADE/provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
-| `.RADE/agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Workspace Instructions 与 scratch Workspace 设置 |
+| `.RADE/agent_config.json` | 工具、上下文、记忆、子 Agent 和 MCP |
 | `.RADE/.env` | 配置引用的密钥和环境变量 |
 | `.RADE/prompts/` | 主 Agent、子 Agent、压缩与记忆 Prompt |
 | `.RADE/skills/` | standalone Skill |
 | `.RADE/plugins/` | Plugin capability package |
-| `.RADE/AGENTS.md` | 项目级 Workspace Instruction |
-| `.RADE/sessions/` | Session Journal、Workspace 记忆、Artifact、子 Agent 记录与 Session 级辅助调用用量日志 |
-| `<workspace>/.RADE/attachments/` | 上传附件和 Agent 生成的图片 |
+| `.RADE/AGENTS.md` | 应用级运行指令 |
+| `.RADE/runs/<run_id>/` | Journal、运行配置、记忆、子 Agent 记录及 `files/` 下的场景快照、求解文件和工具产物 |
 
 默认配置与内置资源位于 [`agent_runtime/defaults/`](agent_runtime/defaults)。具体装配方式见 [`agent_runtime/README.md`](agent_runtime/README.md)。
 
@@ -140,7 +139,7 @@ python -m pytest --durations=20
 
 Pytest 默认用 4 个独立进程按测试类并行运行；串行调试使用 `-n 0`，资源较少时使用 `-n 2`。完整测试包含安装包验证及真实本地 MCP 和 Shell 进程；日常迭代可用 `--ignore=tests/test_bridge_client.py` 跳过安装包验证。独立插件测试包的运行方式见 [docs/plugin-interop.md](docs/plugin-interop.md)。
 
-server extra 包含 FastAPI、Uvicorn、WebSocket 后端和 multipart 支持；Windows、macOS 与 Linux 使用相同的安装方式。TUI 使用基础安装。
+server extra 包含 FastAPI、Uvicorn 和 WebSocket 后端；Windows、macOS 与 Linux 使用相同的安装方式。TUI 使用基础安装。
 
 前端构建、类型检查和测试：
 

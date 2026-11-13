@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { resolve } from 'node:path';
 import { BridgeClient } from '@rade/client';
 import { PROTOCOL_VERSION } from '@rade/protocol';
 
-const [workspace, text] = process.argv.slice(2);
-if (!workspace || !text) throw new Error('Usage: chat.mjs <workspace> <prompt>');
+const [text] = process.argv.slice(2);
+if (!text) throw new Error('Usage: chat.mjs <prompt>');
 let opened = false;
 let submitted = false;
 const client = new BridgeClient({
@@ -37,5 +36,5 @@ const client = new BridgeClient({
   onProtocolError(error) { console.error(error); process.exitCode = 1; },
   onExit(code, signal) { if (code !== 0 || signal) process.exitCode = 1; },
 });
-client.send({ type: 'open_session', workspace: resolve(workspace), session_id: null }, 'main');
+client.send({ type: 'open_session', session_id: null }, 'main');
 await client.closed;

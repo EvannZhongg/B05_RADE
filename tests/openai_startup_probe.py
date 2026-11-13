@@ -59,7 +59,7 @@ with tempfile.TemporaryDirectory() as directory:
                      "output_reserve_tokens": 100, "memory": {"enabled": False},
                      "main_agent": {"tools": {"read_file": True}}})
     host = RuntimeHost(root)
-    host.open_session(root)
+    host.open_session()
     turn_start = time.perf_counter()
     try:
         with patch("agent_core.providers.openai_provider.OpenAI", side_effect=client):

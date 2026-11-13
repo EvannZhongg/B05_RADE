@@ -16,8 +16,8 @@ class RememberTool(Tool):
             name=self.name,
             description=(
                 "Submit one durable preference, stable fact, or decision "
-                "for the current workspace. The Runtime reconciles candidates "
-                "with existing workspace memory after the turn succeeds. "
+                "for the current run. The Runtime reconciles candidates "
+                "with existing run memory after the turn succeeds. "
                 "Correct outdated memory when verified information supersedes it."
             ),
             parameters={

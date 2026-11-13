@@ -6,20 +6,16 @@ from agent_core import (
     LLMProvider,
     LLMResponse,
     SubagentRole,
-    Workspace,
-    WorkspaceInstruction,
-    WorkspaceInstructions,
+    RuntimeInstruction,
+    RuntimeInstructions,
 )
 from agent_core.prompting import render_subagent_prompt, render_system_prompt
 from agent_core.mcp.manager import McpServerInstructions
 from agent_core.skills import Skill, SkillRegistry
 
 
-SYSTEM_TEMPLATE = "I am RADE.\n\nCurrent workspace: {{workspace}}"
-SUBAGENT_TEMPLATE = (
-    "Role {{role}}: {{role_description}}\n\n"
-    "Current workspace: {{workspace}}"
-)
+SYSTEM_TEMPLATE = "I am RADE."
+SUBAGENT_TEMPLATE = "Role {{role}}: {{role_description}}"
 
 
 class _TextOnlyProvider(LLMProvider):
@@ -37,16 +33,16 @@ class _TextOnlyProvider(LLMProvider):
 
 
 class PromptsTest(unittest.TestCase):
-    def instructions(self, root: Path) -> WorkspaceInstructions:
-        return WorkspaceInstructions(
+    def instructions(self, root: Path) -> RuntimeInstructions:
+        return RuntimeInstructions(
             documents=(
-                WorkspaceInstruction(
+                RuntimeInstruction(
                     ".RADE/AGENTS.md", "global rule"
                 ),
-                WorkspaceInstruction(
+                RuntimeInstruction(
                     "<workspace>/CLAUDE.md", "claude rule"
                 ),
-                WorkspaceInstruction(
+                RuntimeInstruction(
                     "<workspace>/AGENTS.md", "agent rule"
                 ),
             ),
@@ -55,22 +51,17 @@ class PromptsTest(unittest.TestCase):
 
     def test_loads_system_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            workspace = Workspace(Path(directory))
-            prompt = render_system_prompt(SYSTEM_TEMPLATE, workspace)
+            prompt = render_system_prompt(SYSTEM_TEMPLATE)
 
         self.assertTrue(prompt)
         self.assertIn("I am RADE", prompt)
-        self.assertIn(f"Current workspace: {workspace.path}", prompt)
         self.assertNotIn("{{workspace}}", prompt)
-        self.assertNotIn(f"{{{{{workspace.path}}}}}", prompt)
 
     def test_system_prompt_includes_workspace_instruction_priority(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace = Workspace(root)
             prompt = render_system_prompt(
                 SYSTEM_TEMPLATE,
-                workspace,
                 instructions=self.instructions(root),
             )
 
@@ -90,11 +81,10 @@ class PromptsTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            workspace = Workspace(root)
             skills = SkillRegistry((Skill("review", "Inspect code.", root),))
             for render, args in (
-                (render_system_prompt, (SYSTEM_TEMPLATE, workspace, skills)),
-                (render_subagent_prompt, (SUBAGENT_TEMPLATE, workspace, role, skills)),
+                (render_system_prompt, (SYSTEM_TEMPLATE, skills)),
+                (render_subagent_prompt, (SUBAGENT_TEMPLATE, role, skills)),
             ):
                 with self.subTest(render=render.__name__):
                     prefix = render(*args, instructions=self.instructions(root))
@@ -110,7 +100,7 @@ class PromptsTest(unittest.TestCase):
                     self.assertLess(prompt.index("### review-kit:analyzer"), prompt.index("### docs"))
                     self.assertTrue(prompt.endswith("Search docs first."))
 
-    def test_loads_subagent_prompt_with_workspace_and_role(self) -> None:
+    def test_loads_subagent_prompt_with_role(self) -> None:
         role = SubagentRole(
             name="researcher",
             description="Read the workspace and report findings.",
@@ -118,20 +108,18 @@ class PromptsTest(unittest.TestCase):
             provider=_TextOnlyProvider(),
         )
         with tempfile.TemporaryDirectory() as directory:
-            workspace = Workspace(Path(directory))
             prompt = render_subagent_prompt(
-                SUBAGENT_TEMPLATE, workspace, role
+                SUBAGENT_TEMPLATE, role
             )
 
         self.assertTrue(prompt)
-        self.assertIn(f"Current workspace: {workspace.path}", prompt)
         self.assertIn("researcher", prompt)
         self.assertIn(role.description, prompt)
         self.assertNotIn("{{workspace}}", prompt)
         self.assertNotIn("{{role}}", prompt)
         self.assertNotIn("{{role_description}}", prompt)
 
-    def test_subagent_prompt_inherits_workspace_instructions(self) -> None:
+    def test_subagent_prompt_inherits_runtime_instructions(self) -> None:
         role = SubagentRole(
             name="researcher",
             description="Read the workspace and report findings.",
@@ -142,7 +130,6 @@ class PromptsTest(unittest.TestCase):
             root = Path(directory)
             prompt = render_subagent_prompt(
                 SUBAGENT_TEMPLATE,
-                Workspace(root),
                 role,
                 instructions=self.instructions(root),
             )
@@ -162,7 +149,6 @@ class PromptsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             prompt = render_subagent_prompt(
                 SUBAGENT_TEMPLATE,
-                Workspace(Path(directory)),
                 role,
             )
 

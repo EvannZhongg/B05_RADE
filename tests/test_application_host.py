@@ -25,8 +25,8 @@ class ApplicationHostCommandTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with patch.object(application_host, "run_application_host") as launch:
-                application_host.main(["--workspace", str(root), "--config-directory", str(root)])
-                launch.assert_called_once_with(root, root)
+                application_host.main(["--config-directory", str(root)])
+                launch.assert_called_once_with(root)
 
     def test_error_interrupt_and_signal_restoration(self):
         previous = signal.getsignal(signal.SIGTERM)
@@ -46,7 +46,7 @@ class ApplicationHostCommandTest(unittest.TestCase):
                 patch.object(ApplicationHost, "serve", new_callable=AsyncMock) as serve,
                 patch("builtins.print"),
             ):
-                application_host.run_application_host(root, config)
+                application_host.run_application_host(config)
             serve.assert_awaited_once_with()
             self.assertTrue((config / "provider_config.json").is_file())
             with application_lock(config):
@@ -62,7 +62,7 @@ class ApplicationHostCommandTest(unittest.TestCase):
             ):
                 with self.assertRaises(SystemExit) as failure:
                     application_host.main([
-                        "--workspace", str(root), "--config-directory", str(root),
+                        "--config-directory", str(root),
                     ])
                 self.assertEqual(
                     str(failure.exception),
@@ -118,7 +118,7 @@ class ApplicationHostLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.registry = Mock(start=AsyncMock(), close_all=AsyncMock())
         self.enterContext(patch.object(application_host, "ActiveSessionRegistry", return_value=self.registry))
         self.host = ApplicationHost(
-            Workspace(self.root), JsonlSessionStore(self.root / "sessions"), SettingsStore(self.root),
+            JsonlSessionStore(self.root / "runs"), SettingsStore(self.root),
         )
 
     async def stop(self, task):
@@ -179,12 +179,12 @@ class HttpAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.server = server
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         self.registry = Mock(start=AsyncMock(), close_all=AsyncMock())
-        self.store = JsonlSessionStore(self.root / "sessions")
+        self.store = JsonlSessionStore(self.root / "runs")
         self.workspace = Workspace(self.root)
         self.settings = SettingsStore(self.root)
 
     async def test_fastapi_lifespan_does_not_own_shared_resources(self):
-        app = self.server.create_app(self.workspace, self.store, self.settings, self.registry)
+        app = self.server.create_app(self.store, self.settings, self.registry)
         with TestClient(app, base_url="http://127.0.0.1") as client:
             self.assertEqual(client.get("/api/sessions").json(), [])
         self.registry.start.assert_not_awaited()
@@ -207,7 +207,7 @@ class HttpAdapterTest(unittest.IsolatedAsyncioTestCase):
             patch("builtins.print"),
         ):
             task = asyncio.create_task(self.server.serve_http(
-                self.workspace, self.store, self.settings, self.registry,
+                self.store, self.settings, self.registry,
             ))
             try:
                 async def wait_started():

@@ -4,7 +4,7 @@ import type { Incoming as HostIncoming, Outgoing as HostOutgoing } from '@rade/p
 import type { SettingsSnapshot } from '@rade/protocol';
 
 const initial: RuntimeState = initialRuntimeState();
-const open: Outgoing = { type: 'open_session', workspace: '/workspace', session_id: null };
+const open: Outgoing = { type: 'open_session', session_id: null };
 // @ts-expect-error GUI attachment ownership is not a stdio command field.
 const attachment: Outgoing = { ...open, attachment_id: 'page' };
 // @ts-expect-error First-party settings commands are not public commands.
@@ -19,7 +19,7 @@ function inspect(message: Incoming): void {
   void message.replayed;
   if (message.type === 'assistant_delta') console.log(message.text);
   if (message.type === 'session_ready') {
-    const major: 7 = message.protocol_version;
+    const major: 8 = message.protocol_version;
     console.log(major);
   }
 }

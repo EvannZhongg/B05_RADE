@@ -22,9 +22,8 @@ it('shares protocol defaults while keeping initial UI state separate', () => {
 
 const READY = {
   type: 'session_ready' as const,
-  protocol_version: 7 as const,
+  protocol_version: 8 as const,
   session_id: 'abc12345-0000',
-  workspace: '/tmp/work',
   provider: 'deepseek',
   model: 'deepseek/deepseek-chat',
   resumed: false,
@@ -371,7 +370,6 @@ describe('reducer', () => {
     }).usage).toEqual(state.usage);
     const messages: Incoming[] = [
       { type: 'provider_changed', provider: 'next', model: 'next/model' },
-      { type: 'workspace_changed', workspace: '/next' },
     ];
     for (const message of messages) {
       expect(reducer(state, { type: 'message', message }).usage).toBeNull();
@@ -532,7 +530,7 @@ describe('sessions', () => {
     expect(state.entries.at(-1)).toMatchObject({ kind: 'notice', text: 'protected file' });
   });
 
-  it('fills the open picker with the workspace sessions', () => {
+  it('fills the open picker with saved runs', () => {
     let state = reducer(ready(), { type: 'picker_opened', kind: 'sessions' });
     expect(state.picker).toEqual({ kind: 'sessions', list: null, selectedIndex: 0 });
 
@@ -570,15 +568,9 @@ describe('sessions', () => {
     ).toBe(state);
   });
 
-  it('keeps late responses from replacing another picker and distinguishes an empty list', () => {
-    let state = reducer(ready(), { type: 'picker_opened', kind: 'workspaces' });
+  it('keeps late run responses from replacing the input picker', () => {
+    const state = reducer(ready(), { type: 'picker_opened', kind: 'input' });
     expect(reducer(state, { type: 'message', message: { type: 'sessions_listed', sessions: [] } })).toBe(state);
-    state = reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: [] } });
-    expect(state.picker).toEqual({ kind: 'workspaces', list: [], selectedIndex: 0 });
-    state = reducer(state, { type: 'picker_opened', kind: 'sessions' });
-    expect(reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: ['/other'] } })).toBe(state);
-    state = reducer(state, { type: 'picker_closed' });
-    expect(reducer(state, { type: 'message', message: { type: 'workspaces_listed', workspaces: ['/other'] } })).toBe(state);
   });
 
   it('keeps the resumed notice above the replayed conversation', () => {

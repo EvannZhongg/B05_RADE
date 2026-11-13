@@ -41,14 +41,12 @@ export type Entry =
 
 export type NavigationPicker = (
   | { kind: 'sessions'; list: SessionSummary[] | null }
-  | { kind: 'workspaces'; list: string[] | null }
   | { kind: 'input'; list: string[] | null; error?: string }
 ) & { selectedIndex: number };
 
 export type State = {
   status: Status;
   sessionId: string | null;
-  workspace: string;
   model: string;
   provider: string;
   entries: Entry[];
@@ -81,7 +79,6 @@ const initialRuntime = initialRuntimeState();
 export const initialState: State = {
   status: 'opening',
   sessionId: null,
-  workspace: initialRuntime.workspace ?? '',
   model: '',
   provider: initialRuntime.provider ?? '',
   entries: [],
@@ -416,10 +413,10 @@ function applyMessage(state: State, message: Incoming): State {
     case 'session_open_failed': {
       const retained = state.sessionId !== null
         ? message.runtime ? applyMessage(state, message.runtime) : state
-        : { ...initialState, status: 'session_unavailable' as const, workspace: state.workspace };
+        : { ...initialState, status: 'session_unavailable' as const };
       return {
         ...retained,
-        picker: { kind: message.error.type === 'SessionInUseError' ? 'sessions' : 'workspaces', list: null, selectedIndex: 0 },
+        picker: { kind: 'sessions', list: null, selectedIndex: 0 },
         entries: [...retained.entries, {
           kind: 'notice', id: nextId('notice'), level: 'warning',
           text: message.error.type === 'SessionInUseError'
@@ -436,7 +433,6 @@ function applyMessage(state: State, message: Incoming): State {
         ...initialState,
         sessionId: message.session_id,
         usage: null,
-        workspace: message.workspace,
         provider: message.provider,
         model: message.model,
         entries: message.resumed
@@ -597,17 +593,9 @@ function applyMessage(state: State, message: Incoming): State {
         entries: [...state.entries, { kind: 'notice', id: nextId('notice'), level: 'error', text: message.error.message }],
       };
 
-    case 'workspace_changed':
-      return { ...state, usage: null };
-
     case 'sessions_listed':
       return state.picker?.kind === 'sessions'
         ? { ...state, picker: { kind: 'sessions', list: message.sessions, selectedIndex: 0 } }
-        : state;
-
-    case 'workspaces_listed':
-      return state.picker?.kind === 'workspaces'
-        ? { ...state, picker: { kind: 'workspaces', list: message.workspaces, selectedIndex: 0 } }
         : state;
 
     case 'input_scenes_listed':

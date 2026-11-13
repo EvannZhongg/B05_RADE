@@ -42,7 +42,7 @@ def _config() -> AgentConfig:
         output_reserve_tokens=100,
         max_generation_tokens=None,
         tools=ToolConfig(()),
-        workspace_instruction_files=(),
+
         context=ContextCompressionConfig(
             enabled=False,
             trigger_ratio=None,
@@ -196,12 +196,12 @@ class PlanPersistenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             workspace = Path(root) / "workspace"
             workspace.mkdir()
-            store = JsonlSessionStore(Path(root) / "sessions")
+            store = JsonlSessionStore(Path(root) / "runs")
             session = Session("session-1")
-            store.bind_workspace(session.session_id, workspace)
+
             session.attach_journal_sink(
                 lambda events: store.append_events(
-                    session.session_id, events, workspace=workspace
+                    session.session_id, events
                 )
             )
             manager = PlanManager(session)
@@ -225,7 +225,7 @@ class PlanPersistenceTest(unittest.TestCase):
             self.assertEqual(loaded.plan.steps[1].status, "blocked")
             self.assertEqual(loaded.plan.steps[1].outcome, "Unit tests are ready.")
 
-            self.assertEqual(store.list_workspace_sessions(workspace), [])
+            self.assertEqual(store.list_sessions(), [])
 
     def test_current_plan_is_injected_into_every_model_request(self) -> None:
         session = Session("session-1")

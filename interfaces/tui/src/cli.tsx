@@ -1,51 +1,17 @@
 #!/usr/bin/env node
 import { render } from 'ink';
-import { resolve } from 'node:path';
 import { App } from './app.js';
 
-type Options = {
-  workspace: string;
-};
-
-const USAGE = `Usage: RADE [options]
-
-Options:
-  --workspace <path>      Workspace directory (default: current directory)
-  --temporary             Use a persistent RADE-managed scratch workspace
-  -h, --help              Show this message
-`;
-
-function parseArguments(argv: string[]): Options {
-  const options: Options = {
-    workspace: process.cwd(),
-  };
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
-    if (argument === '--help' || argument === '-h') {
-      process.stdout.write(USAGE);
-      process.exit(0);
-    }
-    const value = argv[index + 1];
-    if (value === undefined) {
-      process.stderr.write(`Missing value for ${argument}\n`);
-      process.exit(2);
-    }
-    index += 1;
-    switch (argument) {
-      case '--workspace':
-        options.workspace = resolve(value);
-        break;
-      default:
-        process.stderr.write(`Unknown option: ${argument}\n${USAGE}`);
-        process.exit(2);
-    }
-  }
-
-  return options;
+const USAGE = 'Usage: RADE [-h | --help]\n';
+const argument = process.argv[2];
+if (argument === '--help' || argument === '-h') {
+  process.stdout.write(USAGE);
+  process.exit(0);
 }
-
-const options = parseArguments(process.argv.slice(2));
+if (argument !== undefined) {
+  process.stderr.write(`Unknown option: ${argument}\n${USAGE}`);
+  process.exit(2);
+}
 
 const python = process.env.RADE_PYTHON;
 if (!python) {
@@ -75,10 +41,7 @@ function supportsKittyKeyboard(): boolean {
 }
 
 render(
-  <App
-    python={python}
-    workspace={options.workspace}
-  />,
+  <App python={python} />,
   {
     // Ink would otherwise unmount on Ctrl+C; we use it to cancel a turn.
     exitOnCtrlC: false,

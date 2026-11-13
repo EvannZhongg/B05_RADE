@@ -14,14 +14,14 @@ from .llm import LLMProvider
 from .memory import MemoryManager
 from .prompting import render_subagent_prompt
 from .session import Session
-from .session_paths import session_directory
 from .session_store import JsonlSessionStore
 from .tools.catalog import ToolCatalog
 from .tools.context import ToolExecutionContext
 from .tools.base import JSONValue, ToolPolicy
 from .execution.process import CancellationSignal
 from .turn_control import TurnControl
-from .workspace_instructions import WorkspaceInstructions
+from .session_paths import default_runs_directory, session_directory
+from .runtime_instructions import RuntimeInstructions
 
 if TYPE_CHECKING:
     from .agent import AgentEvent
@@ -87,7 +87,7 @@ class SubagentRuntime:
         roles: SubagentRoleRegistry,
         subagent_prompt_template: str,
         consolidator_prompt: str,
-        workspace_instructions: WorkspaceInstructions,
+        runtime_instructions: RuntimeInstructions,
         *,
         tool_policy: ToolPolicy | None = None,
         memory_factory: Callable[[Session], MemoryManager] | None = None,
@@ -97,7 +97,7 @@ class SubagentRuntime:
         self._roles = roles
         self._subagent_prompt_template = subagent_prompt_template
         self._consolidator_prompt = consolidator_prompt
-        self._workspace_instructions = workspace_instructions
+        self._runtime_instructions = runtime_instructions
         self._tool_policy = tool_policy
         self._memory_factory = memory_factory
 
@@ -123,7 +123,7 @@ class SubagentRuntime:
             if self._memory_factory is not None else None
         )
         store = self._store(parent)
-        child_session_directory = store.directory / session.session_id
+        artifact_directory = parent.workspace.path / "artifacts" / "subagents" / session.session_id
         # A child never reaches the sub-agent runtime, so it cannot spawn
         # a grandchild: recursion is bounded by the context, not by
         # rewriting the child's tool configuration.
@@ -140,7 +140,7 @@ class SubagentRuntime:
             cancellation=cancellation,
             agent_role=role.name,
             parent_session_id=parent.session.session_id,
-            artifact_directory=child_session_directory,
+            artifact_directory=artifact_directory,
         )
         tools = self._catalog.select(
             (
@@ -157,10 +157,9 @@ class SubagentRuntime:
             session=session,
             system_prompt=render_subagent_prompt(
                 self._subagent_prompt_template,
-                parent.workspace,
                 role,
                 parent.skills,
-                instructions=self._workspace_instructions,
+                instructions=self._runtime_instructions,
                 mcp_instructions=(
                     context.mcp.instructions_for(tool.name for tool in tools.definitions)
                     if context.mcp is not None else ()
@@ -168,7 +167,7 @@ class SubagentRuntime:
             ),
             consolidator_prompt=self._consolidator_prompt,
             memory_context=(
-                memory.store.load(parent.workspace.path) if memory is not None else None
+                memory.store.load(memory.run_id) if memory is not None else None
             ),
             config=self._config,
             tools=tools,
@@ -200,21 +199,8 @@ class SubagentRuntime:
         return result.content
 
     def _store(self, parent: ToolExecutionContext) -> JsonlSessionStore:
-        """Nest the child transcript under the parent session.
-
-        Keeping it out of the sessions root keeps child transcripts out of
-        the user-visible session list. That root already belongs to the
-        parent's workspace, so it is not grouped by workspace again.
-        """
-        return JsonlSessionStore(
-            session_directory(
-                parent.sessions_directory,
-                parent.workspace.path,
-                parent.session.session_id,
-            )
-            / "subagents",
-            group_by_workspace=False,
-        )
+        run = parent.run_directory or session_directory(default_runs_directory(), parent.session.session_id)
+        return JsonlSessionStore(run / "subagents")
 
 
 class _SubagentProgress:

@@ -23,7 +23,6 @@ from agent_core import (
     Workspace,
 )
 from agent_core.llm import AuxiliaryModelCall
-from interfaces.bridge.managed_workspaces import create_scratch_workspace
 from agent_runtime.settings import SettingsStore
 
 try:
@@ -73,7 +72,7 @@ class FakeBridge:
     def send(self, message: dict) -> None:
         self.sent.append(message)
         if message["type"] == "open_session":
-            self.state.update(provider=message.get("provider"), workspace=message["workspace"])
+            self.state.update(provider=message.get("provider"))
         elif message["type"] == "user_turn":
             self.state.update(phase="starting", turn_id=message["turn_id"])
             self.items.append({"role": "user", "content": message["text"]})
@@ -98,8 +97,6 @@ class FakeBridge:
                 message = dict(self.state)
             elif kind == "provider_changed":
                 self.state["provider"] = message["provider"]
-            elif kind == "workspace_changed":
-                self.state["workspace"] = message["workspace"]
             elif kind == "plan_updated":
                 self.state["plan"] = message["plan"]
             elif kind == "assistant_message":
@@ -153,18 +150,18 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
             process = FakeBridgeProcess()
             channels = [ClosingChannel(), FakeBridge(), FakeBridge()]
             with patch.object(process, "open_channel", side_effect=lambda key: process.track(channels.pop(0))):
-                registry = session_host.ActiveSessionRegistry(JsonlSessionStore(root / "sessions"), root)
+                registry = session_host.ActiveSessionRegistry(JsonlSessionStore(root / "runs"), root)
                 registry._bridge = process
-                opening = {"type": "open_session", "session_id": "one", "workspace": str(root)}
-                await registry.open_or_attach(opening, Workspace(root), attach_only=False)
+                opening = {"type": "open_session", "session_id": "one"}
+                await registry.open_or_attach(opening, attach_only=False)
                 closing = asyncio.create_task(registry.release_idle("one"))
                 await asyncio.wait_for(entered.wait(), 2)
                 closing.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await closing
-                reopening = asyncio.create_task(registry.open_or_attach(opening, Workspace(root), attach_only=False))
+                reopening = asyncio.create_task(registry.open_or_attach(opening, attach_only=False))
                 other, created = await asyncio.wait_for(registry.open_or_attach(
-                    {**opening, "session_id": "two"}, Workspace(root), attach_only=False,
+                    {**opening, "session_id": "two"}, attach_only=False,
                 ), 2)
                 self.assertTrue(created)
                 self.assertEqual(other.session_id, "two")
@@ -177,7 +174,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_refresh_is_busy_until_the_bridge_publishes_state(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         runtime.send({"type": "runtime_refresh"})
         self.assertTrue(runtime.running)
@@ -200,7 +197,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_caches_protocol_cursors_without_deriving_them_from_phase(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         items = [{"role": "user", "content": "second turn"}]
         bridge._messages.put_nowait({
@@ -221,7 +218,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_client_commands_do_not_change_the_cached_runtime_snapshot(self) -> None:
         bridge = FakeBridge(replies={"user_turn": [{"type": "assistant_delta", "text": "queued"}]})
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         before = dict(runtime.state)
         runtime.send({"type": "user_turn", "turn_id": "t1", "text": "work"})
@@ -231,7 +228,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_replay_window_is_bounded_and_sequences_are_monotonic(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
 
         bridge.emit(*(
@@ -256,7 +253,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_state_replaces_the_cached_attachment_snapshot(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         bridge.emit(bridge_protocol.runtime_state_message(
             cache_usage=None,
@@ -273,7 +270,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_plan_updates_replace_the_cached_snapshot(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
         first = {"plan_id": "plan-1", "goal": "Ship", "revision": 1, "steps": []}
         second = {"plan_id": "plan-1", "goal": "Ship", "revision": 2, "steps": []}
@@ -293,7 +290,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_owner_close_does_not_relabel_the_runtime_as_failed(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         runtime.state["phase"] = "idle"
 
         await runtime.close()
@@ -303,7 +300,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
     async def test_clean_bridge_exit_does_not_relabel_the_runtime_as_failed(self) -> None:
         bridge = FakeBridge()
         bridge.returncode = 0
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         runtime.state["phase"] = "idle"
 
         bridge.emit(None)
@@ -314,7 +311,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
     async def test_bridge_exit_does_not_invent_a_runtime_transition(self) -> None:
         bridge = FakeBridge()
         bridge.returncode = 0
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         runtime.state["phase"] = "running"
 
         bridge.emit(None)
@@ -328,7 +325,7 @@ class ActiveSessionTest(unittest.IsolatedAsyncioTestCase):
 class RuntimeSnapshotTest(unittest.IsolatedAsyncioTestCase):
     async def test_runtime_state_replaces_warnings_including_with_an_empty_list(self) -> None:
         bridge = FakeBridge()
-        runtime = session_host.ActiveSession("s1", "first", "/tmp", [], bridge)
+        runtime = session_host.ActiveSession("s1", "first", [], bridge)
         self.addAsyncCleanup(runtime.close)
 
         bridge.emit(
@@ -362,11 +359,10 @@ class SessionSearchCancellationTest(unittest.IsolatedAsyncioTestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
-        self.store = JsonlSessionStore(root / "sessions")
-        workspace = Workspace(root)
+        self.store = JsonlSessionStore(root / "runs")
         settings = SettingsStore(root / "config")
         registry = session_host.ActiveSessionRegistry(self.store, settings.directory)
-        self.app = gui_server.create_app(workspace, self.store, settings, registry)
+        self.app = gui_server.create_app(self.store, settings, registry)
         self.requests = []
         self.releases = []
 
@@ -634,7 +630,10 @@ class GuiTest(unittest.TestCase):
         self.root = Path(directory.name)
         (self.root / "README.md").write_text("Hello RADE", encoding="utf-8")
         (self.root / "src").mkdir()
-        self.store = JsonlSessionStore(self.root / ".RADE" / "sessions")
+        self.store = JsonlSessionStore(self.root / ".RADE" / "runs")
+        self.files = self.store.session_directory("files-run") / "files"
+        (self.files / "src").mkdir(parents=True)
+        (self.files / "README.md").write_text("run files", encoding="utf-8")
         self.config = self.root / "config"
         self.config.mkdir()
         (self.config / "provider_config.json").write_text(json.dumps({
@@ -649,8 +648,6 @@ class GuiTest(unittest.TestCase):
             "output_reserve_tokens": 100,
             "max_generation_tokens": None,
             "provider": {"request_timeout_seconds": 300, "max_retries": 2},
-            "scratch_workspace_root": str(self.root / "scratch"),
-            "workspace_instruction_files": ["AGENTS.md"],
             "context": {"compression": {"enabled": True, "trigger_ratio": None, "keep_recent_units": 4, "user_anchor_token_budget": 2000}},
             "main_agent": {"tools": {"read_file": True}},
             "subagent_roles": {},
@@ -661,10 +658,9 @@ class GuiTest(unittest.TestCase):
 
     @contextmanager
     def client(self, bridge: FakeBridge | None = None):
-        workspace = Workspace(self.root)
         settings = SettingsStore(self.config)
         registry = session_host.ActiveSessionRegistry(self.store, settings.directory)
-        app = gui_server.create_app(workspace, self.store, settings, registry)
+        app = gui_server.create_app(self.store, settings, registry)
         client = TestClient(
             app,
             base_url="http://127.0.0.1",
@@ -698,7 +694,6 @@ class GuiTest(unittest.TestCase):
                         "session_id": "resumed",
                         "attachment_id": "page-1",
                         "provider": "second",
-                        "workspace": "/",
                     }
                 )
                 self.assertEqual(socket.receive_json()["type"], "session_ready")
@@ -873,7 +868,7 @@ class GuiTest(unittest.TestCase):
             stored.add_item("user", "hello")
             stored.add_item("assistant", "world")
             stored.finish_turn("completed", "t1")
-            self.store.append_events("s1", stored.journal, workspace=self.root)
+            self.store.append_events("s1", stored.journal)
 
             session = client.get("/api/sessions/s1").json()
             active_sessions = client.get("/api/active-sessions").json()
@@ -907,7 +902,7 @@ class GuiTest(unittest.TestCase):
         stored.begin_turn("t1")
         stored.add_item("user", "hello")
         stored.finish_turn("completed", "t1")
-        self.store.append_events("s1", stored.journal, workspace=self.root)
+        self.store.append_events("s1", stored.journal)
         bridge = FakeBridge(replies={"open_session": [{"type": "session_ready", "session_id": "s1"}]})
 
         with self.client(bridge) as client:
@@ -1013,12 +1008,6 @@ class GuiTest(unittest.TestCase):
                         "model": "openai/second",
                     }
                 ],
-                "workspace_set": [
-                    {
-                        "type": "workspace_changed",
-                        "workspace": str(self.root.resolve()),
-                    }
-                ],
                 "runtime_refresh": [
                     {"type": "runtime_refreshed", "provider": "second", "model": "openai/second"}
                 ],
@@ -1039,163 +1028,25 @@ class GuiTest(unittest.TestCase):
                     socket.receive_json()["type"],
                     "provider_changed",
                 )
-                socket.send_json(
-                    {"type": "workspace_set", "workspace": str(self.root)}
-                )
-                self.assertEqual(
-                    socket.receive_json()["type"],
-                    "workspace_changed",
-                )
                 socket.send_json({"type": "runtime_refresh"})
                 self.assertEqual(socket.receive_json()["type"], "runtime_refreshed")
 
         self.assertEqual(
             [message["type"] for message in bridge.sent],
-            ["open_session", "provider_set", "workspace_set", "runtime_refresh"],
+            ["open_session", "provider_set", "runtime_refresh"],
         )
 
-    def test_creates_a_persistent_scratch_workspace_for_a_session(self) -> None:
-        with self.client() as client:
-            response = client.post(
-                "/api/workspaces/scratch",
-                json={"session_id": "scratch-session"},
-            )
-            reopened = client.post(
-                "/api/workspaces/scratch",
-                json={"session_id": "scratch-session"},
-            )
-
-        expected = (self.root / "scratch" / "scratch-session").resolve()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"workspace": str(expected)})
-        self.assertEqual(reopened.json(), response.json())
-        self.assertTrue(expected.is_dir())
-
-    def test_lists_scratch_sessions_without_changing_store_shape(self) -> None:
-        with self.client() as client:
-            response = client.post(
-                "/api/workspaces/scratch",
-                json={"session_id": "scratch-session"},
-            )
-        scratch = Path(response.json()["workspace"])
-        session = Session("scratch-session")
-        session.begin_turn("turn-1")
-        session.add_item("user", "临时会话")
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, scratch)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=scratch,
-        )
+    def test_deleting_a_session_removes_its_run_files(self) -> None:
+        (self.files / "result.txt").write_text("done", encoding="utf-8")
+        session = Session("files-run")
+        session.add_item("user", "run")
+        self.store.append_events(session.session_id, session.journal)
 
         with self.client() as client:
-            groups = client.get("/api/sessions").json()
-
-        self.assertEqual(groups[0]["workspace"], str(scratch.resolve()))
-        self.assertTrue(groups[0]["scratch"])
-
-    def test_session_list_does_not_require_scratch_configuration(self) -> None:
-        session = Session("project-session")
-        session.begin_turn("turn-1")
-        session.add_item("user", "项目会话")
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=self.root,
-        )
-        document = json.loads(
-            (self.config / "agent_config.json").read_text(encoding="utf-8")
-        )
-        document.pop("scratch_workspace_root")
-        (self.config / "agent_config.json").write_text(
-            json.dumps(document),
-            encoding="utf-8",
-        )
-
-        with self.client() as client:
-            response = client.get("/api/sessions")
+            response = client.delete("/api/sessions/files-run")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), [{
-            "workspace": str(self.root.resolve()),
-            "sessions": [{
-                "session_id": "project-session",
-                "input_preview": "项目会话",
-                "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
-            }],
-        }])
-
-    def test_scratch_creation_reports_missing_configuration(self) -> None:
-        document = json.loads(
-            (self.config / "agent_config.json").read_text(encoding="utf-8")
-        )
-        document.pop("scratch_workspace_root")
-        (self.config / "agent_config.json").write_text(
-            json.dumps(document),
-            encoding="utf-8",
-        )
-
-        with self.client() as client:
-            response = client.post(
-                "/api/workspaces/scratch",
-                json={"session_id": "scratch-session"},
-            )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("missing required config field", response.json()["detail"])
-        self.assertIn("scratch_workspace_root", response.json()["detail"])
-
-    def test_deleting_a_scratch_session_removes_its_workspace(self) -> None:
-        scratch = create_scratch_workspace(
-            self.root / "scratch", "scratch-session"
-        ).path
-        (scratch / "result.txt").write_text("done", encoding="utf-8")
-        session = Session("scratch-session")
-        session.begin_turn("turn-1")
-        session.add_item("user", "临时会话")
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, scratch)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=scratch,
-        )
-
-        with self.client() as client:
-            response = client.delete("/api/sessions/scratch-session")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(scratch.exists())
-
-    def test_deleting_a_shared_scratch_session_keeps_its_workspace(self) -> None:
-        scratch = create_scratch_workspace(
-            self.root / "scratch", "first-session"
-        ).path
-        for session_id in ("first-session", "second-session"):
-            session = Session(session_id)
-            session.begin_turn("turn-1")
-            session.add_item("user", "临时会话")
-            session.finish_turn("completed")
-            self.store.bind_workspace(session_id, scratch)
-            self.store.append_events(
-                session_id,
-                session.journal,
-                workspace=scratch,
-            )
-
-        with self.client() as client:
-            self.assertEqual(
-                client.delete("/api/sessions/second-session").status_code, 200
-            )
-            self.assertTrue(scratch.is_dir())
-            response = client.delete("/api/sessions/first-session")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(scratch.exists())
-
+        self.assertFalse(self.files.parent.exists())
 
     def test_does_not_forward_unknown_or_lifecycle_messages(self) -> None:
         bridge = FakeBridge(
@@ -1682,10 +1533,10 @@ class GuiTest(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(body))
         self.assertIn("RADE_THIRD_API_KEY=secret", (self.config / ".env").read_text())
 
-    def test_memory_api_returns_workspace_documents(self) -> None:
-        memory = MemoryStore(self.config / "sessions")
+    def test_memory_api_returns_run_documents(self) -> None:
+        memory = MemoryStore(self.config / "runs")
         memory.write(
-            self.root,
+            "files-run",
             MemoryDocument(
                 facts=("This workspace uses FastAPI.",),
                 decisions=("Keep Bridge as the runtime boundary.",),
@@ -1697,8 +1548,8 @@ class GuiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {
-            "workspaces": [{
-                "workspace": str(self.root.resolve()),
+            "runs": [{
+                "run_id": "files-run",
                 "memory": {
                     "preferences": [],
                     "facts": ["This workspace uses FastAPI."],
@@ -1711,8 +1562,7 @@ class GuiTest(unittest.TestCase):
         session = Session("searchable")
         session.add_item("user", "before " * 30 + "🙂 中文 NEEDLE " + "after " * 40)
         session.add_item("assistant", "another needle")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(session.session_id, session.journal, workspace=self.root)
+        self.store.append_events(session.session_id, session.journal)
         with self.client() as client:
             response = client.get("/api/sessions/search", params={"q": "needle", "limit": 1, "per_session_limit": 2})
             self.assertEqual(response.status_code, 200)
@@ -1722,7 +1572,6 @@ class GuiTest(unittest.TestCase):
             match = data["matches"][0]
             self.assertEqual(match["session_id"], session.session_id)
             self.assertEqual(match["item_index"], 0)
-            self.assertFalse(match["scratch"])
             self.assertTrue(match["prefix_omitted"])
             self.assertTrue(match["suffix_omitted"])
             self.assertNotIn("text", match)
@@ -1743,8 +1592,7 @@ class GuiTest(unittest.TestCase):
         session = Session("frequent-matches")
         for index in range(10):
             session.add_item("assistant", f"needle {index}")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(session.session_id, session.journal, workspace=self.root)
+        self.store.append_events(session.session_id, session.journal)
         with self.client() as client:
             data = client.get("/api/sessions/search", params={"q": "needle", "limit": 50, "per_session_limit": 2}).json()
             expanded = client.get("/api/sessions/search", params={"q": "needle", "limit": 50, "per_session_limit": 5}).json()
@@ -1757,7 +1605,6 @@ class GuiTest(unittest.TestCase):
         self.assertTrue(limited["has_more"])
 
     def test_reads_history_written_by_the_tui(self) -> None:
-        self.store.bind_workspace("from-tui", self.root)
         session = Session("from-tui")
         session.begin_turn("turn-1")
         session.add_item("user", "TUI 对话")
@@ -1772,21 +1619,15 @@ class GuiTest(unittest.TestCase):
             "openai_responses": [{"type": "reasoning", "encrypted_content": "native-state"}],
         })
         session.finish_turn("completed")
-        self.store.append_events("from-tui", session.journal, workspace=self.root)
+        self.store.append_events("from-tui", session.journal)
         with self.client() as client:
             self.assertEqual(
                 client.get("/api/sessions").json(),
-                [
-                    {
-                        "workspace": str(self.root.resolve()),
-                        "sessions": [
-                            {
-                                "session_id": "from-tui", "input_preview": "TUI 对话",
-                                "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
-                            }
-                        ],
-                    }
-                ],
+                [{
+                    "session_id": "from-tui",
+                    "input_preview": "TUI 对话",
+                    "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
+                }],
             )
             with patch.object(self.store, "load", wraps=self.store.load) as load:
                 data = client.get("/api/sessions/from-tui").json()
@@ -1800,110 +1641,6 @@ class GuiTest(unittest.TestCase):
             self.store.load("from-tui").items[1].provider_data["openai_responses"][0]["encrypted_content"],
             "native-state",
         )
-
-    def test_forks_a_session_from_a_backend_projected_user_anchor(self) -> None:
-        session = Session("source")
-        session.begin_turn("turn-1")
-        session.add_item("user", "first question")
-        session.add_item("assistant", "first answer")
-        session.finish_turn("completed")
-        session.set_archived_summary("keep this summary", 2)
-        session.begin_turn("turn-2")
-        session.add_item("user", "edit this question")
-        session.add_item("assistant", "discard this answer")
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=self.root,
-        )
-
-        with self.client() as client:
-            source = client.get("/api/sessions/source").json()
-            self.assertEqual(
-                [target["item_index"] for target in source["editable_user_messages"]],
-                [2],
-            )
-            response = client.post(
-                "/api/sessions/source/fork",
-                json={"anchor_id": source["editable_user_messages"][0]["anchor_id"]},
-            )
-            groups = client.get("/api/sessions").json()
-
-        self.assertEqual(response.status_code, 201)
-        forked = response.json()
-        self.assertNotEqual(forked["session_id"], "source")
-        self.assertEqual(
-            [item["content"] for item in forked["items"]],
-            ["first question", "first answer"],
-        )
-        self.assertEqual(len(forked["editable_user_messages"]), 1)
-        summaries = {
-            item["session_id"]: item
-            for item in groups[0]["sessions"]
-        }
-        self.assertIn("source", summaries)
-        self.assertEqual(summaries["source"]["input_preview"], "first question")
-        self.assertEqual(
-            summaries[forked["session_id"]]["input_preview"],
-            "first question",
-        )
-        self.assertEqual(
-            summaries[forked["session_id"]]["forked_from"],
-            "source",
-        )
-        self.assertEqual(
-            self.store.load(forked["session_id"]).archived_summary,
-            "keep this summary",
-        )
-
-    def test_rejects_fork_while_a_user_turn_is_pending(self) -> None:
-        session = Session("source")
-        session.begin_turn("stored-turn")
-        session.add_item("user", "edit this question")
-        session.add_item("assistant", "old answer")
-        session.finish_turn("completed")
-        self.store.bind_workspace(session.session_id, self.root)
-        self.store.append_events(
-            session.session_id,
-            session.journal,
-            workspace=self.root,
-        )
-        anchor = self.store.editable_user_messages("source")[0]["anchor_id"]
-        bridge = FakeBridge(replies={
-            "open_session": [{"type": "session_ready", "session_id": "source"}],
-        })
-        original_send = bridge.send
-
-        def hold_user_turn(message: dict) -> None:
-            if message["type"] == "user_turn":
-                bridge.sent.append(message)
-                return
-            original_send(message)
-
-        bridge.send = hold_user_turn  # type: ignore[method-assign]
-        with self.client(bridge) as client:
-            with client.websocket_connect("/api/session") as socket:
-                socket.send_json({
-                    "type": "open_session",
-                    "session_id": "source",
-                    "attachment_id": "page-1",
-                })
-                self.assertEqual(socket.receive_json()["type"], "session_ready")
-                socket.send_json({
-                    "type": "user_turn",
-                    "turn_id": "pending-turn",
-                    "text": "replacement",
-                })
-                _wait_for(client, lambda: len(bridge.sent) == 2)
-
-                response = client.post(
-                    "/api/sessions/source/fork",
-                    json={"anchor_id": anchor},
-                )
-
-        self.assertEqual(response.status_code, 409)
 
     def test_rejects_a_session_id_that_escapes_the_sessions_directory(
         self,
@@ -1935,10 +1672,9 @@ class GuiTest(unittest.TestCase):
             self.assertEqual(client.get(preview_url, params={"filename": "scene2_1.json"}).status_code, 404)
             self.assertEqual(client.get(preview_url, params={"filename": "../input/scene1_2.json"}).status_code, 400)
 
-    def test_workspace_listing_rejects_traversal(self) -> None:
+    def test_run_files_listing_rejects_traversal(self) -> None:
         with self.client() as client:
-            listing = client.get("/api/workspace").json()
-            self.assertEqual(listing["root"], str(self.root.resolve()))
+            listing = client.get("/api/sessions/files-run/files").json()
             self.assertIn(
                 {"name": "src", "type": "directory"},
                 listing["entries"],
@@ -1946,19 +1682,19 @@ class GuiTest(unittest.TestCase):
             for path in ("..", "/tmp"):
                 self.assertEqual(
                     client.get(
-                        "/api/workspace",
+                        "/api/sessions/files-run/files",
                         params={"path": path},
                     ).status_code,
                     400,
                 )
 
-    def test_workspace_listing_accepts_cursor(self) -> None:
+    def test_run_files_listing_accepts_cursor(self) -> None:
         for name in ("a.txt", "b.txt", "c.txt"):
-            (self.root / name).write_text(name, encoding="utf-8")
+            (self.files / name).write_text(name, encoding="utf-8")
 
         with self.client() as client:
             first = client.get(
-                "/api/workspace", params={"path": "."}
+                "/api/sessions/files-run/files", params={"path": "."}
             ).json()
             cursor = next(
                 entry["name"]
@@ -1966,7 +1702,7 @@ class GuiTest(unittest.TestCase):
                 if entry["name"] == "a.txt"
             )
             second = client.get(
-                "/api/workspace",
+                "/api/sessions/files-run/files",
                 params={"path": ".", "cursor": cursor},
             ).json()
 
@@ -1977,39 +1713,28 @@ class GuiTest(unittest.TestCase):
             {"name": "b.txt", "type": "file"}, second["entries"]
         )
 
-    def test_workspace_listing_uses_the_explicit_workspace(self) -> None:
-        other = self.root / "other-workspace"
-        other.mkdir()
+    def test_run_file_listing_is_scoped_to_the_selected_run(self) -> None:
+        other = self.store.session_directory("other-run") / "files"
+        other.mkdir(parents=True)
         (other / "selected.txt").write_text("selected", encoding="utf-8")
 
         with self.client() as client:
-            listing = client.get(
-                "/api/workspace",
-                params={"path": ".", "workspace": str(other)},
-            ).json()
+            listing = client.get("/api/sessions/other-run/files").json()
+            self.assertEqual(client.get("/api/sessions/missing/files").status_code, 404)
 
-        self.assertEqual(listing["root"], str(other.resolve()))
-        self.assertIn(
-            {"name": "selected.txt", "type": "file"},
-            listing["entries"],
-        )
-        self.assertNotIn(
-            {"name": "README.md", "type": "file"},
-            listing["entries"],
-        )
+        self.assertEqual(listing["entries"], [{"name": "selected.txt", "type": "file"}])
 
-    def test_opens_the_selected_workspace_in_the_native_file_manager(self) -> None:
-        selected = self.root / "项目 files"
-        selected.mkdir()
+    def test_opens_the_selected_run_in_the_native_file_manager(self) -> None:
+        selected = self.files
         for platform, command in (("win32", None), ("darwin", ["open", "-a", "Finder"]), ("linux", ["xdg-open"])):
             with self.subTest(platform=platform), self.client() as client:
                 with (
-                    patch("interfaces.gui.routes.workspace.sys.platform", platform),
-                    patch("interfaces.gui.routes.workspace.open_windows_folder") as open_windows,
-                    patch("interfaces.gui.routes.workspace.subprocess.Popen") as popen,
+                    patch("interfaces.gui.routes.run_files.sys.platform", platform),
+                    patch("interfaces.gui.routes.run_files.open_windows_folder") as open_windows,
+                    patch("interfaces.gui.routes.run_files.subprocess.Popen") as popen,
                 ):
                     response = client.post(
-                        "/api/workspace/open", json={"workspace": str(selected)},
+                        "/api/sessions/files-run/files/open",
                     )
                 self.assertEqual(response.status_code, 204)
                 if command is None:
@@ -2019,59 +1744,50 @@ class GuiTest(unittest.TestCase):
                     popen.assert_called_once_with([*command, str(selected.resolve())])
                     open_windows.assert_not_called()
 
-    def test_open_workspace_rejects_invalid_directories(self) -> None:
-        with (
-            self.client() as client,
-            patch("interfaces.gui.routes.workspace.open_windows_folder") as open_windows,
-            patch("interfaces.gui.routes.workspace.subprocess.Popen") as popen,
-        ):
-            for path in (self.root / "README.md", self.root / "missing"):
-                response = client.post("/api/workspace/open", json={"workspace": str(path)})
-                self.assertEqual(response.status_code, 400)
-            self.assertEqual(client.post("/api/workspace/open", json={"workspace": ""}).status_code, 422)
+    def test_open_run_files_rejects_unknown_run(self) -> None:
+        with self.client() as client, patch("interfaces.gui.routes.run_files.open_windows_folder") as open_windows:
+            self.assertEqual(client.post("/api/sessions/missing/files/open").status_code, 404)
             open_windows.assert_not_called()
-            popen.assert_not_called()
 
-    def test_open_workspace_reports_file_manager_errors(self) -> None:
+    def test_open_run_files_reports_file_manager_errors(self) -> None:
         with (
             self.client() as client,
-            patch("interfaces.gui.routes.workspace.sys.platform", "win32"),
-            patch("interfaces.gui.routes.workspace.open_windows_folder", side_effect=OSError("cannot open")),
+            patch("interfaces.gui.routes.run_files.sys.platform", "win32"),
+            patch("interfaces.gui.routes.run_files.open_windows_folder", side_effect=OSError("cannot open")),
         ):
-            response = client.post("/api/workspace/open", json={"workspace": str(self.root)})
+            response = client.post("/api/sessions/files-run/files/open")
         self.assertEqual(response.status_code, 500)
-        self.assertIn("无法打开工作区文件夹", response.json()["detail"])
+        self.assertEqual(response.json()["detail"], "cannot open")
 
     @unittest.skipUnless(
         SYMLINKS_AVAILABLE,
         "creating symlinks needs Developer Mode or administrator rights "
         "on Windows",
     )
-    def test_workspace_listing_rejects_external_symlinks(self) -> None:
-        (self.root / "outside").symlink_to(
-            self.root.parent,
+    def test_run_files_listing_rejects_external_symlinks(self) -> None:
+        (self.files / "outside").symlink_to(
+            self.root,
             target_is_directory=True,
         )
         with self.client() as client:
             self.assertEqual(
                 client.get(
-                    "/api/workspace",
+                    "/api/sessions/files-run/files",
                     params={"path": "outside"},
                 ).status_code,
                 400,
             )
 
-    def test_serves_a_workspace_image_through_a_signed_url(self) -> None:
+    def test_serves_a_run_image_through_a_signed_url(self) -> None:
         from tests.image_fixtures import png_bytes
 
-        (self.root / "src" / "diagram.png").write_bytes(png_bytes(8, 8))
-        self.store.bind_workspace("image-session", self.root)
+        (self.files / "src" / "diagram.png").write_bytes(png_bytes(8, 8))
         with self.client() as client:
             signed = client.post(
                 "/api/image-url",
                 json={
                     "path": "src/diagram.png",
-                    "session_id": "image-session",
+                    "session_id": "files-run",
                 },
             )
             response = client.get(signed.json()["url"])
@@ -2083,7 +1799,7 @@ class GuiTest(unittest.TestCase):
     def test_image_url_rejects_an_unknown_session(self) -> None:
         from tests.image_fixtures import png_bytes
 
-        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        (self.files / "image.png").write_bytes(png_bytes(8, 8))
         with self.client() as client:
             response = client.post(
                 "/api/image-url",
@@ -2096,10 +1812,10 @@ class GuiTest(unittest.TestCase):
         """A mislabelled extension must not set the served type."""
         from tests.image_fixtures import jpeg_bytes
 
-        (self.root / "lying.png").write_bytes(jpeg_bytes(8, 8))
+        (self.files / "lying.png").write_bytes(jpeg_bytes(8, 8))
         with self.client() as client:
             signed = client.post(
-                "/api/image-url", json={"path": "lying.png"}
+                "/api/image-url", json={"path": "lying.png", "session_id": "files-run"}
             )
             response = client.get(signed.json()["url"])
 
@@ -2110,7 +1826,7 @@ class GuiTest(unittest.TestCase):
         with self.client() as client:
             self.assertEqual(
                 client.post(
-                    "/api/image-url", json={"path": "README.md"}
+                    "/api/image-url", json={"path": "README.md", "session_id": "files-run"}
                 ).status_code,
                 404,
             )
@@ -2124,7 +1840,7 @@ class GuiTest(unittest.TestCase):
                 with self.subTest(path=path):
                     self.assertEqual(
                         client.post(
-                            "/api/image-url", json={"path": path}
+                            "/api/image-url", json={"path": path, "session_id": "files-run"}
                         ).status_code,
                         404,
                     )
@@ -2140,11 +1856,11 @@ class GuiTest(unittest.TestCase):
         outside = self.root.parent / "outside.png"
         outside.write_bytes(png_bytes(8, 8))
         self.addCleanup(outside.unlink)
-        (self.root / "link.png").symlink_to(outside)
+        (self.files / "link.png").symlink_to(outside)
         with self.client() as client:
             self.assertEqual(
                 client.post(
-                    "/api/image-url", json={"path": "link.png"}
+                    "/api/image-url", json={"path": "link.png", "session_id": "files-run"}
                 ).status_code,
                 404,
             )
@@ -2153,7 +1869,7 @@ class GuiTest(unittest.TestCase):
         """An unreadable file is a missing image, not a server fault."""
         from tests.image_fixtures import png_bytes
 
-        path = self.root / "locked.png"
+        path = self.files / "locked.png"
         path.write_bytes(png_bytes(8, 8))
         path.chmod(0o000)
         self.addCleanup(path.chmod, 0o644)
@@ -2162,7 +1878,7 @@ class GuiTest(unittest.TestCase):
         with self.client() as client:
             self.assertEqual(
                 client.post(
-                    "/api/image-url", json={"path": "locked.png"}
+                    "/api/image-url", json={"path": "locked.png", "session_id": "files-run"}
                 ).status_code,
                 404,
             )
@@ -2172,23 +1888,23 @@ class GuiTest(unittest.TestCase):
         from agent_core.media import MAX_IMAGE_BYTES
         from tests.image_fixtures import png_bytes
 
-        path = self.root / "huge.png"
+        path = self.files / "huge.png"
         path.write_bytes(
             png_bytes(8, 8) + b"\x00" * (MAX_IMAGE_BYTES + 1024)
         )
         with self.client() as client:
             signed = client.post(
-                "/api/image-url", json={"path": "huge.png"}
+                "/api/image-url", json={"path": "huge.png", "session_id": "files-run"}
             )
             self.assertEqual(client.get(signed.json()["url"]).status_code, 200)
 
     def test_signed_image_url_rejects_a_tampered_token(self) -> None:
         from tests.image_fixtures import png_bytes
 
-        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        (self.files / "image.png").write_bytes(png_bytes(8, 8))
         with self.client() as client:
             signed = client.post(
-                "/api/image-url", json={"path": "image.png"}
+                "/api/image-url", json={"path": "image.png", "session_id": "files-run"}
             ).json()["url"]
             # Tamper the first signature character: the last one shares
             # its low bits with base64 padding, so ``a`` and ``b`` there
@@ -2206,11 +1922,11 @@ class GuiTest(unittest.TestCase):
     def test_signed_image_url_expires(self) -> None:
         from tests.image_fixtures import png_bytes
 
-        (self.root / "image.png").write_bytes(png_bytes(8, 8))
+        (self.files / "image.png").write_bytes(png_bytes(8, 8))
         with self.client() as client:
             with patch("interfaces.gui.routes.media.time.time", return_value=1000):
                 signed = client.post(
-                    "/api/image-url", json={"path": "image.png"}
+                    "/api/image-url", json={"path": "image.png", "session_id": "files-run"}
                 ).json()["url"]
             with patch(
                 "interfaces.gui.routes.media.time.time",
@@ -2219,65 +1935,6 @@ class GuiTest(unittest.TestCase):
                 response = client.get(signed)
 
         self.assertEqual(response.status_code, 410)
-
-    def test_upload_names_an_attachment_after_its_bytes(self) -> None:
-        """A declared media type never decides what an upload is."""
-        from tests.image_fixtures import jpeg_bytes
-
-        with self.client() as client:
-            data = client.post(
-                "/api/attachments",
-                files=[("files", ("photo.png", jpeg_bytes(8, 8), "image/png"))],
-            ).json()
-
-        attachment = data["attachments"][0]
-        self.assertEqual(attachment["type"], "image")
-        self.assertEqual(attachment["mime_type"], "image/jpeg")
-        self.assertEqual(attachment["filename"], "photo.png")
-        self.assertGreater(attachment["size_bytes"], 0)
-        self.assertTrue(attachment["path"].endswith(".jpg"))
-        self.assertTrue(
-            (self.root / attachment["path"]).is_file(),
-            attachment["path"],
-        )
-
-    def test_upload_accepts_an_arbitrary_file(self) -> None:
-        with self.client() as client:
-            response = client.post(
-                "/api/attachments",
-                files=[
-                    (
-                        "files",
-                        ("archive.custom", b"Hello RADE", "application/x-custom"),
-                    )
-                ],
-            )
-
-        self.assertEqual(response.status_code, 200)
-        attachment = response.json()["attachments"][0]
-        self.assertEqual(
-            attachment,
-            {
-                "type": "file",
-                "path": attachment["path"],
-                "filename": "archive.custom",
-                "mime_type": "application/x-custom",
-                "size_bytes": 10,
-            },
-        )
-        self.assertTrue(attachment["path"].endswith(".custom"))
-        self.assertEqual((self.root / attachment["path"]).read_bytes(), b"Hello RADE")
-
-    def test_upload_does_not_treat_a_broken_image_as_image_input(self) -> None:
-        from tests.image_fixtures import png_bytes
-
-        with self.client() as client:
-            response = client.post(
-                "/api/attachments",
-                files=[("files", ("broken.png", png_bytes(40, 25)[:45], "image/png"))],
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["attachments"][0]["type"], "file")
 
     def test_rejects_foreign_origins_and_hosts(self) -> None:
         with self.client(FakeBridge()) as client:

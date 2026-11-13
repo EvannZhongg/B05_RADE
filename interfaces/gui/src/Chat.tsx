@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { AssistantRuntimeProvider, ThreadPrimitive } from "@assistant-ui/react";
 import type { ContextWindow } from "@rade/protocol";
-import type { ModelOption, Session, WorkspaceOption } from "./api";
+import type { ModelOption, Session } from "./api";
 import { Composer } from "./chat/Composer";
 import { SessionIdContext } from "./chat/Messages";
 import { Transcript } from "./chat/Transcript";
@@ -12,7 +12,6 @@ export function Chat({
   selected,
   searchTarget,
   contextWindow,
-  workspaceOptions = [],
   backgroundActive = false,
   providers,
   provider,
@@ -20,14 +19,13 @@ export function Chat({
   onBusyChange,
   onContextWindowChange,
   onSessionAvailable,
+  onRunReady,
   onTurnEnd,
-  onWorkspaceChange,
 }: {
   session: Session;
   selected: boolean;
   searchTarget?: { itemIndex: number; requestId: string };
   contextWindow: ContextWindow | null;
-  workspaceOptions?: WorkspaceOption[];
   backgroundActive?: boolean;
   providers: ModelOption[];
   provider?: string;
@@ -35,15 +33,14 @@ export function Chat({
   onBusyChange: (busy: boolean) => void;
   onContextWindowChange: (window: ContextWindow | null) => void;
   onSessionAvailable: () => void;
+  onRunReady: () => void;
   onTurnEnd: () => void;
-  onWorkspaceChange?: (workspace: string) => void;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const runtime = useSessionRuntime({
     session,
     selected,
     contextWindow,
-    workspaceOptions,
     backgroundActive,
     providers,
     provider,
@@ -51,8 +48,8 @@ export function Chat({
     onBusyChange,
     onContextWindowChange,
     onSessionAvailable,
+    onRunReady,
     onTurnEnd,
-    onWorkspaceChange,
   });
   const targetMessage = searchTarget && runtime.messages.find((message) => {
     const indexes = message.metadata?.custom?.itemIndexes;

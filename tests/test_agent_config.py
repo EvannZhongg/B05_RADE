@@ -61,62 +61,9 @@ class AgentConfigTest(unittest.TestCase):
                 tools=ToolConfig(
                     enabled=("read_file", "search_files", "list_directory")
                 ),
-                workspace_instruction_files=("CLAUDE.md", "AGENTS.md"),
+
             )
         )
-
-    def test_loads_workspace_instruction_files_in_priority_order(self) -> None:
-        config = self.load(
-            {
-                "workspace_instruction_files": [
-                    "PROJECT.md",
-                    "TEAM.md",
-                ],
-                "main_agent": {"tools": ENABLED_TOOLS},
-            }
-        )
-
-        self.assertEqual(
-            config.workspace_instruction_files,
-            ("PROJECT.md", "TEAM.md"),
-        )
-
-    def test_requires_workspace_instruction_files(self) -> None:
-        with self.assertRaisesRegex(ValueError, "workspace_instruction_files.*array"):
-            self.load_json(
-                {
-                    "max_same_tool_calls": 5,
-                    "output_reserve_tokens": 100,
-                    "provider": {
-                        "request_timeout_seconds": 300,
-                        "max_retries": 2,
-                    },
-                    "main_agent": {"tools": ENABLED_TOOLS},
-                }
-            )
-
-    def test_rejects_non_root_workspace_instruction_paths(self) -> None:
-        for value in ("../AGENTS.md", "docs/RULES.md", "/RULES.md"):
-            with self.subTest(value=value):
-                with self.assertRaisesRegex(
-                    ValueError,
-                    "workspace root filenames",
-                ):
-                    self.load(
-                        {
-                            "workspace_instruction_files": [value],
-                            "main_agent": {"tools": ENABLED_TOOLS},
-                        }
-                    )
-
-    def test_rejects_duplicate_workspace_instruction_files(self) -> None:
-        with self.assertRaisesRegex(ValueError, "duplicate filenames"):
-            self.load(
-                {
-                    "workspace_instruction_files": ["RULES.md", "RULES.md"],
-                    "main_agent": {"tools": ENABLED_TOOLS},
-                }
-            )
 
     def test_rejects_invalid_max_same_tool_calls(self) -> None:
         for value in (0, True):
@@ -205,13 +152,13 @@ class AgentConfigTest(unittest.TestCase):
             {
                 "memory": {
                     "enabled": False,
-                    "workspace_max_tokens": 2400,
+                    "max_tokens": 2400,
                 },
                 "main_agent": {"tools": ENABLED_TOOLS},
             }
         )
 
-        self.assertEqual(config.memory, MemoryConfig(enabled=False, workspace_max_tokens=2400))
+        self.assertEqual(config.memory, MemoryConfig(enabled=False, max_tokens=2400))
 
     def test_defaults_memory_config(self) -> None:
         config = self.load({"main_agent": {"tools": ENABLED_TOOLS}})
@@ -221,7 +168,7 @@ class AgentConfigTest(unittest.TestCase):
     def test_rejects_invalid_memory_config(self) -> None:
         for memory in (
             {"enabled": "yes"},
-            {"workspace_max_tokens": True},
+            {"max_tokens": True},
         ):
             with self.subTest(memory=memory):
                 with self.assertRaises(ValueError):

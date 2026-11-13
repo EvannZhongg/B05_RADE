@@ -214,7 +214,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=8_192,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
             ),
         )
 
@@ -226,7 +225,7 @@ class AgentTest(unittest.TestCase):
 
     def test_system_prompt_tokens_exclude_runtime_context_and_request_framing(self) -> None:
         prompt = render_system_prompt(
-            "You are helpful. Workspace: {{workspace}}", TEST_WORKSPACE,
+            "You are helpful.",
             mcp_instructions=(McpServerInstructions("docs", "Search the docs."),),
         )
         for system_prompt in ("", prompt):
@@ -278,7 +277,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
             ),
         )
 
@@ -390,7 +388,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
             tool_set(EchoTool(), session=session),
@@ -436,7 +433,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -500,7 +496,7 @@ class AgentTest(unittest.TestCase):
         )
         provider = MockProvider(["- [ephemeral] Checkpoint."])
         system_prompt = render_system_prompt(
-            "Original system", TEST_WORKSPACE,
+            "Original system",
             mcp_instructions=(McpServerInstructions(
                 "demo", "MCP guide remains outside the checkpoint.",
             ),),
@@ -755,7 +751,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -813,7 +808,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -871,7 +865,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -905,7 +898,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -1112,7 +1104,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -1190,7 +1181,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -1261,7 +1251,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
         )
@@ -1473,7 +1462,6 @@ class AgentTest(unittest.TestCase):
                 output_reserve_tokens=100,
                 max_generation_tokens=300,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
             ),
             now=clock(REQUEST_TIME, RESPONSE_TIME),
         )
@@ -1498,7 +1486,6 @@ class AgentTest(unittest.TestCase):
             output_reserve_tokens=100,
             max_generation_tokens=50,
             tools=ToolConfig(enabled=()),
-            workspace_instruction_files=(),
         )
         agent = make_agent(
             provider=provider,
@@ -1937,7 +1924,6 @@ class AgentTest(unittest.TestCase):
                 max_same_tool_calls=5,
                 output_reserve_tokens=100,
                 tools=ToolConfig(enabled=()),
-                workspace_instruction_files=(),
                 context=ContextCompressionConfig(keep_recent_units=1),
             ),
             tools=(EchoTool(),),

@@ -46,7 +46,7 @@ class HookTest(unittest.TestCase):
         executor = HostCommandExecutor(self.workspace)
         self.events = []
         self.context = ToolExecutionContext(
-            Workspace(self.workspace), self.session, sessions_directory=self.root / "sessions",
+            Workspace(self.workspace), self.session,
             hooks=self.hooks, command_executor=executor, on_hook_event=self.events.append,
         )
         self.catalog = ToolCatalog((ReadFileTool(), WriteFileTool(), ShellTool()))
@@ -160,7 +160,7 @@ class HookTest(unittest.TestCase):
         context = replace(self.context, hooks=HookRunner((definition,)))
         agent, _ = self.agent(["done"], context)
         self.assertEqual(agent.run("work").content, "done")
-        self.assertTrue(list((self.root / "sessions").rglob("*.txt")))
+        self.assertTrue(list((self.workspace / "artifacts").rglob("*.txt")))
 
     def test_input_rejection_never_enters_provider_context(self):
         self.rule("InputSubmitted")
@@ -240,7 +240,7 @@ class HookTest(unittest.TestCase):
                 self.assertFalse((self.workspace / "x").exists())
         diagnostics = [event.payload["diagnostics"] for event in self.session.journal if event.event_type == "hook_finished"]
         self.assertTrue(any("artifact_path" in (item or "") for item in diagnostics))
-        self.assertTrue(list((self.root / "sessions").rglob("*.txt")))
+        self.assertTrue(list((self.workspace / "artifacts").rglob("*.txt")))
 
     def test_running_hook_process_observes_cancellation(self):
         definition = replace(self.hooks.definitions[0], command=sys.executable, args=("-c", "import time; time.sleep(30)"))
@@ -258,7 +258,7 @@ class HookTest(unittest.TestCase):
 
     def test_journal_replay_retains_hook_facts_and_feedback_origin(self):
         self.rule("InputSubmitted", action="warn")
-        store = JsonlSessionStore(self.root / "sessions", group_by_workspace=False)
+        store = JsonlSessionStore(self.root / "sessions")
         with store.open_journal(self.session.session_id) as sink:
             self.session.attach_journal_sink(sink)
             agent, _ = self.agent(["done"])

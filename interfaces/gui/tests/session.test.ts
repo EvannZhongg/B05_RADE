@@ -102,9 +102,8 @@ describe("SessionSocket synchronization", () => {
     }]);
 
     FakeWebSocket.latest.receive({
-      type: "session_ready", protocol_version: 7,
+      type: "session_ready", protocol_version: 8,
       session_id: "session-1",
-      workspace: "/workspace",
       provider: "default",
       model: "test/model",
       resumed: false,
@@ -172,7 +171,7 @@ describe("SessionSocket synchronization", () => {
     expect(consumed).not.toHaveBeenCalled();
   });
 
-  it("queues workspace and model choices during startup in order", () => {
+  it("queues model and refresh choices during startup in order", () => {
     const socket = new SessionSocket({
       sessionId: "session-1",
       attachmentId: "page-1",
@@ -181,8 +180,8 @@ describe("SessionSocket synchronization", () => {
       onError: () => {},
     });
     const choices = [
-      { type: "workspace_set", workspace: "/selected-workspace" },
       { type: "provider_set", provider: "selected-model" },
+      { type: "runtime_refresh" },
     ] satisfies Outgoing[];
     socket.send(choices[0]);
     FakeWebSocket.latest.open();
@@ -228,13 +227,12 @@ describe("SessionSocket synchronization", () => {
         onError: () => {},
       });
       socket.send({ type: "provider_set", provider: "second" });
-      socket.send({ type: "workspace_set", workspace: "/new-workspace" });
       socket.send({ type: "runtime_refresh" });
       socket.send({ type: "user_steer", turn_id: "active-turn", steer_id: "steer", text: "continue" });
       FakeWebSocket.latest.open();
       FakeWebSocket.latest.receive({ ...snapshot, phase, turn_id: "active-turn" });
 
-      expect(rejected.mock.calls).toEqual([["provider_set"], ["workspace_set"], ["runtime_refresh"]]);
+      expect(rejected.mock.calls).toEqual([["provider_set"], ["runtime_refresh"]]);
       expect(FakeWebSocket.latest.sent.slice(1).map((message) => JSON.parse(message))).toEqual([
         { type: "user_steer", turn_id: "active-turn", steer_id: "steer", text: "continue" },
       ]);
@@ -259,7 +257,6 @@ describe("SessionSocket synchronization", () => {
       onError: () => {},
     });
     socket.send({ type: "provider_set", provider: "second" });
-    socket.send({ type: "workspace_set", workspace: "/new-workspace" });
     FakeWebSocket.latest.open();
     FakeWebSocket.latest.receive({ ...snapshot, replayed: true, event_sequence: 2 });
     FakeWebSocket.latest.receive({ type: "turn_completed", turn_id: "old-turn", usage: null, replayed: true });
@@ -268,7 +265,7 @@ describe("SessionSocket synchronization", () => {
 
     FakeWebSocket.latest.receive({ ...snapshot, phase: "running", turn_id: "active-turn", event_sequence: 8 });
     expect(FakeWebSocket.latest.sent).toHaveLength(1);
-    expect(rejected.mock.calls).toEqual([["provider_set"], ["workspace_set"]]);
+    expect(rejected.mock.calls).toEqual([["provider_set"]]);
   });
 
   it("guards changes made before React renders the active phase and unlocks after completion", () => {

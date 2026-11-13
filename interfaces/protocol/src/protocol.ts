@@ -1,6 +1,6 @@
 // Public stdio Bridge protocol, major 3. Keep Python senders and the reference in sync.
 
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 export type JSONValue =
   | string
@@ -33,7 +33,7 @@ export type FileAttachment = {
   size_bytes: number;
 };
 
-export type UserAttachment = ImageAttachment | FileAttachment;
+export type ToolMedia = ImageAttachment | FileAttachment;
 
 export type ProtocolError = {
   type: string;
@@ -109,7 +109,6 @@ export type SessionSummary = {
   session_id: string;
   input_preview: string | null;
   started_at: string | null;
-  forked_from?: string;
 };
 
 export type SessionContentPart =
@@ -155,7 +154,6 @@ export type RuntimeState = {
   context_window: ContextWindow | null;
   cache_usage: CacheUsage | null;
   event_sequence?: number;
-  workspace?: string;
   jobs: BackgroundJob[];
   runtime_warnings?: string[];
   plan: PlanSnapshot | null;
@@ -187,7 +185,6 @@ export type Incoming = (
       type: 'session_ready';
       protocol_version: typeof PROTOCOL_VERSION;
       session_id: string;
-      workspace: string;
       provider: string;
       model: string;
       resumed: boolean;
@@ -232,7 +229,7 @@ export type Incoming = (
   | {
       type: 'tool_media';
       turn_id: string;
-      attachments: UserAttachment[];
+      attachments: ToolMedia[];
     }
   | ({
       type: 'job_status';
@@ -249,11 +246,9 @@ export type Incoming = (
       timestamp_utc: string;
     }
   | { type: 'provider_changed'; provider: string; model: string }
-  | { type: 'workspace_changed'; workspace: string }
   | { type: 'runtime_refreshed'; provider: string; model: string }
   | { type: 'runtime_refresh_failed'; error: RuntimeFailure }
   | { type: 'sessions_listed'; sessions: SessionSummary[] }
-  | { type: 'workspaces_listed'; workspaces: string[] }
   | { type: 'input_scenes_listed'; filenames: string[]; error?: string }
   | { type: 'session_items'; items: SessionItem[] }
   | { type: 'plan_updated'; plan: PlanSnapshot }
@@ -274,21 +269,18 @@ export type Outgoing =
   | {
       // May also rebind an idle Bridge to another Session without restarting it.
       type: 'open_session';
-      workspace: string;
       session_id: string | null;
       // Omitted to use the provider selected in the configuration file.
       provider?: string;
     }
-  | { type: 'user_turn'; turn_id: string; text: string; attachments?: UserAttachment[] }
+  | { type: 'user_turn'; turn_id: string; text: string }
   | { type: 'user_turn'; turn_id: string; scene_input: string }
   | { type: 'user_steer'; turn_id: string; steer_id: string; text: string }
   | { type: 'provider_set'; provider: string }
-  | { type: 'workspace_set'; workspace: string }
   | { type: 'runtime_refresh' }
   | { type: 'cancel'; turn_id: string }
   // List stored conversations; control-plane-only Sessions can be absent.
   | { type: 'list_sessions' }
-  | { type: 'list_workspaces' }
   | { type: 'list_input_scenes' }
   | { type: 'load_session' }
   | { type: 'session_snapshot' };

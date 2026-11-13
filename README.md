@@ -4,7 +4,7 @@
   <b>English</b> &middot; <a href="README.zh-CN.md">简体中文</a>
 </div>
 
-RADE is an open-source, lightweight personal agent application. It provides local workspace operations, session persistence, context management, long-term memory, plans, subagents, and Skill / Plugin / MCP extensibility, with a TUI and a GUI.
+RADE is an open-source, lightweight personal agent application. It provides per-run file operations, session persistence, context management, long-term memory, plans, subagents, and Skill / Plugin / MCP extensibility, with a TUI and a GUI.
 
 ```text
 TUI ───────────────────────── Bridge ── agent_runtime ── agent_core
@@ -20,13 +20,13 @@ RADE-server
 
 ## Key capabilities
 
-- **Direct local execution**: Shell and command Hooks run with the current user's host permissions and the Workspace as their working directory. Built-in file tools resolve paths within the Workspace.
+- **Direct local execution**: Shell and command Hooks run with the current user's host permissions and the run’s files directory as their working directory. Built-in file tools resolve paths within the run’s files directory.
 - **A complete agent loop**: streaming responses, tool batches, context compaction, steer, cancel, plans, and background jobs.
 - **Resumable sessions**: conversation and execution events are written to an append-only JSONL journal, and the TUI and GUI can read the same kind of session.
-- **Memory** stores long-term context for each workspace.
-- **Models and media** use Chat Completions or Responses through the OpenAI SDK. Subagents, context compression, and memory use the main agent’s selected provider. Models with image input can inspect workspace images.
+- **Memory** stores long-term context for each run.
+- **Models and media** use Chat Completions or Responses through the OpenAI SDK. Subagents, context compression, and memory use the main agent’s selected provider. Models with image input can inspect images in the run files directory.
 - **Extension system**: standalone skills, skills / agents / MCP / [command hooks](docs/plugin-hooks.md) provided by plugins, and standalone MCP servers.
-- **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, attachments, a file tree, settings, and memory.
+- **Two frontends** support interactive turns. The TUI suits terminal workflows. The GUI provides multi-session management, a run file tree, settings, and memory.
 
 ## Quick start
 
@@ -114,14 +114,13 @@ Frontends and SDK:
 | Path | Contents |
 | --- | --- |
 | `.RADE/provider_config.json` | Provider definitions and the default main agent provider |
-| `.RADE/agent_config.json` | Tools, context, memory, subagents, MCP, workspace instructions, and scratch workspace settings |
+| `.RADE/agent_config.json` | Tools, context, memory, subagents, and MCP |
 | `.RADE/.env` | The secrets and environment variables referenced by the configuration |
 | `.RADE/prompts/` | Main agent, subagent, compaction, and memory prompts |
 | `.RADE/skills/` | Standalone skills |
 | `.RADE/plugins/` | Plugin capability packages |
-| `.RADE/AGENTS.md` | Project-wide workspace instruction |
-| `.RADE/sessions/` | Session journals, workspace memory, artifacts, subagent records, and per-session auxiliary usage logs |
-| `<workspace>/.RADE/attachments/` | Uploaded attachments |
+| `.RADE/AGENTS.md` | Application-wide runtime instructions |
+| `.RADE/runs/<run_id>/` | Journal, run settings, memory, subagent records, and `files/` for scene snapshots, solver files, and tool artifacts |
 
 The default configuration and built-in resources live in [`agent_runtime/defaults/`](agent_runtime/defaults). See [`agent_runtime/README.md`](agent_runtime/README.md) for how assembly works.
 
@@ -140,7 +139,7 @@ On Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
 
 Pytest distributes test classes across four isolated worker processes. Use `-n 0` for a serial run or `-n 2` on smaller machines. The full suite includes package installation and real local MCP and shell processes; `--ignore=tests/test_bridge_client.py` omits the package installation check during iteration. The standalone plugin testkit has its own command in [docs/plugin-interop.md](docs/plugin-interop.md).
 
-The server extra includes FastAPI, Uvicorn, the WebSocket backend, and multipart support; Windows, macOS, and Linux use the same installation. The TUI runs with the base installation.
+The server extra includes FastAPI, Uvicorn, and the WebSocket backend; Windows, macOS, and Linux use the same installation. The TUI runs with the base installation.
 
 Frontend build, type checking, and tests:
 

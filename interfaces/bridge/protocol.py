@@ -30,7 +30,7 @@ from agent_core import (
 from agent_core.usage import cache_usage_to_dict, usage_to_dict
 
 
-PROTOCOL_VERSION = 7
+PROTOCOL_VERSION = 8
 
 
 class ProtocolError(ValueError):
@@ -38,8 +38,8 @@ class ProtocolError(ValueError):
 
 COMMAND_TYPES = frozenset({
     "open_session", "user_turn", "user_steer", "cancel",
-    "provider_set", "workspace_set",
-    "list_sessions", "list_workspaces", "load_session", "session_snapshot", "settings_get",
+    "provider_set",
+    "list_sessions", "load_session", "session_snapshot", "settings_get",
     "settings_provider_save", "settings_agent_save",
     "runtime_refresh", "list_input_scenes",
 })
@@ -124,7 +124,6 @@ def _plan_payload(
 def session_ready_message(
     *,
     session_id: str,
-    workspace: str,
     provider: str,
     model: str,
     resumed: bool,
@@ -134,7 +133,6 @@ def session_ready_message(
         "type": "session_ready",
         "protocol_version": PROTOCOL_VERSION,
         "session_id": session_id,
-        "workspace": workspace,
         "provider": provider,
         "model": model,
         "resumed": resumed,
@@ -161,7 +159,6 @@ def runtime_state_message(
     event_sequence: int | None = None,
     runtime_warnings: tuple[str, ...] = (),
     plan: PlanSnapshot | dict[str, object] | None = None,
-    workspace: str | None = None,
 ) -> dict[str, object]:
     """Describe the execution plane independently from Session readiness.
 
@@ -181,15 +178,12 @@ def runtime_state_message(
     }
     if event_sequence is not None:
         message["event_sequence"] = event_sequence
-    if workspace is not None:
-        message["workspace"] = workspace
     return message
 
 
 def inactive_runtime_state(
     *,
     provider: str | None = None,
-    workspace: str | None = None,
     cache_usage: dict[str, int] | None = None,
     event_sequence: int | None = None,
 ) -> dict[str, object]:
@@ -197,7 +191,6 @@ def inactive_runtime_state(
     return runtime_state_message(
         phase="inactive",
         provider=provider,
-        workspace=workspace,
         cache_usage=cache_usage,
         event_sequence=event_sequence,
     )
@@ -228,15 +221,12 @@ def user_turn_received_message(turn_id: str) -> dict[str, object]:
 def sessions_listed_message(
     sessions: list[dict[str, object]],
 ) -> dict[str, object]:
-    """Answer ``list_sessions`` with the Workspace's stored Sessions."""
+    """Answer ``list_sessions`` with stored runs."""
     return {
         "type": "sessions_listed",
         "sessions": sessions,
     }
 
-
-def workspaces_listed_message(workspaces: list[str]) -> dict[str, object]:
-    return {"type": "workspaces_listed", "workspaces": workspaces}
 
 
 def session_items_message(

@@ -2,20 +2,15 @@
 
 import asyncio
 import json
-from pathlib import Path
 from threading import Event
-from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 
-from agent_core import JsonlSessionStore, Workspace, message_to_dict, plan_snapshot_to_dict
+from agent_core import JsonlSessionStore, SessionInUseError, message_to_dict, plan_snapshot_to_dict
+from agent_core.session_paths import validate_session_id
 from agent_core.usage import cache_usage_to_dict
 from agent_runtime.settings import SettingsStore
-from interfaces.bridge.managed_workspaces import (
-    delete_scratch_workspace,
-    is_scratch_workspace,
-)
 from interfaces.bridge.protocol import (
     attachment_replaced_message,
     inactive_runtime_state,
@@ -26,24 +21,21 @@ from interfaces.session_host import (
     ActiveSessionRegistry,
     SessionRunningError,
 )
-from .workspace import WorkspaceResolver
 
 
 # Messages the browser may forward to the bridge verbatim. ``open_session``
-# is excluded because the server owns the Workspace and provider selection.
+# is excluded because the server validates the run identifier and provider.
 RELAYED_MESSAGE_TYPES = frozenset(
     {
         "user_turn",
         "user_steer",
         "provider_set",
-        "workspace_set",
         "runtime_refresh",
     }
 )
 
 
 def create_sessions_router(
-    resolver: WorkspaceResolver,
     store: JsonlSessionStore,
     settings: SettingsStore,
     active_sessions: ActiveSessionRegistry,
@@ -62,26 +54,13 @@ def create_sessions_router(
                     "session_id": runtime.session_id,
                     **runtime.state,
                     **runtime.transcript,
-                    "editable_user_messages": store.editable_user_messages(
-                        runtime.session_id
-                    ),
                 }
             )
         return result
 
     @router.get("/api/sessions")
     def list_sessions() -> list[dict[str, object]]:
-        return [
-            {
-                **group,
-                **(
-                    {"scratch": True}
-                    if is_scratch_workspace(str(group["workspace"]))
-                    else {}
-                ),
-            }
-            for group in store.list_sessions()
-        ]
+        return store.list_sessions()
 
     @router.get("/api/sessions/search")
     async def search_sessions(
@@ -140,7 +119,6 @@ def create_sessions_router(
                 "match_end": len(text[start:match["match_end"]].encode("utf-16-le")) // 2,
                 "prefix_omitted": start > 0,
                 "suffix_omitted": end < len(text),
-                "scratch": is_scratch_workspace(str(match["workspace"])),
             })
         return {"matches": results, "has_more": len(matches) > limit}
 
@@ -153,9 +131,6 @@ def create_sessions_router(
                     "session_id": runtime.session_id,
                     **runtime.state,
                     **runtime.transcript,
-                    "editable_user_messages": store.editable_user_messages(
-                        runtime.session_id
-                    ),
                 }
             session = store.load(session_id, recover=True)
             return jsonable_encoder(
@@ -165,7 +140,6 @@ def create_sessions_router(
                         message_to_dict(item, include_provider_data=False)
                         for item in session.items
                     ],
-                    "workspace": session.workspace,
                     "provider": store.provider_for(session.session_id),
                     "context_window": None,
                     "cache_usage": cache_usage_to_dict(session.cache_usage),
@@ -174,50 +148,6 @@ def create_sessions_router(
                         plan_snapshot_to_dict(session.plan)
                         if session.plan is not None
                         else None
-                    ),
-                    "editable_user_messages": store.editable_user_messages(
-                        session
-                    ),
-                }
-            )
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-
-    @router.post("/api/sessions/{session_id}/fork", status_code=201)
-    async def fork_session(
-        session_id: str,
-        payload: dict[str, object],
-    ) -> object:
-        anchor_id = payload.get("anchor_id")
-        if not isinstance(anchor_id, str) or not anchor_id:
-            raise HTTPException(status_code=400, detail="编辑锚点无效。")
-        runtime = await active_sessions.get(session_id)
-        if runtime is not None and runtime.running:
-            raise HTTPException(status_code=409, detail="会话正在运行。")
-        try:
-            forked = store.fork_session(
-                session_id,
-                str(uuid4()),
-                anchor_id,
-            )
-            return jsonable_encoder(
-                {
-                    "session_id": forked.session_id,
-                    "items": [
-                        message_to_dict(item, include_provider_data=False)
-                        for item in forked.items
-                    ],
-                    "workspace": forked.workspace,
-                    "provider": store.provider_for(forked.session_id),
-                    "context_window": None,
-                    "event_sequence": 0,
-                    "plan": (
-                        plan_snapshot_to_dict(forked.plan)
-                        if forked.plan is not None
-                        else None
-                    ),
-                    "editable_user_messages": store.editable_user_messages(
-                        forked
                     ),
                 }
             )
@@ -253,16 +183,9 @@ def create_sessions_router(
                     status_code=409,
                     detail="会话正在运行。",
                 ) from error
-            workspace_path = store.workspace_for(session_id)
             deleted = store.delete_session(session_id)
-            # A scratch workspace can hold several Sessions; it is removed
-            # once the last one is gone.
-            if (
-                deleted
-                and workspace_path is not None
-                and not store.list_workspace_sessions(workspace_path)
-            ):
-                delete_scratch_workspace(workspace_path)
+        except SessionInUseError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         if not deleted:
@@ -285,35 +208,9 @@ def create_sessions_router(
         await websocket.accept()
         try:
             opening = await websocket.receive_json()
-            opening_session_id = (
-                opening.get("session_id") if isinstance(opening, dict) else None
-            )
-            if opening_session_id is not None and not isinstance(
-                opening_session_id,
-                str,
-            ):
-                opening_session_id = None
-            requested_workspace = (
-                opening.get("workspace") if isinstance(opening, dict) else None
-            )
-            bound_workspace = (
-                store.workspace_for(opening_session_id)
-                if opening_session_id
-                else None
-            )
-            current_workspace = (
-                Workspace(Path(requested_workspace))
-                if bound_workspace is None
-                and isinstance(requested_workspace, str)
-                and requested_workspace
-                else resolver.for_session(opening_session_id)
-            )
             _, models = settings.model_options()
-            opening_message = _open_session_message(
-                opening,
-                current_workspace,
-                models,
-            )
+            opening_message = _open_session_message(opening, models)
+            opening_session_id = opening_message["session_id"]
         except WebSocketDisconnect:
             return
         except (TypeError, ValueError) as error:
@@ -342,7 +239,6 @@ def create_sessions_router(
             return
         runtime, created = await active_sessions.open_or_attach(
             opening_message,
-            current_workspace,
             attach_only=attach_only,
         )
         if runtime is None:
@@ -434,7 +330,6 @@ async def _send_protocol_error(websocket: WebSocket, message: str) -> None:
 
 def _open_session_message(
     opening: object,
-    workspace: Workspace,
     models: dict[str, str],
 ) -> dict[str, object]:
     """Build the bridge's session-open command from the browser's choice."""
@@ -445,13 +340,13 @@ def _open_session_message(
     if not isinstance(session_id, str) or not session_id:
         raise ValueError("'session_id' must be a non-empty string")
 
+    validate_session_id(session_id)
     provider = opening.get("provider")
     if provider is not None and provider not in models:
         raise ValueError("请选择已配置的模型。")
 
     return {
         "type": "open_session",
-        "workspace": str(workspace.path),
         "session_id": session_id,
         "provider": provider,
     }

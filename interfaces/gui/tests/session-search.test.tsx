@@ -6,7 +6,7 @@ import { SessionSearch } from "../src/SessionSearch";
 import type { SessionSearchMatch } from "../src/api";
 
 const match: SessionSearchMatch = {
-  session_id: "history", input_preview: "历史会话", started_at: null, workspace: "F:\\Project", scratch: false,
+  session_id: "history", input_preview: "历史会话", started_at: null,
   item_index: 4, role: "assistant", timestamp_utc: "2026-10-26T01:00:00Z",
   has_more_in_session: false,
   snippet: "找到 needle 正文", match_start: 3, match_end: 9,
@@ -84,10 +84,8 @@ describe("session search popover", () => {
     expect(container.querySelectorAll('[role="group"]')).toHaveLength(1);
     expect(container.querySelectorAll('[role="option"]')).toHaveLength(2);
     const time = new Date(first.started_at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" });
-    expect(container.querySelector(".session-search-source")!.textContent).toBe(`Project/${time} · history.json`);
-    expect(container.querySelector(".session-search-source")!.getAttribute("title")).toBe(`F:\\Project / ${time} · history.json`);
+    expect(container.querySelector(".session-search-heading")!.textContent).toBe(`${time} · history.json`);
     expect(container.querySelector("mark")!.textContent).toBe("needle");
-    expect(container.textContent).toContain("Project");
     expect(container.textContent).toContain("前 50 条");
     await act(async () => container.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
     expect(container.querySelectorAll('[role="option"]')[1].getAttribute("aria-selected")).toBe("true");
@@ -113,16 +111,16 @@ describe("session search popover", () => {
 
   it("shows one heading per session and navigates between capped previews across groups", async () => {
     const previews = [0, 1, 2].map((item_index) => ({ ...match, item_index, has_more_in_session: true }));
-    const other = { ...match, session_id: "other", input_preview: "另一个会话", scratch: true };
+    const other = { ...match, session_id: "other", input_preview: "另一个会话" };
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ matches: [...previews, other], has_more: false }) });
     await open();
     await search();
     const groups = container.querySelectorAll('[role="group"]');
     expect(groups).toHaveLength(2);
-    expect(groups[0].querySelectorAll(".session-search-source")).toHaveLength(1);
+    expect(groups[0].querySelectorAll(".session-search-heading")).toHaveLength(1);
     expect(groups[0].querySelectorAll('[role="option"]')).toHaveLength(3);
     expect(groups[0].textContent).toContain("仅显示前 3 条命中");
-    expect(groups[1].querySelector(".session-search-source")!.textContent).toBe("Chat/另一个会话");
+    expect(groups[1].querySelector(".session-search-heading")!.textContent).toBe("另一个会话");
     expect(groups[1].textContent).not.toContain("仅显示前 3 条命中");
     await act(async () => {
       const input = container.querySelector("input")!;

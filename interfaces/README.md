@@ -1,6 +1,6 @@
 # Interfaces
 
-`interfaces/` 是交互层与前端宿主的集合。它决定进程何时启动、Bridge 如何附着、协议消息如何呈现，但不装配 Runtime、不运行 Agent Loop，也不执行会改变 Workspace 或 Session 的 Tool。
+`interfaces/` 是交互层与前端宿主的集合。它决定进程何时启动、Bridge 如何附着、协议消息如何呈现，但不装配 Runtime、不运行 Agent Loop，也不执行会改变运行文件或 Session 的 Tool。
 
 ```text
 RADE ── launch.py ── TUI ── Bridge 子进程 ── agent_runtime ── agent_core
@@ -31,8 +31,6 @@ RADE-server ── application_host
 
 `launch.py` 之所以用 `subprocess.call` 等待而不是 `execvp`，是因为 Windows 上 `execvp` 会另起进程并结束自己，终端提示符会先回来并与 UI 争抢控制台输入。它同时通过 `RADE_PYTHON` 把当前解释器交给前端，Bridge 因此运行在拥有 `agent_core` 的那个 Python 环境里。
 
-`--temporary` 由启动器在 `scratch_workspace_root` 下创建 RADE 管理的持久 Workspace，再把解析后的 `--workspace` 交给 TUI；二者不能同时使用。
-
 ## 应用宿主与单实例
 
 `run_application_host()` 解析配置目录后，先在该目录的 `server.lock` 上取得非阻塞操作系统文件锁，再初始化配置并启动宿主。同一配置目录的第二个进程明确报错，不启动 Bridge 或 HTTP，也不通过 HTTP 请求识别已有实例。锁随句柄关闭或进程退出释放，锁文件保留；不同配置目录的锁互不影响。
@@ -55,9 +53,9 @@ HTTP 服务默认监听 `127.0.0.1:8736`。FastAPI lifespan 只管理 HTTP 应�
 
 ## Core 复用边界
 
-前端宿主允许直接复用 Core 的只读能力：`JsonlSessionStore` 的 Session 读取与列表、`Workspace` 路径解析与包含校验、`SettingsStore` 的配置快照与写入。GUI 的 Session fork 是唯一直接写 Session 的路径，它复制锚点所在 Turn 之前的 Journal 生成新 Session，不改写源 Session，也不经过 Bridge。
+前端宿主复用 Core 的运行记录读取、列表和运行文件路径校验，以及 Runtime 的设置读写能力。
 
-其余会改变 Session 或 Workspace 执行状态的 Agent 操作必须经 Bridge 协议完成；前端不得自行创建 Agent、执行 Tool 或维护另一套授权状态。
+其余会改变 Session 或运行文件 执行状态的 Agent 操作必须经 Bridge 协议完成；前端不得自行创建 Agent、执行 Tool 或维护另一套授权状态。
 
 ## 前端文档
 

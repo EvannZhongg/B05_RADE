@@ -1,10 +1,8 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from ..session_paths import default_sessions_directory
 from ..workspace import Workspace
-from .base import JSONValue
 
 if TYPE_CHECKING:
     from ..hooks import HookRunner, HookInvocation, HookCompletedEvent
@@ -34,9 +32,6 @@ class ToolExecutionContext:
 
     workspace: Workspace
     session: "Session"
-    sessions_directory: Path = field(
-        default_factory=default_sessions_directory
-    )
     command_executor: "CommandExecutor | None" = None
     vision_input: bool = False
     mcp: "McpClientManager | None" = None
@@ -51,11 +46,5 @@ class ToolExecutionContext:
     on_hook_event: "Callable[[HookCompletedEvent], None] | None" = None
     agent_role: str = "main"
     parent_session_id: str | None = None
+    run_directory: Path | None = None
     artifact_directory: Path | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "sessions_directory",
-            self.sessions_directory.expanduser().resolve(),
-        )

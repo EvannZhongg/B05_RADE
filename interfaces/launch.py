@@ -13,12 +13,7 @@ import sys
 from importlib.resources import files
 from pathlib import Path
 
-from agent_runtime.config import (
-    default_config_directory,
-    initialize_config_directory,
-    load_scratch_workspace_root,
-)
-from .bridge.managed_workspaces import create_scratch_workspace
+from agent_runtime.config import default_config_directory, initialize_config_directory
 
 
 def ui_bundle_path() -> Path:
@@ -43,27 +38,6 @@ def main() -> None:
     config_directory = default_config_directory()
     initialize_config_directory(config_directory)
 
-    arguments = sys.argv[1:]
-    if "--temporary" in arguments:
-        if "--workspace" in arguments:
-            raise SystemExit("--temporary cannot be used with --workspace")
-        if arguments.count("--temporary") > 1:
-            raise SystemExit("--temporary may only be specified once")
-        try:
-            workspace = create_scratch_workspace(
-                load_scratch_workspace_root(
-                    config_directory / "agent_config.json"
-                )
-            )
-        except (OSError, ValueError) as error:
-            raise SystemExit(
-                f"Failed to create scratch workspace: {error}"
-            ) from error
-        arguments = [
-            argument for argument in arguments if argument != "--temporary"
-        ]
-        arguments.extend(("--workspace", str(workspace.path)))
-
     # The bridge must run in the interpreter that owns agent_core.
     os.environ["RADE_PYTHON"] = sys.executable
-    raise SystemExit(subprocess.call([node, str(bundle), *arguments]))
+    raise SystemExit(subprocess.call([node, str(bundle), *sys.argv[1:]]))

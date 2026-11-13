@@ -17,12 +17,12 @@ alone assembles execution planes; no new execution path is needed.
 | Surface | Current owner | Lifecycle / decision |
 | --- | --- | --- |
 | `bridge_ready`, `channel_command`, `channel_event`, `channel_closed`, `close_channel`, `shutdown` | BridgeServer | Process startup initializes configuration and warms the default provider, then advertises the protocol major. Every session command and event names its channel; a channel ID is reused only after `channel_closed`. `shutdown` or stdin EOF cancels all channels and exits. Public. |
-| `open_session`, `session_ready`, `session_open_failed` | Channel Bridge + SessionRuntimeController | Open a lightweight control plane, acquire the journal writer, restore workspace and provider, publish ready then the initial runtime snapshot. Writer conflicts come back as recoverable `SessionInUseError`. Public. |
+| `open_session`, `session_ready`, `session_open_failed` | Channel Bridge + SessionRuntimeController | Open a lightweight control plane, acquire the journal writer, restore the run and its provider, publish ready then the initial runtime snapshot. Writer conflicts come back as recoverable `SessionInUseError`. Public. |
 | `session_snapshot` | Channel Bridge | Re-publish an already open channel's ready/snapshot pair without rebinding the Session, rebuilding the Agent or disconnecting MCP. Public. |
 | `runtime_state`, embedded `runtime` | Channel Bridge projection of Runtime callbacks | Authoritative state; the initial standalone snapshot is the synchronization barrier. Public. |
 | `user_turn`, `user_turn_received`, model/tool/context/plan/job events, terminal events | Channel Bridge + TurnRunner/Core | The transport acknowledges and enqueues; the channel thread runs turns sequentially. Public; execution stays in the Runtime/Core. |
 | `user_steer`, `cancel`, question responses | Channel Bridge routing → existing Runtime controls | Routed while a turn runs; IDs address turns or outstanding interactions and are unique only within their channel. Public. |
-| `provider_set`, `workspace_set`, session listing/history | Channel serve loop → Runtime | Serialized with turns. Public. |
+| `provider_set`, session listing/history | Channel serve loop → Runtime | Serialized with turns. Public. |
 | `settings_*` | Channel Bridge → Runtime SettingsStore | First-party configuration editor schema. Internal; not a stable configuration API. |
 | event sequence and transcript checkpoint | Channel Bridge EventStream | Per-channel sequence, authoritative transcript replacement. Public. |
 | `resume_after` | Channel Bridge EventStream → GUI ActiveSession | Host delivery cursor; not a stdio reconnect API. Internal metadata. |

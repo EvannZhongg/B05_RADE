@@ -54,7 +54,7 @@ class SettingsStoreTest(unittest.TestCase):
         })
         self.assertEqual(snapshot["agent"]["memory"], {
             "enabled": True,
-            "workspace_max_tokens": 3000,
+            "max_tokens": 3000,
         })
 
     def test_snapshot_lists_rade_skills_and_enabled_plugin_skills(self) -> None:
@@ -201,22 +201,6 @@ class SettingsStoreTest(unittest.TestCase):
         self.store.save_agent(agent)
         document = json.loads(self.store.agent_path.read_text(encoding="utf-8"))
         self.assertEqual(document["subagent_roles"]["researcher"]["mcp"], selection)
-
-    def test_agent_update_reports_missing_scratch_workspace_root(self) -> None:
-        document = json.loads(
-            (self.root / "agent_config.json").read_text(encoding="utf-8")
-        )
-        document.pop("scratch_workspace_root")
-        (self.root / "agent_config.json").write_text(
-            json.dumps(document),
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(
-            ValueError,
-            "missing required config field 'scratch_workspace_root'.*add a path",
-        ):
-            self.store.save_agent({"max_same_tool_calls": 6})
 
     def test_rejects_a_stale_revision(self) -> None:
         revision = configuration_fingerprint(self.root)

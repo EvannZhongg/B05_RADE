@@ -12,9 +12,8 @@ class ReadFileTool(Tool):
             name=self.name,
             description=(
                 "Read a range of lines from a UTF-8 file with line numbers. "
-                "Paths are relative to the workspace root, except "
-                ".RADE/sessions/... paths, which address Runtime Session "
-                "artifacts. Refuses files larger than 50 MiB. One call "
+                "Paths are relative to the current run's files directory. "
+                "Refuses files larger than 50 MiB. One call "
                 "returns as much as fits in a tool result; when more "
                 "remains the status line reports the 'offset' to continue "
                 "from. Overlong lines are truncated with an explicit "
@@ -26,8 +25,7 @@ class ReadFileTool(Tool):
                     "path": {
                         "type": "string",
                         "description": (
-                            "Path relative to the workspace root, or a "
-                            ".RADE/sessions/... Session artifact path."
+                            "Path relative to the current run's files directory."
                         ),
                     },
                     "offset": {

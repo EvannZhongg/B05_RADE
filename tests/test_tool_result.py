@@ -19,7 +19,6 @@ from agent_core import (
     Workspace,
 )
 from agent_core.execution.process import _read_spooled_output
-from agent_core.session_paths import workspace_key
 from agent_core.tools.base import ToolError
 from agent_core.tools.budget import MAX_TOOL_RESULT_CHARS
 from agent_core.tools.text import MAX_ARTIFACT_LINE_CHARS
@@ -52,10 +51,8 @@ class ToolResultNormalizerTest(unittest.TestCase):
             )
             normalizer = ToolResultNormalizer(
                 workspace,
-                "session-1",
                 max_chars=1000,
                 preview_chars=20,
-                sessions_directory=workspace.path / ".RADE" / "sessions",
             )
 
             normalized = normalizer.normalize(result)
@@ -79,9 +76,8 @@ class ToolResultNormalizerTest(unittest.TestCase):
             )
             normalizer = ToolResultNormalizer(
                 workspace,
-                "session-1",
                 max_chars=1000,
-                sessions_directory=workspace.path / ".RADE" / "sessions",
+
             )
 
             with patch(
@@ -102,17 +98,14 @@ class ToolResultNormalizerTest(unittest.TestCase):
             )
             normalizer = ToolResultNormalizer(
                 workspace,
-                "session-1",
                 max_chars=20,
                 preview_chars=12,
-                sessions_directory=workspace.path / ".RADE" / "sessions",
             )
 
             normalized = normalizer.normalize(result)
 
             artifact_path = (
-                f".RADE/sessions/{workspace_key(workspace.path)}"
-                "/session-1/call%2F1.txt"
+                "artifacts/call%2F1.txt"
             )
             body = '--- $["text"] (text) ---\nabcdefghijklmnopqrstuvwxyz'
             self.assertEqual(
@@ -152,9 +145,8 @@ class ToolResultNormalizerTest(unittest.TestCase):
             )
             normalizer = ToolResultNormalizer(
                 workspace,
-                "session-1",
                 max_chars=20,
-                sessions_directory=workspace.path / ".RADE" / "sessions",
+
             )
 
             normalized = normalizer.normalize(result)
@@ -190,27 +182,26 @@ class ToolResultNormalizerTest(unittest.TestCase):
             )
             normalizer = ToolResultNormalizer(
                 workspace,
-                "session-1",
                 max_chars=20,
-                sessions_directory=root / "sessions",
+
             )
 
             normalizer.normalize(result)
 
-            artifact = next((root / "sessions").rglob("call-1.txt"))
+            artifact = workspace.path / "artifacts" / "call-1.txt"
             self.assertEqual(
                 artifact.read_text(encoding="utf-8").replace("\n", ""),
                 complete,
             )
-            self.assertFalse(list((root / "sessions").rglob("*.source")))
+            self.assertFalse(list((workspace.path / "artifacts").rglob("*.source")))
             self.assertFalse(spool.exists())
 
     def test_string_previews_fit_serialized_json_budget(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Workspace(Path(directory))
             normalizer = ToolResultNormalizer(
-                workspace, "session", max_chars=1000,
-                sessions_directory=workspace.path / "sessions",
+                workspace, max_chars=1000,
+
             )
             for prefix in ("", '中文"\\\n\t\x00'):
                 with self.subTest(prefix=prefix):
@@ -255,8 +246,8 @@ class ToolResultNormalizerTest(unittest.TestCase):
                 artifact_cleanup=cleanup,
             )
             normalizer = ToolResultNormalizer(
-                workspace, "session", max_chars=1000,
-                sessions_directory=workspace.path / "sessions",
+                workspace, max_chars=1000,
+
             )
 
             with self.assertRaises(ValueError) as raised:
@@ -284,7 +275,7 @@ class ToolResultNormalizerTest(unittest.TestCase):
                 "failed", "shell", artifact_writer=write, artifact_cleanup=cleanup
             )
             normalizer = ToolResultNormalizer(
-                workspace, "session", sessions_directory=sessions
+                workspace
             )
             with self.assertRaisesRegex(OSError, "spool failed"):
                 normalizer.normalize(result)
@@ -298,9 +289,9 @@ class ShellArtifactTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.workspace = Workspace(self.root)
-        self.sessions = self.root / "sessions"
+        self.artifacts = self.root / "artifacts"
         self.normalizer = ToolResultNormalizer(
-            self.workspace, "shell-test", sessions_directory=self.sessions
+            self.workspace
         )
         self.spool_paths = []
 
@@ -326,7 +317,7 @@ class ShellArtifactTest(unittest.TestCase):
             self.addCleanup(jobs.close)
             jobs.set_result_normalizer(self.normalizer)
         context = ToolExecutionContext(
-            workspace=self.workspace, session=session, sessions_directory=self.sessions,
+            workspace=self.workspace, session=session,
             command_executor=executor, jobs=jobs,
         )
         tools = ToolCatalog((ShellTool(),)).select(("shell",), context)
@@ -348,11 +339,11 @@ class ShellArtifactTest(unittest.TestCase):
         self.assertEqual(preview["exit_code"], 7)
         self.assertTrue(preview["timed_out"])
         self.assertEqual(preview["timeout_seconds"], 3)
-        artifact = next(self.sessions.rglob(Path(summary["artifact_path"]).name))
+        artifact = next(self.artifacts.rglob(Path(summary["artifact_path"]).name))
         stored = artifact.read_text(encoding="utf-8")
         self.assertEqual(len(stored), summary["size_chars"])
         self.assertLessEqual(max(map(len, stored.split("\n"))), MAX_ARTIFACT_LINE_CHARS)
-        self.assertFalse(list(self.sessions.rglob("*.source")))
+        self.assertFalse(list(self.artifacts.rglob("*.source")))
         self.assertTrue(stored.startswith("$ "))
         for path in self.spool_paths:
             self.assertFalse(path.exists())
@@ -378,7 +369,7 @@ class ShellArtifactTest(unittest.TestCase):
         from agent_core.tools.builtin.read_file import ReadFileTool
 
         context = ToolExecutionContext(
-            workspace=self.workspace, session=Session(), sessions_directory=self.sessions
+            workspace=self.workspace, session=Session()
         )
         offset = 1
         recovered = []
@@ -434,7 +425,7 @@ class ShellArtifactTest(unittest.TestCase):
         stdout = "OUT-HEAD--" + '中文"\\\n' * 9000 + "--OUT-TAIL"
         result = self._execute(stdout, "short error")
         normalizer = ToolResultNormalizer(
-            self.workspace, "shell-test", max_chars=2000, sessions_directory=self.sessions
+            self.workspace, max_chars=2000
         )
         summary, stored = self._assert_summary(normalizer.normalize(result), max_chars=2000)
         self._assert_ends(summary["preview"]["stdout"], stdout)
@@ -471,7 +462,7 @@ class ArtifactRoundTripTest(unittest.TestCase):
 
     def _normalizer(self, workspace: Workspace, sessions: Path):
         return ToolResultNormalizer(
-            workspace, "session-1", sessions_directory=sessions
+            workspace
         )
 
     def _context(self, workspace: Workspace, sessions: Path):
@@ -481,7 +472,7 @@ class ArtifactRoundTripTest(unittest.TestCase):
         return ToolExecutionContext(
             workspace=workspace,
             session=Session(),
-            sessions_directory=sessions,
+
         )
 
     def _read_all(self, normalizer, artifact_path, context):
@@ -535,7 +526,7 @@ class ArtifactRoundTripTest(unittest.TestCase):
             tools = ToolCatalog((tool,)).select(
                 (tool.name,), ToolExecutionContext(
                     workspace=workspace, session=Session(),
-                    sessions_directory=sessions, mcp=client,
+                    mcp=client,
                 )
             )
             result = tools.execute(ToolCall("report", tool.name, {}))
@@ -545,9 +536,7 @@ class ArtifactRoundTripTest(unittest.TestCase):
             recovered = "\n".join(self._read_all(
                 normalizer, summary["artifact_path"], context
             ))
-            stored = (sessions / Path(summary["artifact_path"]).relative_to(
-                ".RADE/sessions"
-            )).read_text(encoding="utf-8")
+            stored = (workspace.path / summary["artifact_path"]).read_text(encoding="utf-8")
             self.assertEqual(recovered, stored.removesuffix("\n"))
             self.assertEqual(len(stored), summary["size_chars"])
             self.assertEqual(recovered.count(report), 2)

@@ -150,7 +150,7 @@ from .mcp import (
     namespace_mcp_servers,
 )
 from .workspace import Workspace
-from .workspace_instructions import WorkspaceInstruction, WorkspaceInstructions
+from .runtime_instructions import RuntimeInstruction, RuntimeInstructions
 from .turn_control import (
     AgentCancelled,
     TurnControl,
@@ -283,8 +283,8 @@ __all__ = [
     "UserSteeringMailbox",
     "WriteFileTool",
     "Workspace",
-    "WorkspaceInstruction",
-    "WorkspaceInstructions",
+    "RuntimeInstruction",
+    "RuntimeInstructions",
     "builtin_catalog",
     "estimate_image_tokens",
     "image_extension",

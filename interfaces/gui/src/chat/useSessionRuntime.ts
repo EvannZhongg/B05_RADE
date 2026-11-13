@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
 import { useExternalStoreRuntime } from "@assistant-ui/react";
 import { initialRuntimeState, runtimeIsActive, type CacheUsage, type ContextWindow, type PlanSnapshot, type RuntimePhase } from "@rade/protocol";
-import { createScratchWorkspace, releaseActiveSession, selectWorkspace, type ModelOption, type Session, type WorkspaceOption } from "../api";
+import { releaseActiveSession, type ModelOption, type Session } from "../api";
 import { SessionSocket } from "../session";
 import { applyMessage, isTurnActivity, toMessages, type Feedback, type TranscriptItem } from "../transcript";
 import { jobKindLabel, shouldShowPlan, updateBackgroundJobs, userMessagePreview, type BackgroundJob } from "./runtimeState";
@@ -10,7 +10,6 @@ export type SessionRuntimeOptions = {
   session: Session;
   selected: boolean;
   contextWindow: ContextWindow | null;
-  workspaceOptions: WorkspaceOption[];
   backgroundActive: boolean;
   providers: ModelOption[];
   provider?: string;
@@ -18,15 +17,14 @@ export type SessionRuntimeOptions = {
   onBusyChange: (busy: boolean) => void;
   onContextWindowChange: (window: ContextWindow | null) => void;
   onSessionAvailable: () => void;
+  onRunReady?: () => void;
   onTurnEnd: () => void;
-  onWorkspaceChange?: (workspace: string) => void;
 };
 
 export function useSessionRuntime({
   session,
   selected,
   contextWindow,
-  workspaceOptions,
   backgroundActive,
   providers,
   provider,
@@ -34,8 +32,8 @@ export function useSessionRuntime({
   onBusyChange,
   onContextWindowChange,
   onSessionAvailable,
+  onRunReady,
   onTurnEnd,
-  onWorkspaceChange,
 }: SessionRuntimeOptions) {
   const [items, setItems] = useState<TranscriptItem[]>(session.items);
   const [cacheUsage, setCacheUsage] = useState<CacheUsage | null>(session.cache_usage ?? null);
@@ -49,9 +47,6 @@ export function useSessionRuntime({
   const [reconnecting, setReconnecting] = useState(false);
   const [plan, setPlan] = useState<PlanSnapshot | null>(session.plan ?? null);
   const [pendingProvider, setPendingProvider] = useState<string | null>(null);
-  const [workspaceDraft, setWorkspaceDraft] = useState(session.workspace ?? "");
-  const [scratchWorkspace, setScratchWorkspace] = useState<string | null>(null);
-  const [pendingWorkspace, setPendingWorkspace] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const socketRef = useRef<SessionSocket | null>(null);
   const socketModelRef = useRef("");
@@ -78,21 +73,15 @@ export function useSessionRuntime({
     .filter((message) => message.role === "user")
     .map((message) => userMessagePreview(message)), [messages]);
   const providerSaving = pendingProvider !== null;
-  const workspaceSaving = pendingWorkspace !== null;
-  const configurationPending = providerSaving || workspaceSaving || refreshing;
+  const configurationPending = providerSaving || refreshing;
   const displayedProvider = pendingProvider ?? provider ?? "";
-  const displayedWorkspace = pendingWorkspace ?? workspaceDraft;
-  const workspaceSelected = Boolean(displayedWorkspace.trim());
   const running = runtimeIsActive(runtimePhase);
   const backgroundDisconnected = backgroundActive && socketRef.current === null;
   const controlsDisabled = attachmentReplaced || backgroundDisconnected || pendingUserItem !== null || refreshing;
   const sessionRunning = running || backgroundActive || pendingUserItem !== null || refreshing;
 
-  const canSubmitScene = workspaceSelected && !sessionRunning && !controlsDisabled && !configurationPending && !attaching;
+  const canSubmitScene = !sessionRunning && !controlsDisabled && !configurationPending && !attaching;
 
-  useEffect(() => {
-    if (session.workspace) setWorkspaceDraft(session.workspace);
-  }, [session.workspace]);
 
   const showItems = useCallback((next: TranscriptItem[]) => {
     itemsRef.current = next;
@@ -133,10 +122,10 @@ export function useSessionRuntime({
 
   // A view can detach without destroying its Session's Bridge and MCP clients.
   useEffect(() => {
-    if (session.workspace && (selected || backgroundActive) && socketRef.current === null && !attachmentReplacedRef.current) {
+    if ((selected || backgroundActive) && socketRef.current === null && !attachmentReplacedRef.current) {
       connect({ attachOnly: !selected });
     }
-  }, [backgroundActive, provider, selected, session.session_id, session.workspace]);
+  }, [backgroundActive, provider, selected, session.session_id]);
 
   useEffect(() => {
     if (selected || running || pendingUserItem !== null || configurationPending || socketRef.current === null) return;
@@ -169,7 +158,6 @@ export function useSessionRuntime({
 
   function clearPendingSettings() {
     setPendingProvider(null);
-    setPendingWorkspace(null);
     setRefreshing(false);
   }
 
@@ -179,7 +167,6 @@ export function useSessionRuntime({
     socket = new SessionSocket({
       sessionId: session.session_id,
       provider,
-      workspace: workspaceDraft || session.workspace,
       attachmentId,
       attachOnly,
       afterEvent: eventCounterRef.current,
@@ -192,8 +179,7 @@ export function useSessionRuntime({
           return;
         }
         if (type === "provider_set") setPendingProvider(null);
-        else setPendingWorkspace(null);
-        showToast({ kind: "toast", level: "info", text: "会话正在执行任务，本次模型或工作区切换未应用，请在任务结束后重试。" });
+        showToast({ kind: "toast", level: "info", text: "会话正在执行任务，本次模型切换未应用，请在任务结束后重试。" });
       },
       onMessage: (message) => {
         // A socket that was replaced during a model switch may still have
@@ -255,12 +241,9 @@ export function useSessionRuntime({
           attachmentReplacedRef.current = false;
           setAttachmentReplaced(false);
           if (message.provider) {
+            onRunReady?.();
             socketModelRef.current = message.provider;
             onProviderChange(message.provider);
-          }
-          if (message.workspace) {
-            setWorkspaceDraft(message.workspace);
-            onWorkspaceChange?.(message.workspace);
           }
           applyRuntimePhase(message.phase);
           if (message.phase === "starting" && message.turn_id === null) setRefreshing(true);
@@ -301,6 +284,7 @@ export function useSessionRuntime({
             text: message.reason ?? `${message.hook_id}: ${message.status}` });
         }
         if (message.type === "session_ready") {
+          onRunReady?.();
           attachmentReplacedRef.current = false;
           setAttachmentReplaced(false);
           setReconnecting(false);
@@ -316,11 +300,6 @@ export function useSessionRuntime({
           socketModelRef.current = message.provider;
           onProviderChange(message.provider);
           onContextWindowChange(null);
-        }
-        if (message.type === "workspace_changed") {
-          setWorkspaceDraft(message.workspace);
-          onWorkspaceChange?.(message.workspace);
-          if (!message.replayed) setPendingWorkspace(null);
         }
         if (awaitingSessionActivityRef.current && isTurnActivity(message)) {
           awaitingSessionActivityRef.current = false;
@@ -405,13 +384,12 @@ export function useSessionRuntime({
   }
 
   function changeProvider(nextProvider: string) {
-    if (!workspaceSelected) return;
     setPendingProvider(nextProvider);
     (socketRef.current ?? connect()).send({ type: "provider_set", provider: nextProvider });
   }
 
   function refreshRuntime(): boolean {
-    if (!workspaceSelected || controlsDisabled || attaching || configurationPending) return false;
+    if (controlsDisabled || attaching || configurationPending) return false;
     if (sessionRunning || runtimeIsActive(runtimePhaseRef.current)) {
       showToast({ kind: "toast", level: "info", text: "请在当前任务结束后重新加载。" });
       return false;
@@ -422,43 +400,6 @@ export function useSessionRuntime({
     )));
     (socketRef.current ?? connect()).send({ type: "runtime_refresh" });
     return true;
-  }
-
-  async function saveWorkspace(value = workspaceDraft) {
-    const nextWorkspace = value.trim();
-    if (!nextWorkspace || nextWorkspace === session.workspace) return;
-    setPendingWorkspace(nextWorkspace);
-    if (socketRef.current === null) {
-      setWorkspaceDraft(nextWorkspace);
-      onWorkspaceChange?.(nextWorkspace);
-      setPendingWorkspace(null);
-      return;
-    }
-    try {
-      socketRef.current.send({ type: "workspace_set", workspace: nextWorkspace });
-    } catch (error) {
-      showAlert({ kind: "alert", id: "workspace-update", level: "error", text: String(error) });
-      setPendingWorkspace(null);
-    }
-  }
-
-  async function chooseNewWorkspace() {
-    try {
-      const selectedWorkspace = await selectWorkspace();
-      if (selectedWorkspace) await saveWorkspace(selectedWorkspace);
-    } catch (error) {
-      showAlert({ kind: "alert", id: "workspace-picker", level: "error", text: String(error) });
-    }
-  }
-
-  async function chooseScratchWorkspace() {
-    try {
-      const workspace = await createScratchWorkspace(session.session_id);
-      setScratchWorkspace(workspace);
-      await saveWorkspace(workspace);
-    } catch (error) {
-      showAlert({ kind: "alert", id: "scratch-workspace", level: "error", text: String(error) });
-    }
   }
 
   function stop() {
@@ -488,17 +429,11 @@ export function useSessionRuntime({
     reconnecting,
     plan: shouldShowPlan(plan) ? plan : null,
     displayedProvider,
-    displayedWorkspace,
     providerSaving,
-    workspaceSaving,
     refreshing,
     canSubmitScene,
     controlsDisabled,
     sessionRunning,
-    workspaceSelected,
-    availableWorkspaces: displayedWorkspace && !workspaceOptions.some((option) => option.workspace === displayedWorkspace)
-      ? [...workspaceOptions, { workspace: displayedWorkspace, scratch: displayedWorkspace === scratchWorkspace }]
-      : workspaceOptions,
     dismissAlert: (id: string) => setAlerts((current) => {
       const next = { ...current };
       delete next[id];
@@ -508,9 +443,6 @@ export function useSessionRuntime({
     takeOverAttachment,
     changeProvider,
     refreshRuntime,
-    saveWorkspace,
-    chooseNewWorkspace,
-    chooseScratchWorkspace,
     stop,
     contextWindow,
     providers,

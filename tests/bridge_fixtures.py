@@ -115,12 +115,12 @@ def open_session_message(
     prompts = directory / "prompts"
     prompts.mkdir(exist_ok=True)
     for filename, content in {
-        "Soul.md": "Bridge system prompt for {{workspace}}",
+        "Soul.md": "Bridge system prompt",
         "SubAgent.md": (
-            "Role {{role}}: {{role_description}} in {{workspace}}"
+            "Role {{role}}: {{role_description}}"
         ),
         "Consolidator.md": "Consolidate the conversation.",
-        "WorkspaceMemory.md": "Reconcile workspace memory as JSON.",
+        "RunMemory.md": "Reconcile workspace memory as JSON.",
     }.items():
         path = prompts / filename
         if not path.exists():
@@ -166,7 +166,6 @@ def open_session_message(
     )
     return {
         "type": "open_session",
-        "workspace": str(directory),
         "session_id": None,
         **extra,
     }

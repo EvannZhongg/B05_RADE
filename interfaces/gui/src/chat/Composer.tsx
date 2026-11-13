@@ -1,5 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, ChevronDown, FileJson, Folder, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AlertTriangle, ChevronDown, FileJson, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { get } from "../api";
 import { ContextWindowIndicator, RuntimeIndicators } from "./RuntimeIndicators";
 import type { SessionRuntime } from "./useSessionRuntime";
@@ -7,16 +7,8 @@ import type { SessionRuntime } from "./useSessionRuntime";
 type ScenePreview = { text: string; truncated: boolean };
 
 export function Composer({ runtime }: { runtime: SessionRuntime }) {
-  const refreshDisabled = !runtime.workspaceSelected || runtime.controlsDisabled || runtime.sessionRunning
-    || runtime.attaching || runtime.providerSaving || runtime.workspaceSaving || runtime.refreshing;
-  const [workspaceEditing, setWorkspaceEditing] = useState(false);
-  const [workspaceMenuBounds, setWorkspaceMenuBounds] = useState({ maxHeight: 360, maxWidth: 320 });
-  const workspaceMenuId = useId();
-  const workspaceGroups = [
-    { label: "正式工作区", options: runtime.availableWorkspaces.filter((option) => !option.scratch) },
-    { label: "临时工作区", options: runtime.availableWorkspaces.filter((option) => option.scratch) },
-  ];
-  const workspacePickerRef = useRef<HTMLDivElement | null>(null);
+  const refreshDisabled = runtime.controlsDisabled || runtime.sessionRunning
+    || runtime.attaching || runtime.providerSaving || runtime.refreshing;
   const feedbackRef = useRef<HTMLDivElement | null>(null);
   const [filenames, setFilenames] = useState<string[] | null>(null);
   const [listRevision, setListRevision] = useState(0);
@@ -62,32 +54,6 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
     };
   }, []);
 
-  useLayoutEffect(() => {
-    if (!workspaceEditing) return;
-    const picker = workspacePickerRef.current!;
-    const updateBounds = () => {
-      const bounds = picker.getBoundingClientRect();
-      setWorkspaceMenuBounds({ maxHeight: Math.max(0, bounds.top - 12), maxWidth: window.innerWidth - bounds.left - 12 });
-    };
-    updateBounds();
-    const observer = new ResizeObserver(updateBounds);
-    observer.observe(picker.closest(".composer-area")!);
-    window.addEventListener("resize", updateBounds);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", updateBounds);
-    };
-  }, [workspaceEditing]);
-
-  useEffect(() => {
-    if (!workspaceEditing) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (!workspacePickerRef.current?.contains(event.target as Node)) setWorkspaceEditing(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [workspaceEditing]);
-
   return <div className="composer-area">
     {runtime.attachmentReplaced && <div className="attachment-replaced" role="status"><span>此会话由另一个页面控制，可在此页面手动接管。</span><button type="button" onClick={runtime.takeOverAttachment} disabled={runtime.attaching}>{runtime.attaching ? "正在接管…" : "在此页面接管"}</button></div>}
     <div ref={feedbackRef} className="composer-feedback">
@@ -104,32 +70,6 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
       />}
     </div>
     <div className="composer">
-      <div ref={workspacePickerRef} className="workspace-picker-wrap" onKeyDown={(event) => {
-        if (event.key === "Escape" && workspaceEditing) {
-          event.preventDefault();
-          setWorkspaceEditing(false);
-          workspacePickerRef.current?.querySelector("button")?.focus();
-        }
-      }}>
-        <button type="button" className="workspace-picker" onClick={() => setWorkspaceEditing((value) => !value)} disabled={runtime.controlsDisabled || runtime.sessionRunning} aria-expanded={workspaceEditing} aria-haspopup="menu" aria-controls={workspaceEditing ? workspaceMenuId : undefined}>
-          <span className="workspace-picker-icon">⌂</span><span className="workspace-picker-value">{runtime.displayedWorkspace || "选择项目"}</span>
-          {runtime.workspaceSaving ? <LoaderCircle size={14} className="spin" aria-label="正在切换工作区" /> : <ChevronDown size={14} />}
-        </button>
-        {workspaceEditing && <div className="workspace-menu" id={workspaceMenuId} role="menu" aria-label="选择工作区" style={workspaceMenuBounds}>
-          <div className="workspace-menu-list">
-            {workspaceGroups.filter((group) => group.options.length > 0).map((group) => <div className="workspace-menu-group" role="group" aria-label={group.label} key={group.label}>
-              <div className="workspace-menu-heading">{group.label}</div>
-              {group.options.map(({ workspace }) => <button type="button" role="menuitem" className={`workspace-option ${workspace === runtime.displayedWorkspace ? "selected" : ""}`} key={workspace} onClick={() => { void runtime.saveWorkspace(workspace); setWorkspaceEditing(false); }} disabled={runtime.controlsDisabled || runtime.sessionRunning || runtime.workspaceSaving} title={workspace}>
-                <Folder size={16} /><span className="workspace-option-path">{workspace.split(/[\\/]/).pop() || workspace}</span>
-                {workspace === runtime.displayedWorkspace && <Check size={14} />}
-              </button>)}
-            </div>)}
-          </div>
-          <div className="workspace-menu-divider" />
-          <button type="button" role="menuitem" className="workspace-new-option" onClick={() => { setWorkspaceEditing(false); void runtime.chooseNewWorkspace(); }} disabled={runtime.controlsDisabled || runtime.sessionRunning || runtime.workspaceSaving}><Plus size={16} />新建工作区</button>
-          <button type="button" role="menuitem" className="workspace-new-option" onClick={() => { setWorkspaceEditing(false); void runtime.chooseScratchWorkspace(); }} disabled={runtime.controlsDisabled || runtime.sessionRunning || runtime.workspaceSaving}><Plus size={16} />临时工作区</button>
-        </div>}
-      </div>
       <label className="json-file-row">
         <FileJson size={16} aria-hidden="true" />
         <select className="json-picker" aria-label="选择 input 场景" value={filename} onFocus={() => setListRevision((revision) => revision + 1)} onChange={(event) => {
@@ -148,7 +88,7 @@ export function Composer({ runtime }: { runtime: SessionRuntime }) {
       </details>}
       <div className="composer-bottom">
         <label className="model-selector" title={runtime.providers.find((option) => option.id === runtime.displayedProvider)?.model}>
-          <select aria-label="选择模型" value={runtime.displayedProvider} disabled={!runtime.workspaceSelected || runtime.controlsDisabled || runtime.sessionRunning || runtime.providerSaving} onChange={(event) => runtime.changeProvider(event.target.value)}>
+          <select aria-label="选择模型" value={runtime.displayedProvider} disabled={runtime.controlsDisabled || runtime.sessionRunning || runtime.providerSaving} onChange={(event) => runtime.changeProvider(event.target.value)}>
             {runtime.providers.map((option) => <option key={option.id} value={option.id}>{option.model}</option>)}
           </select>{runtime.providerSaving ? <LoaderCircle size={12} className="spin" aria-label="正在切换模型" /> : <ChevronDown size={12} />}
         </label>

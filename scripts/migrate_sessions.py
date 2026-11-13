@@ -135,8 +135,8 @@ def main() -> None:
     parser.add_argument(
         "--sessions-dir",
         type=Path,
-        default=default_config_directory() / "sessions",
-        help="Session root (default: .RADE/sessions)",
+        default=default_config_directory() / "runs",
+        help="Session root (default: .RADE/runs)",
     )
     args = parser.parse_args()
     root = args.sessions_dir.expanduser()

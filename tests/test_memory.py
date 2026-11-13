@@ -49,29 +49,30 @@ class MemoryTest(unittest.TestCase):
         self.root = Path(directory.name)
         self.workspace = self.root / "project"
         self.workspace.mkdir()
-        self.store = MemoryStore(self.root / "sessions")
-        self.store.initialize(self.workspace)
+        self.run_id = "project"
+        self.store = MemoryStore(self.root / "runs")
+        self.store.initialize(self.run_id)
 
     def manager(self, provider: LLMProvider) -> MemoryManager:
         return MemoryManager(
-            self.workspace,
+            self.run_id,
             self.store,
             MemoryReconciler(
                 provider,
-                workspace_prompt="workspace prompt",
-                workspace_max_tokens=3000,
+                prompt="run prompt",
+                max_tokens=3000,
             ),
         )
 
     def test_independent_store_waits_for_the_memory_lock(self) -> None:
-        other = MemoryStore(self.store.sessions_directory)
+        other = MemoryStore(self.store.runs_directory)
         attempted, finished = Event(), Event()
-        expected = self.store.load(self.workspace)
+        expected = self.store.load(self.run_id)
 
         def load_memory():
             attempted.set()
             try:
-                return other.load(self.workspace)
+                return other.load(self.run_id)
             finally:
                 finished.set()
 
@@ -113,10 +114,10 @@ class MemoryTest(unittest.TestCase):
         )
         self.assertNotIn(
             "Prefer concise answers",
-            self.store.workspace_path(self.workspace).read_text(encoding="utf-8"),
+            self.store.run_path(self.run_id).read_text(encoding="utf-8"),
         )
 
-    def test_batches_candidates_and_keeps_workspaces_isolated(self) -> None:
+    def test_batches_candidates_and_keeps_runs_isolated(self) -> None:
         provider = ReconcilerProvider([json.dumps({
             "entries": [
                 {"kind": "preference", "content": "Prefer concise answers."},
@@ -140,10 +141,10 @@ class MemoryTest(unittest.TestCase):
             ],
         })
         self.assertIsNone(request.max_generation_tokens)
-        document = self.store.load(self.workspace)
+        document = self.store.load(self.run_id)
         self.assertEqual(document.preferences, ("Prefer concise answers.",))
         self.assertEqual(document.decisions, ("Use Bridge as the only runtime channel.",))
-        self.assertTrue(self.store.load(self.root / "other").is_empty())
+        self.assertTrue(self.store.load("other").is_empty())
 
     def test_consecutive_reconciliations_use_the_latest_stored_memory(self) -> None:
         provider = ReconcilerProvider([
@@ -172,7 +173,7 @@ class MemoryTest(unittest.TestCase):
             [{"kind": "fact", "content": "First durable fact."}],
         )
         self.assertEqual(
-            self.store.load(self.workspace).facts,
+            self.store.load(self.run_id).facts,
             ("First durable fact.", "Second durable fact."),
         )
 
@@ -195,12 +196,12 @@ class MemoryTest(unittest.TestCase):
         provider = MergingProvider()
         managers = [
             MemoryManager(
-                self.workspace,
+                self.run_id,
                 self.store,
                 MemoryReconciler(
                     provider,
-                    workspace_prompt="workspace prompt",
-                    workspace_max_tokens=3000,
+                    prompt="run prompt",
+                    max_tokens=3000,
                 ),
             )
             for _ in range(2)
@@ -213,7 +214,7 @@ class MemoryTest(unittest.TestCase):
                 [True, True],
             )
         self.assertCountEqual(
-            self.store.load(self.workspace).facts,
+            self.store.load(self.run_id).facts,
             ("Fact 0.", "Fact 1."),
         )
 
@@ -227,10 +228,10 @@ class MemoryTest(unittest.TestCase):
         ])
         reconciler = MemoryReconciler(
             provider,
-            workspace_prompt=(
-                "Keep this around {{workspace_max_tokens}} tokens."
+            prompt=(
+                "Keep this around {{max_tokens}} tokens."
             ),
-            workspace_max_tokens=34,
+            max_tokens=34,
         )
 
         reconciler.reconcile(
@@ -245,8 +246,8 @@ class MemoryTest(unittest.TestCase):
         calls = []
         reconciler = MemoryReconciler(
             ReconcilerProvider(["not JSON"]),
-            workspace_prompt="workspace",
-            workspace_max_tokens=3000,
+            prompt="run",
+            max_tokens=3000,
             on_auxiliary_call=calls.append,
         )
         with self.assertRaisesRegex(ValueError, "invalid JSON"):
@@ -255,7 +256,7 @@ class MemoryTest(unittest.TestCase):
                 (MemoryCandidate("fact", "A fact."),),
             )
         self.assertEqual((calls[0].task, calls[0].scope, calls[0].status),
-                         ("memory", "workspace", "invalid_response"))
+                         ("memory", "run", "invalid_response"))
 
     def test_empty_provider_error_is_recorded_as_null(self) -> None:
         class FailingProvider(ReconcilerProvider):
@@ -265,8 +266,8 @@ class MemoryTest(unittest.TestCase):
         calls = []
         reconciler = MemoryReconciler(
             FailingProvider([]),
-            workspace_prompt="workspace",
-            workspace_max_tokens=3000,
+            prompt="run",
+            max_tokens=3000,
             on_auxiliary_call=calls.append,
         )
         with self.assertRaises(RuntimeError):
@@ -287,8 +288,8 @@ class MemoryTest(unittest.TestCase):
                 calls = []
                 reconciler = MemoryReconciler(
                     CancellingProvider([]),
-                    workspace_prompt="workspace",
-                    workspace_max_tokens=3000,
+                    prompt="run",
+                    max_tokens=3000,
                     on_auxiliary_call=calls.append,
                 )
                 with self.assertRaises(exception):
@@ -301,11 +302,11 @@ class MemoryTest(unittest.TestCase):
 
     def test_store_round_trips_stable_markdown(self) -> None:
         self.store.write(
-            self.workspace,
+            self.run_id,
             MemoryDocument(facts=("A stable fact.",), decisions=("A project decision.",)),
         )
 
-        loaded = self.store.load(self.workspace)
+        loaded = self.store.load(self.run_id)
 
         self.assertEqual(loaded.facts, ("A stable fact.",))
         self.assertEqual(
@@ -313,18 +314,18 @@ class MemoryTest(unittest.TestCase):
             ("A project decision.",),
         )
         self.assertIn(
-            "# RADE Workspace Memory",
-            self.store.workspace_path(self.workspace).read_text(),
+            "# RADE Run Memory",
+            self.store.run_path(self.run_id).read_text(),
         )
         self.assertIn(
             "A project decision.",
-            self.store.workspace_path(self.workspace).read_text(),
+            self.store.run_path(self.run_id).read_text(),
         )
 
-    def test_load_all_returns_every_workspace_memory(self) -> None:
-        other = self.root / "other"
+    def test_load_all_returns_every_run_memory(self) -> None:
+        other = "other"
         self.store.write(
-            self.workspace,
+            self.run_id,
             MemoryDocument(facts=("First project.",)),
         )
         self.store.write(
@@ -332,21 +333,21 @@ class MemoryTest(unittest.TestCase):
             MemoryDocument(decisions=("Use SQLite.",)),
         )
 
-        workspaces = self.store.load_all()
+        runs = self.store.load_all()
 
         self.assertEqual(
-            workspaces[str(self.workspace.resolve())].facts,
+            runs[self.run_id].facts,
             ("First project.",),
         )
         self.assertEqual(
-            workspaces[str(other.resolve())].decisions,
+            runs[other].decisions,
             ("Use SQLite.",),
         )
 
-    def test_each_workspace_uses_its_own_memory_file(self) -> None:
-        other = self.root / "other"
+    def test_each_run_uses_its_own_memory_file(self) -> None:
+        other = "other"
         self.store.write(
-            self.workspace,
+            self.run_id,
             MemoryDocument(facts=("First project.",)),
         )
         self.store.write(
@@ -354,8 +355,8 @@ class MemoryTest(unittest.TestCase):
             MemoryDocument(facts=("Second project.",)),
         )
 
-        first_path = self.store.workspace_path(self.workspace)
-        second_path = self.store.workspace_path(other)
+        first_path = self.store.run_path(self.run_id)
+        second_path = self.store.run_path(other)
 
         self.assertNotEqual(first_path.parent, second_path.parent)
         self.assertEqual(first_path.name, "MEMORY.md")
@@ -366,38 +367,38 @@ class MemoryTest(unittest.TestCase):
 
     def test_prompt_states_memory_priority(self) -> None:
         self.store.write(
-            self.workspace,
+            self.run_id,
             MemoryDocument(preferences=("Use Chinese.",)),
         )
 
-        section = self.store.load(self.workspace).prompt_section()
+        section = self.store.load(self.run_id).prompt_section()
 
         self.assertIn("current request has highest priority", section)
-        self.assertIn("workspace instructions and project rules come next", section)
+        self.assertIn("run instructions and project rules come next", section)
         self.assertIn("Use Chinese.", section)
 
     def test_empty_memory_still_states_priority_when_enabled(self) -> None:
-        section = self.store.load(self.workspace).prompt_section()
+        section = self.store.load(self.run_id).prompt_section()
 
         self.assertIn("current request has highest priority", section)
         self.assertIn("No long-term memory is currently recorded", section)
 
     def test_rejects_a_stale_write_without_losing_new_memory(self) -> None:
-        stale = self.store.load(self.workspace)
+        stale = self.store.load(self.run_id)
         self.store.write(
-            self.workspace,
+            self.run_id,
             MemoryDocument(facts=("Newer fact.",)),
         )
 
         with self.assertRaisesRegex(RuntimeError, "changed during reconciliation"):
             self.store.write(
-                self.workspace,
+                self.run_id,
                 MemoryDocument(facts=("Stale fact.",)),
                 expected=stale,
             )
 
         self.assertEqual(
-            self.store.load(self.workspace).facts,
+            self.store.load(self.run_id).facts,
             ("Newer fact.",),
         )
 

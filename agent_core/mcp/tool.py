@@ -100,7 +100,7 @@ def _adapt_result_media(
             raise ValueError(
                 f"MCP tool returned unsupported image type: {mime_type}"
             ) from error
-        directory = context.workspace.resolve_path(".RADE/attachments")
+        directory = context.workspace.resolve_path("attachments")
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"mcp-{uuid.uuid4().hex}{suffix}"
         path.write_bytes(payload)

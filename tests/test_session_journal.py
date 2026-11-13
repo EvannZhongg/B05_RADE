@@ -24,8 +24,8 @@ class SessionJournalTest(unittest.TestCase):
     def test_compression_attempts_contribute_to_durable_session_cache_totals(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("t")
             session.model_completed(1, usage=TokenUsage(100, 10, 110, 50, None),
@@ -45,7 +45,7 @@ class SessionJournalTest(unittest.TestCase):
                     error="invalid checkpoint" if attempt == 1 else None,
                 ), model="test/main")
             session.finish_turn("failed")
-            store.append_events("s", session.journal, workspace=root)
+            store.append_events("s", session.journal)
             restored = store.load("s")
 
         self.assertEqual(restored.cache_usage, CacheUsage(2000, 850))
@@ -65,8 +65,8 @@ class SessionJournalTest(unittest.TestCase):
     def test_session_cache_totals_weight_tokens_across_turns_and_reload(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             self.assertIsNone(session.cache_usage)
             session.begin_turn("t1")
@@ -81,7 +81,7 @@ class SessionJournalTest(unittest.TestCase):
                 session.model_completed(index, usage=usage, has_tool_calls=False)
             self.assertEqual(session.cache_usage, CacheUsage(1000, 170))
             session.finish_turn("failed")
-            store.append_events("s", session.journal, workspace=root)
+            store.append_events("s", session.journal)
             resumed = store.load("s")
             self.assertEqual(resumed.cache_usage, CacheUsage(1000, 170))
             resumed.begin_turn("t2")
@@ -90,17 +90,14 @@ class SessionJournalTest(unittest.TestCase):
                                     has_tool_calls=False)
             resumed.finish_turn("completed")
             self.assertEqual(resumed.cache_usage, CacheUsage(2000, 170))
-            store.append_events("s", resumed.journal[len(session.journal):], workspace=root)
+            store.append_events("s", resumed.journal[len(session.journal):])
             self.assertEqual(store.load("s").cache_usage, CacheUsage(2000, 170))
-            anchor = store.editable_user_messages("s")[0]["anchor_id"]
-            forked = store.fork_session("s", "fork", anchor)
-            self.assertEqual(forked.cache_usage, CacheUsage(1000, 170))
 
     def test_model_cache_usage_survives_journal_reload_after_turn_failure(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("t")
             session.model_completed(1, usage=TokenUsage(12000, 300, 12300, 10000, 1000),
@@ -109,7 +106,7 @@ class SessionJournalTest(unittest.TestCase):
                                     has_tool_calls=False)
             session.model_completed(3, usage=None, has_tool_calls=False)
             session.finish_turn("failed")
-            store.append_events("s", session.journal, workspace=root)
+            store.append_events("s", session.journal)
 
             restored = store.load("s")
 
@@ -134,8 +131,8 @@ class SessionJournalTest(unittest.TestCase):
         call = ToolCall.from_raw_arguments("invalid", "update_plan", raw)
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("t")
             session.add_item("user", "work")
@@ -144,7 +141,7 @@ class SessionJournalTest(unittest.TestCase):
             session.tool_finished(call, "failed", error=call.argument_error.message)
             session.add_item("tool", '{"ok":false}', tool_call_id=call.id)
             session.finish_turn("completed")
-            store.append_events("s", session.journal, workspace=root)
+            store.append_events("s", session.journal)
 
             restored = store.load("s")
 
@@ -333,10 +330,10 @@ class SessionJournalTest(unittest.TestCase):
     def test_journal_replays_a_cancelled_turn(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
-            session.attach_journal_sink(lambda events: store.append_events("s", events, workspace=root))
+            session.attach_journal_sink(lambda events: store.append_events("s", events))
             session.begin_turn("turn-1")
             session.add_item("user", "hello")
             session.finish_turn("cancelled", "turn-1")
@@ -348,17 +345,17 @@ class SessionJournalTest(unittest.TestCase):
     def test_recovery_marks_started_work_unknown_without_replay(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("turn-1")
             call = ToolCall("call-1", "write", {})
             session.tool_started(call)
-            store.append_events("s", session.journal, workspace=root)
+            store.append_events("s", session.journal)
 
             resumed = store.load("s", recover=False)
             resumed.attach_journal_sink(
-                lambda events: store.append_events("s", events, workspace=root)
+                lambda events: store.append_events("s", events)
             )
             recovered = resumed.recover()
 
@@ -373,10 +370,10 @@ class SessionJournalTest(unittest.TestCase):
     def test_parallel_completion_replays_in_call_order_for_provider(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
-            session.attach_journal_sink(lambda events: store.append_events("s", events, workspace=root))
+            session.attach_journal_sink(lambda events: store.append_events("s", events))
             session.begin_turn("turn-1")
             calls = (ToolCall("call-a", "read", {}), ToolCall("call-b", "read", {}))
             session.add_item("assistant", None, tool_calls=calls)
@@ -484,13 +481,13 @@ class SessionJournalTest(unittest.TestCase):
     def test_replay_ignores_only_a_truncated_final_record(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("turn-1")
             session.add_item("user", "durable")
-            store.append_events("s", session.journal, workspace=root)
-            path = next((root / "sessions").rglob("s.jsonl"))
+            store.append_events("s", session.journal)
+            path = next((root / "runs").rglob("s.jsonl"))
             with path.open("a", encoding="utf-8") as file:
                 file.write('{"seq":3')
 
@@ -501,19 +498,19 @@ class SessionJournalTest(unittest.TestCase):
     def test_append_discards_a_truncated_final_record(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("turn-1")
             session.add_item("user", "durable")
-            store.append_events("s", session.journal, workspace=root)
-            path = next((root / "sessions").rglob("s.jsonl"))
+            store.append_events("s", session.journal)
+            path = next((root / "runs").rglob("s.jsonl"))
             with path.open("ab") as file:
                 file.write(b'{"seq":999' + b" " * 5000)
 
             resumed = store.load("s", recover=False)
             resumed.add_item("assistant", "after restart")
-            store.append_events("s", [resumed.journal[-1]], workspace=root)
+            store.append_events("s", [resumed.journal[-1]])
 
             loaded = store.load("s", recover=False)
             self.assertEqual(
@@ -524,18 +521,18 @@ class SessionJournalTest(unittest.TestCase):
     def test_append_preserves_a_complete_final_record_without_newline(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            store.bind_workspace("s", root)
+            store = JsonlSessionStore(root / "runs")
+
             session = Session("s")
             session.begin_turn("turn-1")
             session.add_item("user", "durable")
-            store.append_events("s", session.journal, workspace=root)
-            path = next((root / "sessions").rglob("s.jsonl"))
+            store.append_events("s", session.journal)
+            path = next((root / "runs").rglob("s.jsonl"))
             path.write_bytes(path.read_bytes().rstrip(b"\r\n"))
 
             resumed = store.load("s", recover=False)
             resumed.add_item("assistant", "after restart")
-            store.append_events("s", [resumed.journal[-1]], workspace=root)
+            store.append_events("s", [resumed.journal[-1]])
 
             loaded = store.load("s", recover=False)
             self.assertEqual(

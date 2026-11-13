@@ -4,7 +4,7 @@ import asyncio
 from collections import deque
 from pathlib import Path
 
-from agent_core import JsonlSessionStore, Workspace, message_to_dict, plan_snapshot_to_dict
+from agent_core import JsonlSessionStore, message_to_dict, plan_snapshot_to_dict
 from interfaces.bridge.protocol import attachment_replaced_message, inactive_runtime_state
 from interfaces.bridge.event_stream import runtime_is_active
 
@@ -25,13 +25,12 @@ class ActiveSession:
         self,
         session_id: str,
         provider: str | None,
-        workspace: str,
         items: list[object],
         bridge: BridgeChannel,
     ) -> None:
         self.session_id = session_id
         self.bridge = bridge
-        self.state = inactive_runtime_state(provider=provider, workspace=workspace)
+        self.state = inactive_runtime_state(provider=provider)
         self.transcript = {"items": items, "event_sequence": 0}
         self._pending_turn: str | None = None
         self._pending_refresh = False
@@ -232,7 +231,6 @@ class ActiveSessionRegistry:
     async def open_or_attach(
         self,
         opening_message: dict[str, object],
-        workspace: Workspace,
         *,
         attach_only: bool,
     ) -> tuple[ActiveSession | None, bool]:
@@ -246,10 +244,9 @@ class ActiveSessionRegistry:
                         return current, False
                     provider = opening_message.get("provider")
                     selected_provider = provider if isinstance(provider, str) else None
-                    selected_workspace = str(workspace.path)
                     if current is not None and not current.done:
                         # Opening a view attaches to its existing Runtime. Explicit
-                        # provider/workspace messages change that Runtime's settings.
+                        # provider messages change that Runtime's settings.
                         return current, False
                     if current is not None:
                         self._sessions.pop(session_id, None)
@@ -262,7 +259,6 @@ class ActiveSessionRegistry:
                     runtime = ActiveSession(
                         session_id,
                         selected_provider,
-                        selected_workspace,
                         [message_to_dict(item, include_provider_data=False) for item in stored.items],
                         bridge,
                     )

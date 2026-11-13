@@ -51,7 +51,6 @@ class UserAnchorWindowTest(unittest.TestCase):
             max_same_tool_calls=5,
             output_reserve_tokens=100,
             tools=ToolConfig(enabled=()),
-            workspace_instruction_files=(),
             context=ContextCompressionConfig(
                 keep_recent_units=1, user_anchor_token_budget=budget
             ),

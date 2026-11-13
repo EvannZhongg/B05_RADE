@@ -12,11 +12,11 @@ export type Command = {
 export const COMMANDS: Command[] = [
   {
     name: '/sessions',
-    description: 'Switch to another conversation in this workspace',
+    description: 'Switch to a saved run',
   },
   {
-    name: '/workspaces',
-    description: 'Start a new conversation in an existing workspace',
+    name: '/new',
+    description: 'Start a new run',
   },
   {
     name: '/input',

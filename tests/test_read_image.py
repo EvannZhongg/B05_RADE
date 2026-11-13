@@ -62,7 +62,7 @@ def agent_config() -> AgentConfig:
         max_same_tool_calls=5,
         output_reserve_tokens=100,
         tools=ToolConfig(enabled=()),
-        workspace_instruction_files=(),
+
         context=ContextCompressionConfig(enabled=False),
     )
 
@@ -81,7 +81,7 @@ class ReadImageToolTest(unittest.TestCase):
         return ToolExecutionContext(
             workspace=self.workspace,
             session=self.session,
-            sessions_directory=self.sessions,
+
             vision_input=vision_input,
         )
 
@@ -227,7 +227,7 @@ class ToolMediaInjectionTest(unittest.TestCase):
         context = ToolExecutionContext(
             workspace=self.workspace,
             session=session,
-            sessions_directory=self.sessions,
+
             vision_input=vision,
         )
         agent = Agent(

@@ -93,7 +93,7 @@ class ToolMediaInheritanceTest(unittest.TestCase):
 
     def test_a_file_attachment_is_inherited_by_the_child(self) -> None:
         attachment = FilePart(
-            path=".RADE/attachments/report.pdf",
+            path="attachments/report.pdf",
             filename="report.pdf",
             mime_type="application/pdf",
             size_bytes=123,
@@ -110,13 +110,13 @@ class ToolMediaPersistenceTest(unittest.TestCase):
         self._directory = tempfile.TemporaryDirectory()
         self.root = Path(self._directory.name)
         self.addCleanup(self._directory.cleanup)
-        self.store = JsonlSessionStore(self.root / "sessions")
+        self.store = JsonlSessionStore(self.root / "runs")
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
 
     def round_trip(self, *items: Message) -> list[Message]:
         session = Session()
-        self.store.bind_workspace(session.session_id, self.workspace)
+
         session.begin_turn("turn-1")
         for item in items:
             session.add_item(
@@ -124,9 +124,9 @@ class ToolMediaPersistenceTest(unittest.TestCase):
                 item.tool_call_id, item.reasoning, origin=item.origin,
             )
         session.finish_turn("completed")
-        self.store.append_events(session.session_id, session.journal, workspace=self.workspace)
+        self.store.append_events(session.session_id, session.journal)
         return self.store.load(
-            session.session_id, workspace=self.workspace
+            session.session_id
         ).items
 
     def test_the_origin_survives_a_reload(self) -> None:

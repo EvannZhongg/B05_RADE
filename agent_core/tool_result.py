@@ -5,7 +5,6 @@ from pathlib import Path
 from urllib.parse import quote
 
 from .path_utils import path_for_comparison
-from .session_paths import default_sessions_directory, session_directory
 from .tools import JSONValue, ToolResult
 from .tools.budget import MAX_TOOL_RESULT_CHARS
 from .tools.text import write_text_artifact
@@ -51,10 +50,8 @@ class ToolResultNormalizer:
     def __init__(
         self,
         workspace: Workspace,
-        session_id: str,
         max_chars: int = MAX_TOOL_RESULT_CHARS,
         preview_chars: int = DEFAULT_TOOL_RESULT_PREVIEW_CHARS,
-        sessions_directory: Path | None = None,
         artifact_directory: Path | None = None,
     ) -> None:
         if max_chars < 1:
@@ -62,34 +59,14 @@ class ToolResultNormalizer:
         if preview_chars < 1:
             raise ValueError("preview_chars must be a positive integer")
 
-        self._workspace = workspace
-        self._session_id = session_id
+        self._root = workspace.path
         self._max_chars = max_chars
         self._preview_chars = preview_chars
-        self._sessions_directory = (
-            sessions_directory or default_sessions_directory()
-        ).expanduser().resolve()
-        default_artifact_directory = session_directory(
-            self._sessions_directory,
-            self._workspace.path,
-            self._session_id,
-        )
-        self._artifact_directory = (
-            artifact_directory or default_artifact_directory
-        ).expanduser().resolve()
-        try:
-            artifact_relative = path_for_comparison(
-                self._artifact_directory
-            ).relative_to(
-                path_for_comparison(self._sessions_directory)
-            )
-        except ValueError as error:
-            raise ValueError(
-                "session artifact path must stay within sessions"
-            ) from error
-        self._artifact_path_prefix = (
-            Path(".RADE", "sessions") / artifact_relative
-        )
+        directory = artifact_directory or self._root / "artifacts"
+        self._artifact_directory = directory.resolve()
+        self._artifact_path_prefix = path_for_comparison(
+            self._artifact_directory
+        ).relative_to(path_for_comparison(self._root))
 
     def normalize(self, result: ToolResult) -> str:
         content = result.to_content()
@@ -176,10 +153,10 @@ class ToolResultNormalizer:
         ).resolve()
         try:
             path_for_comparison(absolute_path).relative_to(
-                path_for_comparison(self._sessions_directory)
+                path_for_comparison(self._root)
             )
         except ValueError as error:
             raise ValueError(
-                "session artifact path must stay within sessions"
+                "artifact path must stay within the run files directory"
             ) from error
         return absolute_path

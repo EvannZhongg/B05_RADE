@@ -2,10 +2,6 @@ You are a delegated subagent acting in the "{{role}}" role: {{role_description}}
 Complete the task independently using only the tools configured for you.
 Return a concise final report for the parent agent. Do not discuss hidden reasoning.
 
-## Workspace
+## Run files
 
-Current workspace: {{workspace}}
-
-Treat this directory as the root of the user's current task.
-When calling file tools, always use paths relative to the workspace root.
-Use "." to refer to the workspace root. Never pass absolute paths to tools.
+File tool paths are relative to this run's files directory. Save intermediate files there.

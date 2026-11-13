@@ -40,9 +40,8 @@ vi.mock('@rade/client', () => ({
       if (autoReady && message.type === 'open_session') {
         setTimeout(() => {
             emit({
-              type: 'session_ready', protocol_version: 7,
+              type: 'session_ready', protocol_version: 8,
               session_id: message.session_id ?? (channelId === 'session-1' ? 'sess-1234' : `sess-${channelId}`),
-              workspace: message.workspace,
               provider: 'test',
               model: 'test/model',
               resumed: false,
@@ -106,11 +105,10 @@ async function waitFor(assertion: () => void, timeout = 1500): Promise<void> {
   }
 }
 
-function renderApp(workspace = "/w") {
+function renderApp() {
   return render(
     <App
       python="python3"
-      workspace={workspace}
     />,
   );
 }
@@ -262,12 +260,11 @@ describe('App', () => {
     });
   });
 
-  it('opens the session with the workspace', async () => {
+  it('opens a new run', async () => {
     renderApp();
     await waitFor(() =>
       expect(sent[0]).toMatchObject({
         type: 'open_session',
-        workspace: '/w',
         session_id: null,
       }),
     );
@@ -301,9 +298,8 @@ describe('App', () => {
     expect(lastFrame()).toContain('/input');
 
     emit({
-      type: 'session_ready', protocol_version: 7,
+      type: 'session_ready', protocol_version: 8,
       session_id: 'sess-1234',
-      workspace: '/w',
       provider: 'test',
       model: 'test/model',
       resumed: false,
@@ -360,7 +356,7 @@ describe('App', () => {
           { id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
           { id: 'second', model: 'test/second', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } },
         ],
-        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
     });
@@ -382,7 +378,7 @@ describe('App', () => {
       settings: {
         revision: 'r1', config_directory: '/config', default_provider: 'test',
         providers: [{ id: 'test', model: 'test/model', url: null, max_context_tokens: null, credential: { source: 'none', env_name: null, configured: false } }],
-        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, workspace_instruction_files: ['AGENTS.md'], tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, workspace_max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
+        agent: { max_same_tool_calls: 5, output_reserve_tokens: 100, max_generation_tokens: null, tools: {}, context: { compression: { enabled: true, trigger_ratio: null, keep_recent_units: 4, user_anchor_token_budget: 2000 } }, memory: { enabled: true, max_tokens: 3000 }, subagent_roles: {}, mcp_enabled: false },
         skills: [], plugins: [], mcp_servers: [], plugin_agents: [], warnings: [],
       },
     });
@@ -417,7 +413,7 @@ describe('App', () => {
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
     await waitFor(() => expect(sent.find((m) => m.type === 'list_sessions')).toBeDefined());
-    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    await waitFor(() => expect(lastFrame()).toContain('Runs'));
 
     emit({
       type: 'sessions_listed',
@@ -463,7 +459,7 @@ describe('App', () => {
     const firstChannel = sentChannels[sent.findIndex(message => message.type === 'open_session')];
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    await waitFor(() => expect(lastFrame()).toContain('Runs'));
     emit({ type: 'sessions_listed', sessions: [{ session_id: 'second', input_preview: 'Second runtime', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Second runtime'));
     stdin.write('\r');
@@ -478,7 +474,7 @@ describe('App', () => {
 
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    await waitFor(() => expect(lastFrame()).toContain('Runs'));
     emit({ type: 'sessions_listed', sessions: [{ session_id: 'sess-1234', input_preview: 'Original runtime', started_at: null }] });
     await waitFor(() => expect(lastFrame()).toContain('Original runtime'));
     stdin.write('\r');
@@ -498,42 +494,36 @@ describe('App', () => {
     expect(shutdownCount).toBe(1);
   });
 
-  it('opens a fresh workspace session, chats immediately, then resumes a session there', async () => {
+  it('opens a fresh run and selects a saved run', async () => {
     const { stdin, lastFrame, unmount } = renderApp();
     await waitForReady(lastFrame);
-    emit({ type: 'session_items', items: [{ role: 'user', content: 'old workspace history' }] });
-    await waitFor(() => expect(lastFrame()).toContain('old workspace history'));
-    await typeDraft(stdin, lastFrame, '/workspaces');
-    stdin.write('\r');
-    await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
-    emit({ type: 'workspaces_listed', workspaces: ['/w', '/next'] });
-    await waitFor(() => expect(lastFrame()).toContain('❯ /w'));
-    stdin.write('\u001b[B');
-    await waitFor(() => expect(lastFrame()).toContain('❯ /next'));
+    emit({ type: 'session_items', items: [{ role: 'user', content: 'old run history' }] });
+    await waitFor(() => expect(lastFrame()).toContain('old run history'));
     autoReady = false;
+    await typeDraft(stdin, lastFrame, '/new');
     stdin.write('\r');
     await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
     expect(sent.filter((m) => m.type === 'open_session')[1]).toEqual({
-      type: 'open_session', workspace: '/next', session_id: null,
+      type: 'open_session', session_id: null,
     });
-    expect(lastFrame()).toContain('old workspace history');
+    expect(lastFrame()).toContain('old run history');
 
     await typeDraft(stdin, lastFrame, '/input');
     stdin.write('\r');
     await wait(30);
     expect(turns()).toHaveLength(0);
     emit({
-      type: 'session_ready', protocol_version: 7, session_id: 'fresh', workspace: '/next',
+      type: 'session_ready', protocol_version: 8, session_id: 'fresh',
       provider: 'test', model: 'test/model', resumed: false, message_count: 0,
     });
     await waitFor(() => expect(sent.filter((m) => m.type === 'load_session')).toHaveLength(2));
-    await waitFor(() => expect(lastFrame()).not.toContain('old workspace history'));
+    await waitFor(() => expect(lastFrame()).not.toContain('old run history'));
     stdin.write('\r');
     await wait(30);
     expect(turns()).toHaveLength(0);
     const snapshot = {
       type: 'runtime_state' as const, phase: 'inactive' as const, turn_id: null,
-      provider: 'test', workspace: '/next',
+      provider: 'test',
       context_window: null, cache_usage: null, jobs: [], plan: null,
     };
     emit(snapshot);
@@ -554,92 +544,14 @@ describe('App', () => {
     stdin.write('\r');
     await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(3));
     expect(sent.filter((m) => m.type === 'open_session')[2]).toEqual({
-      type: 'open_session', workspace: '/next', session_id: 'next-history',
+      type: 'open_session', session_id: 'next-history',
     });
-    expect(sent.some((m) => m.type === 'workspace_set')).toBe(false);
     expect(bridgeCount).toBe(1);
     expect(shutdownCount).toBe(0);
     unmount();
   });
 
-  it('can close an empty workspace list without changing the session', async () => {
-    const { stdin, lastFrame, unmount } = renderApp();
-    await waitForReady(lastFrame);
-    await typeDraft(stdin, lastFrame, '/workspaces');
-    stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Workspaces'));
-    emit({ type: 'workspaces_listed', workspaces: [] });
-    await waitFor(() => expect(lastFrame()).toContain('No workspaces with conversation history.'));
-    stdin.write('\r');
-    await wait(30);
-    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
-    stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
-    expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
-    unmount();
-  });
-
-  it('starts new sessions on repeated selection of the same Windows workspace', async () => {
-    const { stdin, lastFrame, unmount } = renderApp();
-    await waitForReady(lastFrame);
-    for (let count = 2; count <= 3; count += 1) {
-      await typeDraft(stdin, lastFrame, '/workspaces');
-      stdin.write('\r');
-      await waitFor(() => expect(lastFrame()).toContain('Workspaces'));
-      emit({ type: 'workspaces_listed', workspaces: ['F:\\项目'] });
-      await waitFor(() => expect(lastFrame()).toContain('❯ F:\\项目'));
-      stdin.write('\r');
-      await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(count));
-      expect(sent.filter((m) => m.type === 'open_session').at(-1)).toEqual({
-        type: 'open_session', workspace: 'F:/项目', session_id: null,
-      });
-      await waitFor(() => expect(lastFrame()).toContain('RADE · F:/项目'));
-    }
-    expect(bridgeCount).toBe(1);
-    unmount();
-  });
-
-  it('returns to the workspace picker after a failed workspace open', async () => {
-    const { stdin, lastFrame, unmount } = renderApp();
-    await waitForReady(lastFrame);
-    emit({
-      type: 'session_open_failed', session_id: null,
-      error: { type: 'ValueError', message: 'workspace must be an existing directory: /deleted' },
-    });
-    await waitFor(() => expect(lastFrame()).toContain('workspace must be an existing directory'));
-    expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true);
-    emit({ type: 'workspaces_listed', workspaces: ['/w'] });
-    await waitFor(() => expect(lastFrame()).toContain('❯ /w'));
-    stdin.write('\r');
-    await waitFor(() => expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(2));
-    await waitForReady(lastFrame);
-    unmount();
-  });
-
-  it('can choose a workspace instead of retrying an occupied session', async () => {
-    const { stdin, lastFrame, unmount } = renderApp();
-    await waitForReady(lastFrame);
-    emit({
-      type: 'session_open_failed', session_id: 'occupied',
-      error: { type: 'SessionInUseError', message: 'occupied' },
-    });
-    await waitFor(() => expect(lastFrame()).toContain('in use in another window'));
-    stdin.write('\u001b');
-    await waitFor(() => expect(lastFrame()).toContain('Enter /input to select a scene'));
-    await typeDraft(stdin, lastFrame, '/workspaces');
-    stdin.write('\r');
-    await waitFor(() => expect(sent.some((m) => m.type === 'list_workspaces')).toBe(true));
-    emit({ type: 'workspaces_listed', workspaces: ['/next'] });
-    await waitFor(() => expect(lastFrame()).toContain('❯ /next'));
-    stdin.write('\r');
-    await waitForReady(lastFrame);
-    expect(sent.filter((m) => m.type === 'open_session').at(-1)).toMatchObject({
-      workspace: '/next', session_id: null,
-    });
-    unmount();
-  });
-
-  it.each(['/sessions', '/workspaces'])('keeps %s from switching during a turn', async (command) => {
+  it.each(['/sessions', '/new'])('keeps %s from switching during a turn', async (command) => {
     const { stdin, lastFrame, unmount } = renderApp();
     await waitForReady(lastFrame);
     emit({ type: 'assistant_delta', turn_id: 't1', text: 'working', model_call_index: 1 });
@@ -647,7 +559,7 @@ describe('App', () => {
     await typeDraft(stdin, lastFrame, command);
     stdin.write('\r');
     await wait(30);
-    expect(sent.some((m) => m.type === 'list_sessions' || m.type === 'list_workspaces')).toBe(false);
+    expect(sent.some((m) => m.type === 'list_sessions')).toBe(false);
     expect(sent.filter((m) => m.type === 'open_session')).toHaveLength(1);
     expect(lastFrame()).toContain(command);
     unmount();
@@ -660,14 +572,14 @@ describe('App', () => {
     await waitFor(() => expect(lastFrame()).toContain('original conversation'));
     const snapshot = {
       type: 'runtime_state' as const, phase: 'idle' as const, turn_id: null,
-      provider: 'test', workspace: '/w',
+      provider: 'test',
       context_window: null, cache_usage: null, jobs: [], plan: null,
     };
     autoReady = false;
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       await typeDraft(stdin, lastFrame, '/sessions');
       stdin.write('\r');
-      await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+      await waitFor(() => expect(lastFrame()).toContain('Runs'));
       emit({ type: 'sessions_listed', sessions: [{ session_id: 'gui-session', input_preview: 'Open in GUI', started_at: null }] });
       await waitFor(() => expect(lastFrame()).toContain('Open in GUI'));
       stdin.write('\r');
@@ -704,7 +616,7 @@ describe('App', () => {
 
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    await waitFor(() => expect(lastFrame()).toContain('Runs'));
     emit({
       type: 'sessions_listed',
       sessions: [{ session_id: 'older', input_preview: 'a long conversation', started_at: null }],
@@ -734,7 +646,7 @@ describe('App', () => {
 
     await typeDraft(stdin, lastFrame, '/sessions');
     stdin.write('\r');
-    await waitFor(() => expect(lastFrame()).toContain('Sessions'));
+    await waitFor(() => expect(lastFrame()).toContain('Runs'));
 
     stdin.write('\u001b');
     await waitFor(() => expect(lastFrame()).not.toContain('Loading…'));
@@ -915,9 +827,8 @@ describe('App', () => {
     ).toBe(2);
 
     emit({
-      type: 'session_ready', protocol_version: 7,
+      type: 'session_ready', protocol_version: 8,
       session_id: 'sess-1234',
-      workspace: '/w',
       provider: 'test',
       model: 'test/model',
       resumed: false,

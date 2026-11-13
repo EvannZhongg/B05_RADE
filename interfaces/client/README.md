@@ -19,14 +19,14 @@ npm pack --workspace @rade/client
 npm install /path/to/rade-protocol-0.1.0.tgz /path/to/rade-client-0.1.0.tgz
 ```
 
-Run [`examples/chat.mjs`](examples/chat.mjs) with a workspace and prompt. The example
+Run [`examples/chat.mjs`](examples/chat.mjs) with a prompt. The example
 uses the installed command on PATH, checks the advertised protocol major, waits
 for the initial Runtime snapshot and cancels unanswered
 questions. Real frontends should display those interactions and send the user's
 answer. Model turns require configured provider credentials.
 
 ```sh
-node node_modules/@rade/client/examples/chat.mjs /path/to/workspace "Hello"
+node node_modules/@rade/client/examples/chat.mjs "Hello"
 ```
 
 `new BridgeClient(options)` starts the process. Options:
@@ -54,8 +54,8 @@ runtime with `send({type: 'session_snapshot'}, channelId)`: this returns its
 reconstructing the Agent or disconnecting MCP.
 
 ```js
-client.send({ type: 'open_session', workspace: '/project/a', session_id: null }, 'chat-a');
-client.send({ type: 'open_session', workspace: '/project/b', session_id: null }, 'chat-b');
+client.send({ type: 'open_session', session_id: null }, 'chat-a');
+client.send({ type: 'open_session', session_id: null }, 'chat-b');
 // After each channel's initial runtime_state:
 client.send({ type: 'user_turn', turn_id: 'turn-1', text: 'Inspect A' }, 'chat-a');
 client.send({ type: 'user_turn', turn_id: 'turn-1', text: 'Inspect B' }, 'chat-b');

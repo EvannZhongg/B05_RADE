@@ -21,28 +21,27 @@ from agent_core import (
     ToolCall,
     TextPart,
 )
-from agent_core.session_paths import session_log_path, workspace_directory
+from agent_core.session_paths import session_log_path
 from agent_core import session_store as session_store_module
 
 
-def persist(store: JsonlSessionStore, workspace: Path, session: Session) -> None:
-    store.bind_workspace(session.session_id, workspace)
-    store.append_events(session.session_id, session.journal, workspace=workspace)
+def persist(store: JsonlSessionStore, session: Session) -> None:
+    store.append_events(session.session_id, session.journal)
 
 
 class JsonlSessionStoreTest(unittest.TestCase):
     def test_independent_store_waits_for_the_session_operation_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            first = JsonlSessionStore(root / "sessions")
+            first = JsonlSessionStore(root / "runs")
+            first.set_provider("shared", "fixture")
             second = JsonlSessionStore(first.directory)
-            first.bind_workspace("shared", root)
             attempted, finished = Event(), Event()
 
             def read_workspace():
                 attempted.set()
                 try:
-                    return second.workspace_for("shared")
+                    return second.provider_for("shared")
                 finally:
                     finished.set()
 
@@ -51,17 +50,17 @@ class JsonlSessionStoreTest(unittest.TestCase):
                     result = pool.submit(read_workspace)
                     self.assertTrue(attempted.wait(2))
                     self.assertFalse(finished.wait(0.1))
-                self.assertEqual(result.result(timeout=5), str(root.resolve()))
+                self.assertEqual(result.result(timeout=5), "fixture")
 
     def test_search_streams_only_until_the_extra_session_match(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             session = Session("streamed")
             session.begin_turn("turn-1")
             for index in range(80):
                 session.add_item("assistant", f"needle {index}")
-            persist(store, root, session)
+            persist(store, session)
             read_records = []
             read_journal = session_store_module._read_journal_records
 
@@ -83,11 +82,11 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_search_cancellation_stops_inside_a_journal_and_discards_matches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             session = Session("cancelled")
             for index in range(80):
                 session.add_item("user", f"needle {index}")
-            persist(store, root, session)
+            persist(store, session)
             stopped = Event()
             decode = session_store_module.message_from_dict
 
@@ -110,11 +109,11 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_search_cancellation_stops_session_enumeration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             for session_id in ("first", "second"):
                 session = Session(session_id)
                 session.add_item("user", "needle")
-                persist(store, root, session)
+                persist(store, session)
             stopped = Event()
             read_metadata = session_store_module._session_metadata
 
@@ -132,11 +131,11 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_search_and_load_share_incomplete_journal_record_handling(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             session = Session("incomplete")
             session.add_item("user", "needle")
-            persist(store, root, session)
-            path = session_log_path(store.directory, root, session.session_id)
+            persist(store, session)
+            path = session_log_path(store.directory, session.session_id)
             with path.open("a", encoding="utf-8") as file:
                 file.write('\n{"event_type":')
             self.assertEqual(len(store.load(session.session_id).items), 1)
@@ -151,14 +150,14 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_search_caps_each_session_without_hiding_other_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             other = Session("other")
             other.add_item("user", "needle in another session")
-            persist(store, root, other)
+            persist(store, other)
             frequent = Session("frequent")
             for index in range(80):
                 frequent.add_item("assistant", f"needle {index}")
-            persist(store, root, frequent)
+            persist(store, frequent)
             matches = store.search_messages("needle", limit=5, per_session_limit=2)
             previews = [match for match in matches if match["session_id"] == "frequent"]
             self.assertEqual([match["item_index"] for match in previews], [0, 1])
@@ -169,10 +168,10 @@ class JsonlSessionStoreTest(unittest.TestCase):
             expanded = store.search_messages("needle", limit=10, per_session_limit=5)
             self.assertEqual(len([match for match in expanded if match["session_id"] == "frequent"]), 5)
 
-    def test_searches_conversation_text_across_workspaces_with_original_indexes(self) -> None:
+    def test_searches_conversation_text_across_runs_with_original_indexes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             first = Session("first")
             first.add_item("user", "Find Needle in history")
             first.add_item("tool", "needle in tool output", tool_call_id="call-1")
@@ -180,10 +179,10 @@ class JsonlSessionStoreTest(unittest.TestCase):
             first.add_item("user", "needle in injected feedback", origin="hook_feedback")
             first.add_item("user", "needle in interaction", origin="user_interaction")
             first.add_item("assistant", "The NEEDLE is here")
-            persist(store, root / "project", first)
+            persist(store, first)
             second = Session("second")
             second.add_item("user", (ImagePart(path="needle.png", filename="needle.png"), TextPart("中文 needle 正文")))
-            persist(store, root / "another", second)
+            persist(store, second)
 
             matches = store.search_messages(" needle ", limit=50, per_session_limit=3)
             self.assertEqual(
@@ -199,14 +198,14 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_search_preserves_archived_history_and_does_not_recover_or_write_journal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             session = Session("active")
-            with store.open_journal(session.session_id, root) as sink:
+            with store.open_journal(session.session_id) as sink:
                 session.attach_journal_sink(sink)
                 session.begin_turn("turn-1")
                 session.add_item("user", "a literal [needle].*")
                 session.set_archived_summary("compressed", 1)
-                path = session_log_path(store.directory, root, session.session_id)
+                path = session_log_path(store.directory, session.session_id)
                 before = path.read_bytes()
                 with patch.object(Session, "recover", side_effect=AssertionError("search must not recover")):
                     matches = store.search_messages("[needle].*", limit=50, per_session_limit=3)
@@ -218,20 +217,20 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_second_writer_reports_session_in_use_without_changing_journal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
+            store = JsonlSessionStore(root / "runs")
             session = Session("owned")
-            with store.open_journal("owned", root) as sink:
+            with store.open_journal("owned") as sink:
                 session.attach_journal_sink(sink)
                 session.add_item("user", "original")
                 with self.assertRaises(SessionInUseError) as caught:
-                    with JsonlSessionStore(store.directory).open_journal("owned", root):
+                    with JsonlSessionStore(store.directory).open_journal("owned"):
                         self.fail("a second writer acquired the journal")
                 self.assertEqual(caught.exception.session_id, "owned")
-                self.assertEqual(caught.exception.__cause__.winerror, 32)
+                self.assertIsInstance(caught.exception.__cause__, BlockingIOError)
                 session.add_item("assistant", "owner continues")
             session.attach_journal_sink(None)
             self.assertEqual([event.seq for event in store.load("owned").journal], [1, 2])
-            with store.open_journal("owned", root):
+            with store.open_journal("owned"):
                 pass
 
     @unittest.skipUnless(os.name == "nt", "Windows file permissions")
@@ -240,14 +239,14 @@ class JsonlSessionStoreTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            with store.open_journal("readonly", root):
+            store = JsonlSessionStore(root / "runs")
+            with store.open_journal("readonly"):
                 pass
-            path = session_log_path(store.directory, root, "readonly")
+            path = session_log_path(store.directory, "readonly")
             path.chmod(stat.S_IREAD)
             try:
                 with self.assertRaises(PermissionError):
-                    with store.open_journal("readonly", root):
+                    with store.open_journal("readonly"):
                         self.fail("read-only journal opened for writing")
             finally:
                 path.chmod(stat.S_IREAD | stat.S_IWRITE)
@@ -256,9 +255,9 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_recursive_powershell_cleanup_cannot_erase_audit_chain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("active")
-            with store.open_journal(session.session_id, workspace) as sink:
+            with store.open_journal(session.session_id) as sink:
                 session.attach_journal_sink(sink)
                 session.add_item("user", "before cleanup")
                 result = HostCommandExecutor(workspace).execute(
@@ -277,16 +276,16 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_open_journal_persists_and_releases_writer_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("active")
             with self.assertRaisesRegex(RuntimeError, "turn failed"):
-                with store.open_journal(session.session_id, workspace) as sink:
+                with store.open_journal(session.session_id) as sink:
                     session.attach_journal_sink(sink)
                     session.add_item("user", "before failure")
                     self.assertEqual(store.load("active").items[0].content, "before failure")
                     raise RuntimeError("turn failed")
             session.attach_journal_sink(None)
-            with store.open_journal(session.session_id, workspace) as sink:
+            with store.open_journal(session.session_id) as sink:
                 session.attach_journal_sink(sink)
                 session.add_item("assistant", "after failure")
             session.attach_journal_sink(None)
@@ -306,10 +305,10 @@ class JsonlSessionStoreTest(unittest.TestCase):
         for mutation in mutations:
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
                 workspace = Path(directory)
-                store = JsonlSessionStore(workspace / "sessions")
+                store = JsonlSessionStore(workspace / "runs")
                 session = Session("active")
-                path = session_log_path(store.directory, workspace, session.session_id)
-                with store.open_journal(session.session_id, workspace) as sink:
+                path = session_log_path(store.directory, session.session_id)
+                with store.open_journal(session.session_id) as sink:
                     session.attach_journal_sink(sink)
                     session.add_item("user", "audit before command")
                     before = path.read_bytes()
@@ -317,7 +316,8 @@ class JsonlSessionStoreTest(unittest.TestCase):
                         [sys.executable, "-c",
                          "import shutil, sys; from pathlib import Path; "
                          "target = Path(sys.argv[1]); " + mutation, str(path)],
-                        capture_output=True, text=True, timeout=15,
+                        capture_output=True, encoding="utf-8", timeout=15,
+                        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                     )
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("PermissionError", result.stderr)
@@ -330,15 +330,15 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_appends_and_replays_journal_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("session-1")
             session.begin_turn("turn-1")
             session.add_item("user", "你好")
             session.add_item("assistant", "你好！")
             session.finish_turn("completed")
-            persist(store, workspace, session)
+            persist(store, session)
 
-            path = session_log_path(store.directory, workspace, session.session_id)
+            path = session_log_path(store.directory, session.session_id)
             records = [
                 json.loads(line)
                 for line in path.read_text(encoding="utf-8").splitlines()
@@ -350,180 +350,26 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 ["你好", "你好！"],
             )
 
-    def test_forks_the_journal_before_the_edited_turn(self) -> None:
+    def test_lists_runs_by_first_user_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
-            session = Session("source")
-            session.begin_turn("turn-1")
-            session.add_item("user", "first question")
-            call = ToolCall("call-1", "read", {"path": "README.md"})
-            session.add_item("assistant", None, tool_calls=(call,))
-            session.tool_started(call)
-            session.tool_finished(call, "completed")
-            session.add_item("tool", "first result", tool_call_id=call.id)
-            session.finish_turn("completed")
-            session.set_archived_summary("summary before edit", 3)
-            plan = PlanSnapshot(
-                "plan-1",
-                "finish",
-                1,
-                (PlanStep("step-1", "continue", "in_progress"),),
-            )
-            session.set_plan(plan)
-            session.begin_turn("turn-2")
-            session.add_item("user", "second question")
-            session.set_archived_summary("must not be inherited", 4)
-            session.add_item("assistant", "second answer")
-            session.finish_turn("completed")
-            persist(store, workspace, session)
-            store.set_provider("source", "provider-1", workspace)
-
-            targets = store.editable_user_messages("source")
-            self.assertEqual(
-                [target["item_index"] for target in targets],
-                [3],
-            )
-            first_anchor = next(
-                event.event_id
-                for event in session.journal
-                if event.event_type == "message_appended"
-                and event.turn_id == "turn-1"
-            )
-            with self.assertRaisesRegex(
-                ValueError,
-                "session already exists",
-            ):
-                store.fork_session("source", "source", first_anchor)
-            with self.assertRaisesRegex(
-                ValueError,
-                "editable user message does not exist",
-            ):
-                store.fork_session("source", "old-fork", first_anchor)
-            forked = store.fork_session(
-                "source",
-                "forked",
-                str(targets[0]["anchor_id"]),
-            )
-
-            turn_2_start = next(
-                index
-                for index, event in enumerate(session.journal)
-                if event.event_type == "turn_started"
-                and event.turn_id == "turn-2"
-            )
-            self.assertEqual(forked.journal, session.journal[:turn_2_start])
-            self.assertEqual(
-                [item.content for item in forked.items],
-                ["first question", None, "first result"],
-            )
-            self.assertEqual(forked.archived_summary, "summary before edit")
-            self.assertEqual(forked.archived_item_cursor, 3)
-            self.assertEqual(forked.compression_count, 1)
-            self.assertEqual(forked.plan, plan)
-            self.assertEqual(forked.turns["turn-1"].status, "completed")
-            self.assertEqual(
-                forked.tool_executions["call-1"].status,
-                "completed",
-            )
-            self.assertNotIn("turn-2", forked.turns)
-            self.assertEqual(store.workspace_for("forked"), str(workspace.resolve()))
-            self.assertEqual(store.provider_for("forked"), "provider-1")
-            summaries = {
-                item["session_id"]: item
-                for item in store.list_workspace_sessions(workspace)
-            }
-            self.assertEqual(summaries["forked"]["forked_from"], "source")
-            self.assertNotIn("forked_from", summaries["source"])
-
-    def test_forking_the_first_question_starts_with_an_empty_journal(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
-            session = Session("source")
-            session.begin_turn("turn-1")
-            session.add_item("user", "replace me")
-            session.add_item("assistant", "old answer")
-            session.finish_turn("completed")
-            persist(store, workspace, session)
-
-            target = store.editable_user_messages("source")[0]
-            forked = store.fork_session(
-                "source",
-                "forked",
-                str(target["anchor_id"]),
-            )
-
-            self.assertEqual(forked.items, [])
-            self.assertEqual(forked.journal, [])
-            self.assertEqual(store.workspace_for("forked"), str(workspace.resolve()))
-            self.assertEqual(
-                [item["session_id"] for item in store.list_workspace_sessions(workspace)],
-                ["source"],
-            )
-
-    def test_fork_uses_first_input_and_time_from_its_journal(self) -> None:
-        for edit_first in (False, True):
-            with self.subTest(edit_first=edit_first):
-                with tempfile.TemporaryDirectory() as directory:
-                    workspace = Path(directory)
-                    store = JsonlSessionStore(workspace / "sessions")
-                    session = Session("source")
-                    session.begin_turn("turn-1")
-                    session.add_item("user", "first question")
-                    session.add_item("assistant", "first answer")
-                    session.finish_turn("completed")
-                    if not edit_first:
-                        session.begin_turn("turn-2")
-                        session.add_item("user", "edit this question")
-                        session.add_item("assistant", "discard this answer")
-                        session.finish_turn("completed")
-                    persist(store, workspace, session)
-                    anchor = store.editable_user_messages("source")[0]["anchor_id"]
-
-                    forked = store.fork_session("source", "forked", str(anchor))
-                    cursor = len(forked.journal)
-                    forked.begin_turn("edited-turn")
-                    forked.add_item("user", "edited question")
-                    forked.add_item("assistant", "new answer")
-                    forked.finish_turn("completed")
-                    store.append_events("forked", forked.journal[cursor:])
-
-                    summaries = {
-                        item["session_id"]: item
-                        for item in store.list_workspace_sessions(workspace)
-                    }
-                    self.assertEqual(summaries["source"]["input_preview"], "first question")
-                    self.assertEqual(
-                        summaries["forked"]["input_preview"],
-                        "edited question" if edit_first else "first question",
-                    )
-                    first_turn = "edited-turn" if edit_first else "turn-1"
-                    self.assertEqual(
-                        summaries["forked"]["started_at"],
-                        forked.turns[first_turn].started_at.isoformat().replace("+00:00", "Z"),
-                    )
-
-    def test_lists_sessions_by_workspace_and_first_user_message(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             for session_id, text in (("one", "first"), ("two", "second")):
                 session = Session(session_id)
                 session.begin_turn("t")
                 session.add_item("user", text)
                 session.finish_turn("completed")
-                persist(store, workspace, session)
+                persist(store, session)
 
             self.assertEqual(
-                {item["input_preview"] for item in store.list_sessions()[0]["sessions"]},
+                {item["input_preview"] for item in store.list_sessions()},
                 {"first", "second"},
             )
 
     def test_lists_session_with_attachments_by_first_user_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("attachment-session")
             session.begin_turn("t")
             session.add_item(
@@ -531,17 +377,17 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 "分析这张图片",
                 attachments=(
                     ImagePart(
-                        path=".RADE/attachments/image.png",
+                        path="attachments/image.png",
                         filename="image.png",
                         size_bytes=12,
                     ),
                 ),
             )
             session.finish_turn("completed")
-            persist(store, workspace, session)
+            persist(store, session)
 
             self.assertEqual(
-                store.list_sessions()[0]["sessions"],
+                store.list_sessions(),
                 [{
                     "session_id": "attachment-session", "input_preview": "分析这张图片",
                     "started_at": session.journal[0].timestamp_utc.isoformat().replace("+00:00", "Z"),
@@ -551,7 +397,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_previews_attachment_only_sessions_from_their_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             single = Session("single-attachment")
             single.begin_turn("t")
             single.add_item(
@@ -559,14 +405,14 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 "",
                 attachments=(
                     ImagePart(
-                        path=".RADE/attachments/design.png",
+                        path="attachments/design.png",
                         filename="design.png",
                         size_bytes=12,
                     ),
                 ),
             )
             single.finish_turn("completed")
-            persist(store, workspace, single)
+            persist(store, single)
 
             multiple = Session("multiple-attachments")
             multiple.begin_turn("t")
@@ -575,24 +421,24 @@ class JsonlSessionStoreTest(unittest.TestCase):
                 "",
                 attachments=(
                     FilePart(
-                        path=".RADE/attachments/brief.pdf",
+                        path="attachments/brief.pdf",
                         filename="brief.pdf",
                         mime_type="application/pdf",
                         size_bytes=24,
                     ),
                     ImagePart(
-                        path=".RADE/attachments/reference.png",
+                        path="attachments/reference.png",
                         filename="reference.png",
                         size_bytes=12,
                     ),
                 ),
             )
             multiple.finish_turn("completed")
-            persist(store, workspace, multiple)
+            persist(store, multiple)
 
             previews = {
                 item["session_id"]: item["input_preview"]
-                for item in store.list_sessions()[0]["sessions"]
+                for item in store.list_sessions()
             }
             self.assertEqual(previews["single-attachment"], "design.png")
             self.assertEqual(
@@ -603,139 +449,50 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_lists_sessions_newest_first(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             for session_id in ("older", "newer"):
                 session = Session(session_id)
                 session.begin_turn("t")
                 session.add_item("user", session_id)
                 session.finish_turn("completed")
-                persist(store, workspace, session)
+                persist(store, session)
 
-            older_path = session_log_path(store.directory, workspace, "older")
-            newer_path = session_log_path(store.directory, workspace, "newer")
+            older_path = session_log_path(store.directory, "older")
+            newer_path = session_log_path(store.directory, "newer")
             os.utime(older_path, (100, 100))
             os.utime(newer_path, (200, 200))
 
-            listed = store.list_sessions()[0]["sessions"]
+            listed = store.list_sessions()
             self.assertEqual(
                 [item["session_id"] for item in listed], ["newer", "older"]
             )
 
-    def test_lists_only_the_sessions_of_one_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            store = JsonlSessionStore(root / "sessions")
-            for workspace, session_id in (
-                (root / "here", "mine"),
-                (root / "elsewhere", "theirs"),
-            ):
-                session = Session(session_id)
-                session.begin_turn("t")
-                session.add_item("user", session_id)
-                session.finish_turn("completed")
-                persist(store, workspace, session)
-
-            self.assertEqual(
-                [item["session_id"] for item in store.list_workspace_sessions(root / "here")],
-                ["mine"],
-            )
-            self.assertEqual(store.list_workspace_sessions(root / "empty"), [])
-
     def test_ignores_session_directories_without_a_journal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
-            orphan = workspace_directory(store.directory, workspace) / "orphan"
+            store = JsonlSessionStore(workspace / "runs")
+            orphan = store.session_directory("orphan")
             orphan.mkdir(parents=True)
 
             self.assertEqual(store.list_sessions(), [])
-            self.assertIsNone(store.workspace_for("orphan"))
-
-    def test_workspace_binding_exists_before_the_first_journal_event(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory) / "workspace"
-            workspace.mkdir()
-            store = JsonlSessionStore(Path(directory) / "sessions")
-
-            store.bind_workspace("session-1", workspace)
-
-            self.assertEqual(
-                store.workspace_for("session-1"),
-                str(workspace.resolve()),
-            )
-            self.assertEqual(store.list_sessions(), [])
-
-    def test_session_without_metadata_uses_its_group_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            workspace = Path(directory) / "项目 space"
-            workspace.mkdir()
-            store = JsonlSessionStore(Path(directory) / "sessions")
-            session = Session("session-1")
-            session.add_item("user", "hello")
-            store.append_events(
-                session.session_id,
-                session.journal,
-                workspace=workspace,
-            )
-
-            loaded = JsonlSessionStore(store.directory).load("session-1")
-
-            self.assertEqual(loaded.workspace, str(workspace.resolve()))
-            self.assertEqual(
-                store.list_sessions()[0]["workspace"],
-                str(workspace.resolve()),
-            )
+            self.assertFalse(store.has_journal("orphan"))
 
     def test_stores_provider_in_session_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"
             workspace.mkdir()
-            store = JsonlSessionStore(Path(directory) / "sessions")
+            store = JsonlSessionStore(Path(directory) / "runs")
 
-            store.set_provider("session-1", "second", workspace)
+            store.set_provider("session-1", "second")
 
             reopened = JsonlSessionStore(store.directory)
             self.assertEqual(reopened.provider_for("session-1"), "second")
             self.assertEqual(reopened.list_sessions(), [])
 
-    def test_ungrouped_store_reports_no_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "subagents"
-            store = JsonlSessionStore(root, group_by_workspace=False)
-            session = Session("child-1")
-            session.add_item("user", "hello")
-            store.append_events(session.session_id, session.journal)
-
-            reopened = JsonlSessionStore(root, group_by_workspace=False)
-            self.assertIsNone(reopened.workspace_for("child-1"))
-            self.assertIsNone(reopened.load("child-1").workspace)
-            self.assertEqual(
-                [item.content for item in reopened.load("child-1").items],
-                ["hello"],
-            )
-
-    def test_moves_session_to_new_workspace(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            first = root / "first"
-            second = root / "second"
-            first.mkdir()
-            second.mkdir()
-            store = JsonlSessionStore(root / "sessions")
-            session = Session("session-1")
-            session.begin_turn("t")
-            session.add_item("user", "hello")
-            session.finish_turn("completed")
-            persist(store, first, session)
-            store.bind_workspace("session-1", second)
-
-            self.assertEqual(store.workspace_for("session-1"), str(second.resolve()))
-            self.assertEqual(store.load("session-1").items[0].content, "hello")
-
     def test_replay_restores_tool_and_turn_states(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("session-1")
             session.begin_turn("turn-1")
             call = ToolCall("call-1", "read", {"path": "README.md"})
@@ -744,7 +501,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
             session.tool_finished(call, "completed")
             session.add_item("tool", "ok", tool_call_id=call.id)
             session.finish_turn("completed")
-            persist(store, workspace, session)
+            persist(store, session)
 
             loaded = store.load("session-1")
             self.assertEqual(loaded.turns["turn-1"].status, "completed")
@@ -752,7 +509,7 @@ class JsonlSessionStoreTest(unittest.TestCase):
 
     def test_load_missing_and_reject_escape(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            store = JsonlSessionStore(Path(directory) / "sessions")
+            store = JsonlSessionStore(Path(directory) / "runs")
             self.assertEqual(store.load("missing").items, [])
             with self.assertRaises(ValueError):
                 store.load("../escape")
@@ -760,19 +517,19 @@ class JsonlSessionStoreTest(unittest.TestCase):
     def test_delete_session(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            store = JsonlSessionStore(workspace / "sessions")
+            store = JsonlSessionStore(workspace / "runs")
             session = Session("session-1")
             session.begin_turn("t")
             session.finish_turn("completed")
-            persist(store, workspace, session)
+            persist(store, session)
 
             session_directory = session_log_path(
-                store.directory, workspace, "session-1"
+                store.directory, "session-1"
             ).parent
-            workspace_sessions_directory = session_directory.parent
+            runs_directory = session_directory.parent
             self.assertTrue(store.delete_session("session-1"))
             self.assertFalse(session_directory.exists())
-            self.assertTrue(workspace_sessions_directory.is_dir())
+            self.assertTrue(runs_directory.is_dir())
             self.assertFalse(store.delete_session("session-1"))
 
 

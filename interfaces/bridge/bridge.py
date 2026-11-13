@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from agent_core.mcp.manager import McpServerStatus
 from agent_runtime.host import RuntimeHost
 from agent_runtime.callbacks import RuntimeCallbacks
-from agent_runtime.attachments import parse_attachments
 from agent_runtime.scene_input import list_scene_inputs, prepare_scene_input
 from agent_runtime.config import load_model_options
 from agent_runtime.services import RuntimeServices
@@ -25,7 +24,6 @@ from .protocol import (
     session_open_failed_message,
     session_items_message,
     sessions_listed_message,
-    workspaces_listed_message,
     settings_snapshot_message,
     settings_update_failed_message,
     user_turn_received_message,
@@ -78,7 +76,7 @@ class Bridge:
             elif type == "session_open_failed" and self.host.sessions.session is not None:
                 state = self._runtime_snapshot()
             elif type in {
-                "provider_changed", "workspace_changed",
+                "provider_changed",
                 "plan_updated", "context_window", "model_completed", "compression_completed", "job_status", "fatal",
                 "turn_completed", "turn_cancelled", "turn_failed",
                 "runtime_refreshed", "runtime_refresh_failed",
@@ -182,7 +180,6 @@ class Bridge:
             jobs=list(self._jobs.values()),
             runtime_warnings=self._runtime_warnings,
             plan=self.host.sessions.plan.snapshot if self.host.sessions.plan is not None else None,
-            workspace=str(self.host.sessions.workspace.path) if self.host.sessions.workspace is not None else None,
         )
 
 
@@ -191,24 +188,7 @@ class Bridge:
 
 
     def _emit_sessions(self) -> None:
-        """Answer ``list_sessions`` with this Workspace's stored Sessions."""
-        if self.host.sessions.store is None or self.host.sessions.workspace is None:
-            raise RuntimeError("received 'list_sessions' before 'open_session'")
-        self.emit(
-            **sessions_listed_message(
-                self.host.sessions.store.list_workspace_sessions(self.host.sessions.workspace.path)
-            )
-        )
-
-
-    def _emit_workspaces(self) -> None:
-        if self.host.sessions.store is None:
-            raise RuntimeError("received 'list_workspaces' before 'open_session'")
-        self.emit(**workspaces_listed_message([
-            str(group["workspace"])
-            for group in self.host.sessions.store.list_sessions()
-        ]))
-
+        self.emit(**sessions_listed_message(self.host.sessions.store.list_sessions()))
 
     def _emit_session_items(self) -> None:
         """Answer ``load_session`` with the conversation to render."""
@@ -299,11 +279,8 @@ class Bridge:
 
             if message is None:
                 return
-            if message["type"] == "list_workspaces" and self.host.sessions.store is not None:
-                self._emit_workspaces()
-                continue
             if not opened or message["type"] == "open_session":
-                if message["type"] == "list_sessions" and self.host.sessions.workspace is not None:
+                if message["type"] == "list_sessions":
                     self._emit_sessions()
                     continue
                 if message["type"] != "open_session":
@@ -327,8 +304,6 @@ class Bridge:
                 self.run_turn(message)
             elif message["type"] == "provider_set":
                 self._set_provider(message)
-            elif message["type"] == "workspace_set":
-                self._set_workspace(message)
             elif message["type"] == "runtime_refresh":
                 self._refresh_runtime()
             elif message["type"] == "list_sessions":
@@ -353,9 +328,11 @@ class Bridge:
 
 
     def open_session(self, message: dict[str, object]) -> None:
+        session_id = message.get("session_id")
+        if session_id is not None and (not isinstance(session_id, str) or not session_id):
+            raise ValueError("session_id must be a non-empty string or null")
         resumed = self.host.open_session(
-            Path(str(message["workspace"])),
-            session_id=message.get("session_id"),
+            session_id=session_id,
             provider=message.get("provider"),
         )
         self._phase = "inactive"
@@ -368,7 +345,6 @@ class Bridge:
         state = self.host.sessions
         self.emit(**session_ready_message(
             session_id=state.session.session_id,
-            workspace=str(state.workspace.path),
             provider=state.provider_name,
             model=load_model_options(self.host.config_directory / "provider_config.json")[1][state.provider_name],
             resumed=resumed,
@@ -382,15 +358,6 @@ class Bridge:
             raise ValueError("provider must be a non-empty string")
         changed, model = self.host.change_provider(provider)
         self.emit("provider_changed", provider=provider, model=model)
-        if changed:
-            self._emit_runtime_state("inactive")
-
-    def _set_workspace(self, message: dict[str, object]) -> None:
-        value = message.get("workspace")
-        if not isinstance(value, str) or not value.strip():
-            raise ValueError("workspace must be a non-empty path")
-        changed = self.host.change_workspace(Path(value.strip()))
-        self.emit("workspace_changed", workspace=str(self.host.sessions.workspace.path))
         if changed:
             self._emit_runtime_state("inactive")
 
@@ -408,17 +375,14 @@ class Bridge:
     def run_turn(self, message: dict[str, object]) -> None:
         turn_id = str(message["turn_id"])
         self._checkpoint_turn = turn_id
-        workspace = self.host.sessions.workspace
+        files = self.host.sessions.files
         if "scene_input" in message or "text" not in message:
             result = self.host.run_turn(
                 turn_id,
-                lambda: prepare_scene_input(self._input_directory, message.get("scene_input"), workspace),
+                lambda: prepare_scene_input(self._input_directory, message.get("scene_input"), files),
             )
         else:
-            result = self.host.run_turn(
-                turn_id, str(message["text"]),
-                attachments=lambda: parse_attachments(message.get("attachments"), workspace),
-            )
+            result = self.host.run_turn(turn_id, str(message["text"]))
         self._jobs.clear()
         self._emit_runtime_state(
             "failed" if result.startup_failed else "idle",

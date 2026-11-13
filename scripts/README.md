@@ -16,7 +16,7 @@ python scripts/migrate_sessions.py
 python scripts/migrate_sessions.py --sessions-dir /path/to/sessions
 ```
 
-默认目录为 `.RADE/sessions`。脚本行为：
+默认目录为 `.RADE/runs`。脚本行为：
 
 - 逐行校验 JSON；遇到非法事件立即中止，出错日志不改写。
 - 只处理会话自身的日志（文件名与所在目录同名），Artifact 等其它 `.jsonl` 不受影响。

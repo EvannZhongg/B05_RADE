@@ -3,20 +3,19 @@ import { initialRuntimeState, runtimeIsActive, type Incoming, type Outgoing, typ
 export type SessionSocketOptions = {
   sessionId: string | null;
   provider?: string;
-  workspace?: string | null;
   attachmentId: string;
   attachOnly?: boolean;
   afterEvent?: number;
   takeover?: boolean;
   onMessage: (message: Incoming) => void;
-  onConfigurationRejected?: (type: "provider_set" | "workspace_set" | "runtime_refresh") => void;
+  onConfigurationRejected?: (type: "provider_set" | "runtime_refresh") => void;
   onClose: () => void;
   onError: () => void;
 };
 
 /** What the browser may send: relayed bridge messages plus 'cancel'. */
 type Sendable =
-  Extract<Outgoing, { type: "user_turn" | "user_steer" | "provider_set" | "workspace_set" | "runtime_refresh" | "cancel" }>;
+  Extract<Outgoing, { type: "user_turn" | "user_steer" | "provider_set" | "runtime_refresh" | "cancel" }>;
 type UserTurn = Extract<Sendable, { type: "user_turn" }>;
 type QueuedCommand = {
   message: Sendable;
@@ -48,7 +47,6 @@ export class SessionSocket {
         type: "open_session",
         session_id: options.sessionId,
         provider: options.provider,
-        workspace: options.workspace ?? undefined,
         attachment_id: options.attachmentId,
         ...(options.attachOnly ? { attach_only: true } : {}),
         ...(options.afterEvent !== undefined ? { after_event: options.afterEvent } : {}),
@@ -134,7 +132,7 @@ export class SessionSocket {
   ): void {
     // Configuration selected before attachment is conditional on the current
     // snapshot, never on a replayed phase or React's next render.
-    if ((message.type === "provider_set" || message.type === "workspace_set" || message.type === "runtime_refresh")
+    if ((message.type === "provider_set" || message.type === "runtime_refresh")
       && runtimeIsActive(this.phase)) {
       this.options.onConfigurationRejected?.(message.type);
       return;

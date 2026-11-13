@@ -36,7 +36,7 @@ interfaces → agent_runtime → agent_core
 | 模块 | 职责 |
 | --- | --- |
 | `config.py` | `AgentConfig` 及上下文、记忆、Provider、Skill、子 Agent 角色等配置结构与 `load_agent_config` |
-| `workspace.py` | `Workspace` 类型与路径包含校验 |
+| `workspace.py` | 现有文件工具使用的目录路径与包含校验 |
 | `path_utils.py` | 路径比较与包含判断 |
 | `atomic.py` | 文件原子写入 |
 | `file_lock.py` | 阻塞与非阻塞独占文件锁机制；错误策略与持锁生命周期由调用方管理 |
@@ -170,7 +170,7 @@ Core 只定义扩展机制，不决定扩展从哪个目录加载：
 
 ## Workspace Instructions
 
-`workspace_instructions.py` 只定义 instruction 条目、合并结果和 fingerprint 数据结构。具体读取哪些文件、来源优先级以及何时触发 Runtime 重建，由 `agent_runtime` 决定。
+`runtime_instructions.py` 只定义 instruction 条目、合并结果和 fingerprint 数据结构。具体读取哪些文件、来源优先级以及何时触发 Runtime 重建，由 `agent_runtime` 决定。
 
 ## Hooks
 

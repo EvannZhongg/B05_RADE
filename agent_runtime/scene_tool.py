@@ -13,6 +13,7 @@ from .scene_input import SceneInput
 @dataclass(frozen=True)
 class SceneToolContext(ToolExecutionContext):
     scene: SceneInput | None = None
+    deadline: float | None = None
     experiments: ExperimentRunner | None = None
     knowledge: KnowledgeService | None = None
 

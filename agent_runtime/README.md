@@ -122,7 +122,21 @@ SQLite 文件 `knowledge.sqlite3` 位于配置目录，由多个 Session 共享�
 | 路径 | 用途 |
 | --- | --- |
 | `provider_config.json` | Provider 定义与主 Agent 的默认 Provider |
-| `agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Instructions |
+| `agent_config.json` | Tool、上下文、记忆、子 Agent、MCP、Instructions、场景任务 |
+
+`agent_config.json` 的 `scene_task` 配置场景任务。两种模式共用同一基线，每次任务开始时读取配置。
+
+```json
+{
+  "scene_task": {
+    "budget_seconds": 600,
+    "baseline_strategy_id": "marginal_greedy",
+    "baseline_config_id": "default"
+  }
+}
+```
+
+`budget_seconds` 是任务执行预算。到达截止时间时，Runtime 通过取消机制停止求解和模型等待。结果在预算内提交后，长期记忆合并也只使用剩余预算。
 | `.env` | `${ENV_NAME}` 引用的密钥，由 `settings.py` 读写 |
 | `prompts/` | `Soul.md`、`SubAgent.md`、`Consolidator.md`、`RunMemory.md` |
 | `skills/` | standalone Skill |
@@ -198,7 +212,7 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 
 策略实现在 `rade_tasks/algorithms/implementations/`，通过 `rade_tasks/algorithms/registry.py` 的 `BUILTIN_STRATEGIES` 注册。每种策略声明版本、参数 JSON Schema 和 `module:function` 入口。每个配置声明参数值、随机种子和独立进程的超时秒数。入口实现 `algorithms/base.py` 中的 `Solver`，接收不可变的 `SceneSnapshot`，按原始 `P` 的行顺序返回分配，每行填原始任务列的零基索引或 `None`。外部程序可以由遵循同一签名的适配器接入。
 
-内置 `marginal_greedy` 的 `default` 配置无可调参数，求解预算为 30 秒。它按原始顺序逐个处理单元，将其分配给能带来最大正期望价值增量的任务。增量相同则选原始列索引较小的任务，没有正增量则留空。
+内置 `marginal_greedy` 的 `default` 配置无可调参数，声明 30 秒求解上限。它按原始顺序逐个处理单元，将其分配给能带来最大正期望价值增量的任务。增量相同则选原始列索引较小的任务，没有正增量则留空。每个实验启动时，以配置声明的上限和任务剩余时间中的较小值限制求解进程，排队时间也消耗任务预算。
 
 - `strategy_list` 返回已注册策略的参数范围和通过校验的配置。
 - `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。

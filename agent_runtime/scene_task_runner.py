@@ -17,12 +17,10 @@ from rade_tasks.knowledge import KnowledgeService
 from rade_tasks.results import select_result
 
 from .callbacks import RuntimeCallbacks
+from .config import load_scene_task_config
 from .execution_plane import ExecutionPlane
 from .experiments import ExperimentRunner
 from .scene_input import DEFAULT_SCENE_MODE, prepare_scene_input, validate_scene_mode
-
-
-TASK_BUDGET_SECONDS = 600
 
 
 def latest_scene_task(session: Session, *, recover: bool = False) -> dict[str, object] | None:
@@ -46,9 +44,10 @@ class SceneTaskOutcome:
 
 
 class SceneTaskRunner:
-    def __init__(self, callbacks: RuntimeCallbacks, knowledge: KnowledgeService) -> None:
+    def __init__(self, callbacks: RuntimeCallbacks, knowledge: KnowledgeService, config_path: Path) -> None:
         self.callbacks = callbacks
         self._knowledge = knowledge
+        self._config_path = config_path
         self.turn_id: str | None = None
         self.task_id: str | None = None
         self.control: TurnControl | None = None
@@ -101,12 +100,13 @@ class SceneTaskRunner:
         mode: object = DEFAULT_SCENE_MODE,
     ) -> SceneTaskOutcome:
         started_at = monotonic()
-        deadline = started_at + TASK_BUDGET_SECONDS
+        deadline: float | None = None
         budget_exhausted = False
 
         def deadline_reached() -> bool:
             nonlocal budget_exhausted
-            budget_exhausted = monotonic() >= deadline
+            if deadline is not None and monotonic() >= deadline:
+                budget_exhausted = True
             return budget_exhausted
 
         control = TurnControl(deadline_reached)
@@ -143,6 +143,9 @@ class SceneTaskRunner:
         try:
             session.record_application_event("scene_task", task.copy())
             control.raise_if_cancelled()
+            config = load_scene_task_config(self._config_path)
+            deadline = started_at + config.budget_seconds
+            control.raise_if_cancelled()
             mode = validate_scene_mode(mode)
             if not isinstance(filename, str):
                 raise ValueError("scene_task_start requires a scene filename")
@@ -168,7 +171,9 @@ class SceneTaskRunner:
                 self.callbacks.on_phase("running", plane.runtime_warnings)
                 plane.runtime_warnings = ()
             control.raise_if_cancelled()
-            submission = experiments.submit("marginal_greedy", "default", scene, task_id)
+            submission = experiments.submit(
+                config.baseline_strategy_id, config.baseline_config_id, scene, task_id, deadline=deadline,
+            )
             baseline_id = submission["experiment_id"]
             assert isinstance(baseline_id, str)
             while jobs.get(baseline_id).status in {"submitted", "running"}:
@@ -198,7 +203,9 @@ class SceneTaskRunner:
                 memory = plane.memory
                 if memory is not None:
                     memory.begin_turn()
-                tools = plane.select_main_tools(replace(plane.tool_context, scene=scene, knowledge=self._knowledge))
+                tools = plane.select_main_tools(replace(
+                    plane.tool_context, scene=scene, deadline=deadline, knowledge=self._knowledge,
+                ))
                 reflection = plane.agent.run(
                     json.dumps(prompt, ensure_ascii=False, indent=2),
                     turn_id=task_id,
@@ -229,7 +236,7 @@ class SceneTaskRunner:
         except (KeyboardInterrupt, AgentCancelled):
             if budget_exhausted:
                 task.update(status="timed_out", error=asdict(runtime_error_info(
-                    TimeoutError(f"Scene task exceeded {TASK_BUDGET_SECONDS} seconds"),
+                    TimeoutError(f"Scene task exceeded {config.budget_seconds} seconds"),
                 )))
             else:
                 task.update(status="cancelled", error=None)
@@ -252,7 +259,9 @@ class SceneTaskRunner:
                         warnings.append(f"Could not persist scene task status: {error}")
                 elif memory is not None:
                     try:
-                        memory.reconcile_pending()
+                        memory.reconcile_pending(check_cancelled=control.raise_if_cancelled)
+                    except AgentCancelled:
+                        warnings.append("Scene task budget expired during long-term memory update")
                     except Exception as error:
                         warnings.append(f"Long-term memory update failed: {error}")
             finally:

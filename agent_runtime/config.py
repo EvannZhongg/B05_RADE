@@ -46,6 +46,31 @@ class PromptTemplates:
     run_memory: str
 
 
+@dataclass(frozen=True)
+class SceneTaskConfig:
+    budget_seconds: int = 600
+    baseline_strategy_id: str = "marginal_greedy"
+    baseline_config_id: str = "default"
+
+
+def load_scene_task_config(path: Path) -> SceneTaskConfig:
+    with path.open(encoding="utf-8") as file:
+        data = json.load(file)
+    defaults = SceneTaskConfig()
+    config = data.get("scene_task", {})
+    if not isinstance(config, dict):
+        raise ValueError("config field 'scene_task' must be an object")
+    budget = config.get("budget_seconds", defaults.budget_seconds)
+    if type(budget) is not int or budget < 1:
+        raise ValueError("config field 'scene_task.budget_seconds' must be a positive integer")
+    strategy_id = config.get("baseline_strategy_id", defaults.baseline_strategy_id)
+    config_id = config.get("baseline_config_id", defaults.baseline_config_id)
+    for field, value in (("baseline_strategy_id", strategy_id), ("baseline_config_id", config_id)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"config field 'scene_task.{field}' must be a non-empty string")
+    return SceneTaskConfig(budget, strategy_id, config_id)
+
+
 def default_config_directory() -> Path:
     return Path.cwd() / ".RADE"
 

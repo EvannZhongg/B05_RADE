@@ -170,21 +170,20 @@ class SubagentRuntime:
         )
         with store.open_journal(session.session_id) as sink:
             session.attach_journal_sink(sink)
+            control = TurnControl(
+                external_cancelled=(lambda: cancellation.cancelled) if cancellation is not None else None,
+            )
             try:
                 result = child.run(
                     task,
                     on_event=(
                         _SubagentProgress(on_progress) if on_progress is not None else None
                     ),
-                    turn_control=(
-                        TurnControl(external_cancelled=lambda: cancellation.cancelled)
-                        if cancellation is not None
-                        else None
-                    ),
+                    turn_control=control,
                     input_source="delegation",
                 )
                 if memory is not None:
-                    memory.reconcile_pending()
+                    memory.reconcile_pending(check_cancelled=control.raise_if_cancelled)
             finally:
                 session.attach_journal_sink(None)
         # Full report delivery is separate from the bounded progress snapshots.

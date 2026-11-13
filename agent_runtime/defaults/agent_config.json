@@ -6,6 +6,11 @@
     "request_timeout_seconds": 300,
     "max_retries": 2
   },
+  "scene_task": {
+    "budget_seconds": 600,
+    "baseline_strategy_id": "marginal_greedy",
+    "baseline_config_id": "default"
+  },
   "context": {
     "compression": {
       "enabled": true,

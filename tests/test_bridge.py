@@ -9,6 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+from openai import OpenAI
+
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 
 from agent_core import (
@@ -817,7 +820,8 @@ class MemorySpy:
     def discard_pending(self) -> None:
         self.calls.append("discard")
 
-    def reconcile_pending(self) -> bool:
+    def reconcile_pending(self, *, check_cancelled) -> bool:
+        check_cancelled()
         self.calls.append("reconcile")
         return True
 
@@ -1164,13 +1168,109 @@ class InterruptedTurnTest(BridgeTestCase):
         self.assertEqual(self.store.load(self.session_id).journal[-1].payload, terminal["task"])
 
     def test_scene_task_budget_exhaustion_is_persisted(self) -> None:
-        with patch("agent_runtime.scene_task_runner.TASK_BUDGET_SECONDS", 0):
+        config_path = self.root / "agent_config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["scene_task"] = {"budget_seconds": 5}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        requested, release = threading.Event(), threading.Event()
+        clock_start = time.monotonic()
+
+        def clock():
+            return clock_start + (5 if requested.is_set() else 0)
+
+        def handle(_request):
+            requested.set()
+            release.wait(5)
+            return httpx.Response(500)
+
+        def client(**kwargs):
+            kwargs.pop("http_client").close()
+            return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+
+        try:
+            with (
+                patch("agent_runtime.scene_task_runner.monotonic", side_effect=clock),
+                patch("agent_core.providers.openai_provider.OpenAI", side_effect=client),
+                patch.object(plane.provider, "_api_key", "test-key"),
+                patch.object(plane.provider, "count_input_tokens", return_value=1),
+            ):
+                started = time.monotonic()
+                self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
+                self.assertLess(time.monotonic() - started, 5)
+        finally:
+            release.set()
+
+        self.assertTrue(requested.is_set())
+        terminal = emitted(self.stdout)[-1]
+        self.assertEqual(terminal["type"], "scene_task_timed_out")
+        self.assertEqual(terminal["error"]["message"], "Scene task exceeded 5 seconds")
+        self.assertFalse((self.root / "output").exists())
+        self.assertEqual(self.store.load(self.session_id).journal[-1].payload, terminal["task"])
+
+    def test_baseline_config_is_reloaded_for_both_scene_modes(self) -> None:
+        message = {"turn_id": "initial", "scene_input": "scene1_1.json", "mode": "norethink"}
+        self.bridge.run_scene_task(message)
+        self.assertEqual(emitted(self.stdout)[-1]["task"]["baseline_expected_value"], 8)
+
+        config_path = self.root / "agent_config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["scene_task"] = {"baseline_config_id": "reverse"}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        self.bridge.run_scene_task({**message, "turn_id": "baseline"})
+
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        with (
+            patch.object(plane.provider, "count_input_tokens", return_value=1),
+            patch.object(plane.provider, "stream_cancellable", return_value=LLMResponse(content="Done")),
+        ):
+            self.bridge.run_scene_task({**message, "turn_id": "reflection", "mode": "rethink"})
+
+        completed = [event for event in emitted(self.stdout) if event["type"] == "scene_task_completed"]
+        self.assertEqual([event["turn_id"] for event in completed], ["initial", "baseline", "reflection"])
+        for event in completed[1:]:
+            self.assertEqual(event["task"]["baseline_expected_value"], 7.5)
+            output = Path(event["task"]["output_path"])
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"allocation": [0, 0]})
+
+    def test_memory_request_uses_the_remaining_budget_after_export(self) -> None:
+        config_path = self.root / "agent_config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["scene_task"] = {"budget_seconds": 5}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
+        output = self.root / "output" / "rethink" / "scene1_1.json"
+        start = time.monotonic()
+        elapsed = 0
+
+        def respond(request, _text, _reasoning, check_cancelled):
+            nonlocal elapsed
+            if request.tools:
+                if any(message.role == "tool" for message in request.messages):
+                    return LLMResponse(content="Done")
+                return LLMResponse(content=None, tool_calls=(ToolCall(
+                    "memory", "remember", {"kind": "fact", "content": "A fact."},
+                ),))
+            self.assertTrue(output.exists())
+            elapsed = 5
+            check_cancelled()
+            self.fail("Memory request should have been cancelled at the scene deadline")
+
+        with (
+            patch("agent_runtime.scene_task_runner.monotonic", side_effect=lambda: start + elapsed),
+            patch.object(plane.provider, "count_input_tokens", return_value=1),
+            patch.object(plane.provider, "stream_cancellable", side_effect=respond),
+        ):
             self.bridge.run_scene_task({"turn_id": "t1", "scene_input": "scene1_1.json"})
 
         terminal = emitted(self.stdout)[-1]
-        self.assertEqual(terminal["type"], "scene_task_timed_out")
-        self.assertFalse((self.root / "output").exists())
-        self.assertEqual(self.store.load(self.session_id).journal[-1].payload, terminal["task"])
+        self.assertEqual(terminal["type"], "scene_task_completed")
+        self.assertEqual(terminal["runtime"]["runtime_warnings"], [
+            "Scene task budget expired during long-term memory update",
+        ])
+        memory_call, = [event for event in self.session.journal if event.event_type == "memory_completed"]
+        self.assertEqual(memory_call.payload["status"], "cancelled")
+        self.assertEqual(plane.memory.store.load(self.session_id), MemoryDocument())
 
     def test_discards_memory_candidates_when_a_turn_fails(self) -> None:
         plane = self.bridge.host.planes.ensure(self.bridge.host.sessions)
@@ -1642,7 +1742,7 @@ class BridgeSessionOpenTest(BridgeTestCase):
             plane.agent._context.archive(plane.agent._context.build_request(plane.agent._tools.definitions))
         plane.memory.remember(MemoryCandidate("fact", "A fact."))
         with patch.object(
-            plane.provider, "stream",
+            plane.provider, "stream_cancellable",
             return_value=LLMResponse(
                 content='{"entries":[{"kind":"fact","content":"A fact."}]}',
                 usage=TokenUsage(12, 6, 18, 0, None),
@@ -1715,6 +1815,9 @@ class BridgeSessionOpenTest(BridgeTestCase):
                         usage=TokenUsage(500, 10, 510, 450, None)),
             LLMResponse(content="Finished inspection.",
                         usage=TokenUsage(100, 10, 110, 50, None)),
+            LLMResponse(content=json.dumps({"entries": [
+                {"kind": "fact", "content": "A durable fact."},
+            ]}), usage=TokenUsage(1000, 10, 1010, 0, None)),
         ]
         with (
             patch.object(
@@ -1725,12 +1828,6 @@ class BridgeSessionOpenTest(BridgeTestCase):
                 ),
             ),
             patch.object(provider, "stream_cancellable", side_effect=responses),
-            patch.object(
-                provider, "stream",
-                return_value=LLMResponse(content=json.dumps({"entries": [
-                    {"kind": "fact", "content": "A durable fact."},
-                ]}), usage=TokenUsage(1000, 10, 1010, 0, None)),
-            ),
         ):
             answer = subagents.run("researcher", "inspect", context)
 

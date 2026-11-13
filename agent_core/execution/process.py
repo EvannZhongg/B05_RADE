@@ -29,7 +29,7 @@ class CommandExecutionResult:
     stdout: str
     stderr: str
     timed_out: bool = False
-    timeout_seconds: int | None = None
+    timeout_seconds: float | None = None
     stdout_spool: "CommandOutputSpool | None" = None
     stderr_spool: "CommandOutputSpool | None" = None
 
@@ -97,7 +97,7 @@ def _execute_process(
     *,
     command: str,
     working_directory: Path,
-    timeout_seconds: int,
+    timeout_seconds: float,
     cancellation: CancellationSignal | None,
     environment: dict[str, str] | None = None,
     stdin: bytes | None = None,
@@ -106,15 +106,14 @@ def _execute_process(
         raise CommandCancelled
     if (
         isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, int)
-        or timeout_seconds < 1
-        or timeout_seconds > MAX_COMMAND_TIMEOUT_SECONDS
+        or not isinstance(timeout_seconds, (int, float))
+        or not 0 < timeout_seconds <= MAX_COMMAND_TIMEOUT_SECONDS
     ):
         raise ValueError(
-            "command timeout must be an integer between 1 and "
-            f"{MAX_COMMAND_TIMEOUT_SECONDS} seconds"
+            f"command timeout must be positive and at most {MAX_COMMAND_TIMEOUT_SECONDS} seconds"
         )
 
+    deadline = time.monotonic() + timeout_seconds
     _reap_stale_spools()
     stdout_file = None
     stderr_file = None
@@ -162,7 +161,6 @@ def _execute_process(
             stderr=stderr_file,
             start_new_session=True,
         )
-        deadline = time.monotonic() + timeout_seconds
         while process.poll() is None:
             if cancellation is not None and cancellation.cancelled:
                 _kill_process_tree(process)

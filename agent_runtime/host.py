@@ -39,6 +39,7 @@ class RuntimeHost:
         )
         self.scene_tasks = SceneTaskRunner(
             runtime_callbacks, KnowledgeService(self.config_directory / "knowledge.sqlite3"),
+            self.settings.agent_path,
         )
 
     def _require_idle(self) -> None:

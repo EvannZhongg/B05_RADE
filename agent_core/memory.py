@@ -137,6 +137,8 @@ class MemoryReconciler:
         self,
         current: MemoryDocument,
         candidates: tuple[MemoryCandidate, ...],
+        *,
+        check_cancelled: Callable[[], None] = lambda: None,
     ) -> MemoryDocument:
         if not candidates:
             return current
@@ -159,7 +161,9 @@ class MemoryReconciler:
         with AuxiliaryCallTracker(
             self._on_auxiliary_call, task="memory", scope="run",
         ) as call:
-            response = call.response = self._provider.stream(request, lambda _text: None)
+            response = call.response = self._provider.stream_cancellable(
+                request, lambda _text: None, None, check_cancelled,
+            )
             if response.content is None or response.tool_calls:
                 raise ValueError("memory reconciler must return JSON content only")
             return _document_from_json(response.content)
@@ -196,7 +200,7 @@ class MemoryManager:
         with self._lock:
             return tuple(self._pending)
 
-    def reconcile_pending(self) -> bool:
+    def reconcile_pending(self, *, check_cancelled: Callable[[], None] = lambda: None) -> bool:
         with self._lock:
             candidates = tuple(self._pending)
             self._pending.clear()
@@ -204,8 +208,10 @@ class MemoryManager:
             return False
 
         with self.store.reconciliation_lock:
+            check_cancelled()
             current = self.store.load(self.run_id)
-            updated = self.reconciler.reconcile(current, candidates)
+            updated = self.reconciler.reconcile(current, candidates, check_cancelled=check_cancelled)
+            check_cancelled()
             self.store.write(self.run_id, updated, expected=current)
         return True
 

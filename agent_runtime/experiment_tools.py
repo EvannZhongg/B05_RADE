@@ -33,6 +33,7 @@ class ExperimentRunTool(Tool):
         return (
             isinstance(context, SceneToolContext)
             and context.experiments is not None and context.scene is not None
+            and context.deadline is not None
         )
 
     def definition(self, context: ToolExecutionContext) -> ToolDefinition:
@@ -53,7 +54,7 @@ class ExperimentRunTool(Tool):
 
     def execute(self, arguments: dict[str, JSONValue], context: ToolExecutionContext) -> JSONValue:
         assert isinstance(context, SceneToolContext) and context.experiments is not None
-        assert context.scene is not None
+        assert context.scene is not None and context.deadline is not None
         if arguments.keys() - {"strategy_id", "config_id"}:
             raise ValueError("experiment_run accepts only strategy_id and config_id")
         strategy_id, config_id = arguments.get("strategy_id"), arguments.get("config_id")
@@ -62,7 +63,7 @@ class ExperimentRunTool(Tool):
         turn_id = context.session.current_turn_id
         if turn_id is None:
             raise ValueError("experiment_run requires an active scene turn")
-        return context.experiments.submit(strategy_id, config_id, context.scene, turn_id)
+        return context.experiments.submit(strategy_id, config_id, context.scene, turn_id, deadline=context.deadline)
 
 
 class ExperimentGetTool(Tool):

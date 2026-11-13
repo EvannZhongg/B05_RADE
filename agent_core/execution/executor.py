@@ -15,7 +15,7 @@ class CommandExecutor(Protocol):
     def execute(
         self,
         command: str | tuple[str, ...],
-        timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         cancellation: CancellationSignal | None = None,
         *,
         stdin: bytes | None = None,
@@ -39,7 +39,7 @@ class HostCommandExecutor:
     def execute(
         self,
         command: str | tuple[str, ...],
-        timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         cancellation: CancellationSignal | None = None,
         *,
         stdin: bytes | None = None,

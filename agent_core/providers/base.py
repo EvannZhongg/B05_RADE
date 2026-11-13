@@ -184,6 +184,8 @@ def _cancellable_chunks(
         nonlocal stream
         try:
             stream = create_stream()
+            if stopped.is_set():
+                return
             for chunk in stream:
                 if not publish(chunk):
                     return
@@ -200,6 +202,7 @@ def _cancellable_chunks(
             finally:
                 publish(_STREAM_END)
 
+    check_cancelled()
     reader = Thread(
         target=copy_context().run,
         args=(read_stream,),

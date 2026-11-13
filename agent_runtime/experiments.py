@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from typing import cast
 from uuid import uuid4
 
@@ -27,13 +28,15 @@ class ExperimentRunner:
         self._jobs = jobs
         self._files = files
 
-    def submit(self, strategy_id: str, config_id: str, scene: SceneInput, turn_id: str) -> dict[str, JSONValue]:
+    def submit(
+        self, strategy_id: str, config_id: str, scene: SceneInput, turn_id: str, *, deadline: float,
+    ) -> dict[str, JSONValue]:
         strategy, profile = self.registry.resolve(strategy_id, config_id)
         snapshot = scene.state.snapshot
         result_ref = f"experiments/{uuid4().hex}/allocation.json"
         handle = self._jobs.submit(
             "experiment", turn_id,
-            lambda job: self._execute(job, strategy, profile, snapshot, result_ref),
+            lambda job: self._execute(job, strategy, profile, snapshot, result_ref, deadline),
             details={
                 "strategy_id": strategy_id,
                 "config_id": config_id,
@@ -48,13 +51,13 @@ class ExperimentRunner:
 
     def _execute(
         self, job: JobContext, strategy: Strategy, profile: StrategyProfile, scene: SceneSnapshot,
-        result_ref: str,
+        result_ref: str, deadline: float,
     ) -> JobResult:
         with TemporaryDirectory(prefix="RADE-experiment-") as directory:
             executor = HostCommandExecutor(Path(directory))
             result = execute_strategy(
                 strategy, profile, scene,
-                lambda command, timeout, request: _run_process(executor, job, command, timeout, request),
+                lambda command, timeout, request: _run_process(executor, job, command, timeout, request, deadline),
             )
 
         job.cancellation.raise_if_cancelled()
@@ -141,8 +144,12 @@ class ExperimentRunner:
 
 
 def _run_process(
-    executor: HostCommandExecutor, job: JobContext, command: tuple[str, ...], timeout: int, request: bytes,
+    executor: HostCommandExecutor, job: JobContext, command: tuple[str, ...], profile_timeout: int,
+    request: bytes, deadline: float,
 ) -> str:
+    timeout = min(profile_timeout, deadline - monotonic())
+    if timeout <= 0:
+        raise TimeoutError("Scene task budget expired before the solver started")
     try:
         execution = executor.execute(command, timeout, cancellation=job.cancellation, stdin=request)
     except CommandCancelled:
@@ -152,7 +159,7 @@ def _run_process(
     try:
         job.cancellation.raise_if_cancelled()
         if execution.timed_out:
-            raise TimeoutError(f"Exceeded {timeout} seconds")
+            raise TimeoutError(f"Exceeded {timeout:.3g} seconds")
         if execution.exit_code != 0:
             message = execution.stderr.strip()[-2000:]
             raise RuntimeError(f"Strategy exited with code {execution.exit_code}: {message}")

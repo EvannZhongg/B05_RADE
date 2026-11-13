@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from agent_core import JsonlSessionStore, JobManager, LLMResponse, Session, ToolCall, Workspace
+from agent_core.execution import CommandExecutionResult
 from agent_runtime.experiments import ExperimentRunner
 from agent_runtime.scene_input import prepare_scene_input
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
@@ -71,7 +72,7 @@ def experiment_run(tmp_path, strategy):
         try:
             runner = ExperimentRunner((strategy,), jobs, files)
             scene = prepare_scene_input(tmp_path, source.name, files)
-            yield runner, scene, turn_id, jobs, files
+            yield runner, scene, turn_id, jobs, files, monotonic() + 60
         finally:
             jobs.close()
 
@@ -81,8 +82,8 @@ def experiment_run(tmp_path, strategy):
     [("invalid", "invalid", "task index"), ("timeout", "timed_out", "Exceeded"), ("error", "failed", "solver error")],
 )
 def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, status, diagnostic):
-    runner, scene, turn_id, jobs, files = experiment_run
-    experiment_id = runner.submit("fixture", mode, scene, turn_id)["experiment_id"]
+    runner, scene, turn_id, jobs, files, deadline = experiment_run
+    experiment_id = runner.submit("fixture", mode, scene, turn_id, deadline=deadline)["experiment_id"]
     jobs.wait_for_turn(turn_id)
     result = runner.get(experiment_id)
     assert result["status"] == status
@@ -95,7 +96,7 @@ def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, s
 
 
 def test_discovery_and_submission_validate_profiles(experiment_run):
-    runner, scene, turn_id, jobs, _ = experiment_run
+    runner, scene, turn_id, jobs, _, deadline = experiment_run
     strategy, = runner.registry.discover()
     assert strategy["version"] == "1.2.3"
     assert "enum" in strategy["parameter_schema"]["properties"]["mode"]
@@ -108,13 +109,13 @@ def test_discovery_and_submission_validate_profiles(experiment_run):
         ("fixture", "bad_profile", "Invalid profile"),
     ):
         with pytest.raises(ValueError, match=error):
-            runner.submit(strategy_id, config_id, scene, turn_id)
+            runner.submit(strategy_id, config_id, scene, turn_id, deadline=deadline)
     assert jobs.drain_updates(turn_id) == ()
 
 
 def test_can_cancel_a_running_solver(experiment_run, tmp_path):
-    runner, scene, turn_id, jobs, files = experiment_run
-    experiment_id = runner.submit("fixture", "cancel", scene, turn_id)["experiment_id"]
+    runner, scene, turn_id, jobs, files, deadline = experiment_run
+    experiment_id = runner.submit("fixture", "cancel", scene, turn_id, deadline=deadline)["experiment_id"]
     started = tmp_path / "test_experiment_solver.started"
     deadline = monotonic() + 5
     while not started.is_file() and monotonic() < deadline:
@@ -132,12 +133,12 @@ def test_can_cancel_a_running_solver(experiment_run, tmp_path):
 
 
 def test_comparison_rejects_different_source_snapshots(experiment_run, tmp_path):
-    runner, scene, turn_id, jobs, files = experiment_run
-    baseline = runner.submit("fixture", "baseline", scene, turn_id)["experiment_id"]
+    runner, scene, turn_id, jobs, files, deadline = experiment_run
+    baseline = runner.submit("fixture", "baseline", scene, turn_id, deadline=deadline)["experiment_id"]
     source = tmp_path / "scene1_1.json"
     source.write_text(source.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     changed = prepare_scene_input(tmp_path, source.name, files)
-    candidate = runner.submit("fixture", "candidate", changed, turn_id)["experiment_id"]
+    candidate = runner.submit("fixture", "candidate", changed, turn_id, deadline=deadline)["experiment_id"]
     jobs.wait_for_turn(turn_id)
     with pytest.raises(ValueError, match="same scene snapshot"):
         runner.get(candidate, baseline)
@@ -149,20 +150,42 @@ def test_marginal_greedy_accounts_for_previous_assignments_and_breaks_ties_by_ta
 
 
 def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run):
-    _, scene, turn_id, jobs, files = experiment_run
+    _, scene, turn_id, jobs, files, deadline = experiment_run
     runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
     strategy, = runner.registry.discover()
     assert strategy["strategy_id"] == "marginal_greedy"
     profile = strategy["configs"][0]
     assert profile["config_id"] == "default"
 
-    experiment_id = runner.submit(strategy["strategy_id"], profile["config_id"], scene, turn_id)["experiment_id"]
+    experiment_id = runner.submit(
+        strategy["strategy_id"], profile["config_id"], scene, turn_id, deadline=deadline,
+    )["experiment_id"]
     jobs.wait_for_turn(turn_id)
     result = runner.get(experiment_id)
     assert result["valid"] is True, result
     assert result["metrics"]["expected_value"] == 10.0
     allocation = json.loads((files.path / result["result_ref"]).read_text(encoding="utf-8"))
     assert allocation == {"allocation": [0, 0]}
+
+
+def test_solver_uses_remaining_budget_when_its_job_starts(experiment_run):
+    runner, scene, turn_id, jobs, _, _ = experiment_run
+    start = monotonic()
+    with (
+        patch("agent_runtime.experiments.monotonic", return_value=start + 4.75),
+        patch("agent_runtime.experiments.HostCommandExecutor") as executor,
+    ):
+        executor.return_value.execute.return_value = CommandExecutionResult(
+            "solver", -1, "", "", timed_out=True,
+        )
+        active = runner.submit("fixture", "cancel", scene, turn_id, deadline=start + 5)
+        expired = runner.submit("fixture", "cancel", scene, turn_id, deadline=start + 4)
+        jobs.wait_for_turn(turn_id)
+
+    assert executor.return_value.execute.call_count == 1
+    assert executor.return_value.execute.call_args.args[1] == 0.25
+    assert runner.get(active["experiment_id"])["status"] == "timed_out"
+    assert runner.get(expired["experiment_id"])["status"] == "timed_out"
 
 
 class TestExperimentBridge(BridgeTestCase):

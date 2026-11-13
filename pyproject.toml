@@ -12,6 +12,7 @@ dependencies = [
     # The MCP streamable HTTP transport configures its headers through an
     # httpx2 client, so both HTTP clients are direct requirements.
     "httpx2>=2.5",
+    "jsonschema>=4.26",
     "litellm>=1.105",
     "openai>=2.0",
     "tiktoken>=0.14.0",

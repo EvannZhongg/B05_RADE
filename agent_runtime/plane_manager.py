@@ -27,6 +27,7 @@ from agent_core.llm import LLMProvider
 from agent_core.tools import ROLE_TOOL_NAMES
 from agent_core.hooks import HookRunner
 from agent_core.execution.process import CancellationSignal
+from rade_tasks.strategy import BUILTIN_STRATEGIES
 
 from .config import (
     ModelConfig,
@@ -36,6 +37,8 @@ from .config import (
     memory_store,
 )
 from .execution_plane import ExecutionPlane
+from .experiments import ExperimentRunner
+from .experiment_tools import ExperimentGetTool, ExperimentRunTool, StrategyListTool
 from .instructions import load_runtime_instructions
 from .plugins import PluginAgent, PluginManager
 from .role_tools import resolve_role_tools
@@ -117,7 +120,10 @@ class ExecutionPlaneManager:
             # One catalog of stateless Tool instances is shared by the main
             # Agent and by every sub-agent role.
             catalog = builtin_catalog()
-            catalog = catalog.extend((*mcp.wait_ready(cancellation), QuerySceneTool()))
+            catalog = catalog.extend((
+                *mcp.wait_ready(cancellation), QuerySceneTool(),
+                StrategyListTool(), ExperimentRunTool(), ExperimentGetTool(),
+            ))
             role_tools = {}
             if agent_config.tools.is_enabled("subagent"):
                 for name, role in agent_config.subagent_roles.items():
@@ -252,6 +258,7 @@ class ExecutionPlaneManager:
                 mcp=mcp,
                 subagents=subagents,
                 jobs=jobs,
+                experiments=ExperimentRunner(BUILTIN_STRATEGIES, jobs, files.path.parent),
                 skills=skills,
                 plan=session.plan,
                 memory=memory,

@@ -5,10 +5,19 @@ import math
 from collections import Counter
 from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from statistics import fmean, median
 
 
 SceneStatistic = int | float | None | dict[str, int | float | None]
+
+
+@dataclass(frozen=True)
+class SceneSnapshot:
+    """Original probabilities and values in their source order."""
+
+    P: tuple[tuple[int | float, ...], ...]
+    v: tuple[int | float, ...]
 
 
 def _reject_json_constant(constant: str) -> None:
@@ -83,8 +92,7 @@ class SceneState:
         if ordered_values[0] >= 0 and total_value > 0:
             top_value_share = round(sum(ordered_values[-top_count:]) / total_value, 6)
 
-        self._matrix = matrix
-        self._values = values
+        self._snapshot = SceneSnapshot(tuple(tuple(row) for row in matrix), tuple(values))
         self._workers_per_task = workers_per_task
         self._tasks_per_worker = tasks_per_worker
         self._best_probabilities = best_probabilities
@@ -121,6 +129,10 @@ class SceneState:
             },
         }
 
+    @property
+    def snapshot(self) -> SceneSnapshot:
+        return self._snapshot
+
     def summary(self) -> dict[str, dict[str, SceneStatistic]]:
         return deepcopy(self._summary)
 
@@ -135,20 +147,21 @@ class SceneState:
         )
 
     def query(self, statistic: str, index: int | None = None) -> SceneStatistic:
+        matrix, values = self._snapshot.P, self._snapshot.v
         if statistic == "task":
-            if type(index) is not int or not 0 <= index < len(self._values):
-                raise ValueError(f"task index must be in [0, {len(self._values)})")
+            if type(index) is not int or not 0 <= index < len(values):
+                raise ValueError(f"task index must be in [0, {len(values)})")
             return {
-                "value": self._values[index],
+                "value": values[index],
                 "candidate_count": self._workers_per_task[index],
                 "best_probability": self._best_probabilities[index],
             }
         if statistic == "worker":
-            if type(index) is not int or not 0 <= index < len(self._matrix):
-                raise ValueError(f"worker index must be in [0, {len(self._matrix)})")
+            if type(index) is not int or not 0 <= index < len(matrix):
+                raise ValueError(f"worker index must be in [0, {len(matrix)})")
             return {
                 "candidate_count": self._tasks_per_worker[index],
-                "best_probability": max(self._matrix[index]),
+                "best_probability": max(matrix[index]),
             }
         if index is not None:
             raise ValueError("index is only accepted for task and worker statistics")

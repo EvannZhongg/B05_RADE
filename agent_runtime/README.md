@@ -178,6 +178,14 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 
 `.RADE/runs/<run_id>/` 保存当前运行。现阶段协议的 `session_id` 即 `run_id`。目录根部存放 JSONL Journal、`session.json`、记忆和子 Agent 记录。文件工具和 Shell 以 `files/` 为工作目录，场景输入快照、工具超长输出及求解文件都在其中。Runtime 启动场景 Turn 时将只读 `SceneState` 绑定到该 Turn 的 `query_scene`。
 
+## 算法实验
+
+在 `rade_tasks/strategy.py` 的 `BUILTIN_STRATEGIES` 中注册策略及其配置。初版默认注册表为空。每种策略声明版本、参数 JSON Schema 和 `module:function` 入口。每个配置声明参数值、随机种子和独立进程的超时秒数。入口实现 `Solver`，接收不可变的 `SceneSnapshot`，按原始 `P` 的行顺序返回分配，每行填原始任务列的零基索引或 `None`。外部程序可以由遵循同一签名的适配器接入。
+
+- `strategy_list` 返回已注册策略的参数范围和通过校验的配置。
+- `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。
+- `experiment_get` 查询本次运行的实验记录。带上 `baseline_experiment_id` 可比较同一输入快照的期望处理价值。成功结果的 `result_ref` 相对于运行目录，指向 `experiments/` 下的中间分配文件，实验状态和指标随 Session Journal 保存。
+
 ## 模块索引
 
 | 模块 | 职责 |

@@ -4,12 +4,15 @@ from dataclasses import dataclass
 from typing import cast
 
 from agent_core.tools import JSONValue, Tool, ToolDefinition, ToolExecutionContext
-from rade_tasks.scene import SceneState
+
+from .experiments import ExperimentRunner
+from .scene_input import SceneInput
 
 
 @dataclass(frozen=True)
 class SceneToolContext(ToolExecutionContext):
-    state: SceneState | None = None
+    scene: SceneInput | None = None
+    experiments: ExperimentRunner | None = None
 
 
 class QuerySceneTool(Tool):
@@ -17,10 +20,10 @@ class QuerySceneTool(Tool):
     concurrent = True
 
     def available(self, context: ToolExecutionContext) -> bool:
-        return isinstance(context, SceneToolContext) and context.state is not None
+        return isinstance(context, SceneToolContext) and context.scene is not None
 
     def definition(self, context: ToolExecutionContext) -> ToolDefinition:
-        assert isinstance(context, SceneToolContext) and context.state is not None
+        assert isinstance(context, SceneToolContext) and context.scene is not None
         return ToolDefinition(
             name=self.name,
             description=(
@@ -33,7 +36,7 @@ class QuerySceneTool(Tool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "statistic": {"type": "string", "enum": list(context.state.statistics)},
+                    "statistic": {"type": "string", "enum": list(context.scene.state.statistics)},
                     "index": {
                         "type": "integer",
                         "minimum": 0,
@@ -53,7 +56,7 @@ class QuerySceneTool(Tool):
         arguments: dict[str, JSONValue],
         context: ToolExecutionContext,
     ) -> JSONValue:
-        assert isinstance(context, SceneToolContext) and context.state is not None
+        assert isinstance(context, SceneToolContext) and context.scene is not None
         if arguments.keys() - {"statistic", "index"}:
             raise ValueError("query_scene accepts only statistic and index")
         statistic = arguments.get("statistic")
@@ -62,5 +65,5 @@ class QuerySceneTool(Tool):
         index = arguments.get("index")
         if "index" in arguments and type(index) is not int:
             raise ValueError("index must be an integer")
-        value = context.state.query(statistic, index)
+        value = context.scene.state.query(statistic, index)
         return {"statistic": statistic, "value": cast(JSONValue, value)}

@@ -19,6 +19,7 @@ from agent_core.llm import LLMProvider
 from agent_core.hooks import HookRunner
 from agent_core.tools import ToolSet
 
+from .experiment_tools import ExperimentGetTool, ExperimentRunTool, StrategyListTool
 from .scene_tool import QuerySceneTool, SceneToolContext
 
 if TYPE_CHECKING:
@@ -62,6 +63,9 @@ class ExecutionPlane:
                 *self.mcp.tool_names,
                 "remember",
                 QuerySceneTool.name,
+                StrategyListTool.name,
+                ExperimentRunTool.name,
+                ExperimentGetTool.name,
             ),
             context,
         )

@@ -3,6 +3,7 @@
 import json
 import re
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +19,7 @@ SCENE_FILENAME = re.compile(r"scene[12]_[1-5]\.json")
 class SceneInput:
     text: str
     state: SceneState
+    digest: str
 
 
 def list_scene_inputs(input_directory: Path) -> list[str]:
@@ -54,4 +56,4 @@ def prepare_scene_input(input_directory: Path, filename: object, files: Workspac
         ensure_ascii=False,
         indent=2,
     )
-    return SceneInput(text, state)
+    return SceneInput(text, state, sha256(data).hexdigest())

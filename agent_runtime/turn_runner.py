@@ -94,7 +94,7 @@ class TurnRunner:
             if callable(text):
                 scene = text()
                 assert plane.tool_context is not None
-                tools = plane.select_main_tools(replace(plane.tool_context, state=scene.state))
+                tools = plane.select_main_tools(replace(plane.tool_context, scene=scene))
                 run_agent = partial(run_agent, tools=tools)
                 text = scene.text
             result = run_agent(

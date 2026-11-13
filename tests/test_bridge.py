@@ -2602,7 +2602,7 @@ class SubagentRoleStartTest(BridgeTestCase):
 
         self.assertEqual(
             [definition.name for definition in plane.agent._tools.definitions],
-            ["update_plan", "remember"],
+            ["update_plan", "remember", "strategy_list", "experiment_get"],
         )
 
     def test_runtime_tools_are_registered_only_for_the_main_agent(self) -> None:

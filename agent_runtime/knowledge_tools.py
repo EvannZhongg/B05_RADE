@@ -24,9 +24,10 @@ class KnowledgeQueryTool(_KnowledgeTool):
         return ToolDefinition(
             name=self.name,
             description=(
-                "Find verified strategy profile comparisons for scenes with similar scale, "
-                "worker capacity and candidate density. Observations describe the effect of the alternative "
-                "relative to the reference. Test promising profiles on the current scene."
+                "Find verified strategy profile comparisons for scenes in the same worker capacity and "
+                "candidate density categories. Same-scale evidence ranks first. Comparisons from the other "
+                "task scale are candidates for testing on the current scene. Observations describe the "
+                "effect of the alternative relative to the reference."
             ),
             parameters={
                 "type": "object",

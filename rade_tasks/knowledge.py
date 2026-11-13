@@ -227,13 +227,32 @@ class KnowledgeService:
     def query(self, scene: SceneState, *, limit: int = 5) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError("limit must be an integer between 1 and 20")
+        scope = _scope(scene)
+        other_scale = "large" if scope["task_scale"] == "small" else "small"
+        # Rank before checking status so a local conflict suppresses transfer for that strategy pair.
         with closing(self._connect()) as db:
             rows = db.execute(
-                """SELECT k.payload FROM knowledge_revisions k
-                   WHERE k.scope = ? AND k.status = 'verified'
-                   AND k.version = (SELECT MAX(version) FROM knowledge_revisions WHERE knowledge_id = k.knowledge_id)
-                   ORDER BY k.version DESC, k.knowledge_id LIMIT ?""",
-                (_encode(_scope(scene)), limit),
+                """WITH ranked AS (
+                       SELECT payload, status, version, knowledge_id, scope = :scope AS same_scale,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY json_extract(payload, '$.reference'),
+                                               json_extract(payload, '$.alternative')
+                                  ORDER BY scope = :scope DESC, version DESC
+                              ) AS preference
+                       FROM knowledge_revisions k
+                       WHERE k.scope IN (:scope, :other_scope)
+                       AND k.version = (
+                           SELECT MAX(version) FROM knowledge_revisions WHERE knowledge_id = k.knowledge_id
+                       )
+                   )
+                   SELECT payload FROM ranked
+                   WHERE preference = 1 AND status = 'verified'
+                   ORDER BY same_scale DESC, version DESC, knowledge_id LIMIT :limit""",
+                {
+                    "scope": _encode(scope),
+                    "other_scope": _encode({**scope, "task_scale": other_scale}),
+                    "limit": limit,
+                },
             ).fetchall()
         return [json.loads(payload) for payload, in rows]
 

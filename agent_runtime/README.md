@@ -180,7 +180,9 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 
 ## 算法实验
 
-在 `rade_tasks/strategy.py` 的 `BUILTIN_STRATEGIES` 中注册策略及其配置。初版默认注册表为空。每种策略声明版本、参数 JSON Schema 和 `module:function` 入口。每个配置声明参数值、随机种子和独立进程的超时秒数。入口实现 `Solver`，接收不可变的 `SceneSnapshot`，按原始 `P` 的行顺序返回分配，每行填原始任务列的零基索引或 `None`。外部程序可以由遵循同一签名的适配器接入。
+策略实现在 `rade_tasks/algorithms/implementations/`，通过 `rade_tasks/algorithms/registry.py` 的 `BUILTIN_STRATEGIES` 注册。每种策略声明版本、参数 JSON Schema 和 `module:function` 入口。每个配置声明参数值、随机种子和独立进程的超时秒数。入口实现 `algorithms/base.py` 中的 `Solver`，接收不可变的 `SceneSnapshot`，按原始 `P` 的行顺序返回分配，每行填原始任务列的零基索引或 `None`。外部程序可以由遵循同一签名的适配器接入。
+
+内置 `marginal_greedy` 的 `default` 配置无可调参数，求解预算为 30 秒。它按原始顺序逐个处理单元，将其分配给能带来最大正期望价值增量的任务。增量相同则选原始列索引较小的任务，没有正增量则留空。
 
 - `strategy_list` 返回已注册策略的参数范围和通过校验的配置。
 - `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。

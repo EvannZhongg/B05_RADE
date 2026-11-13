@@ -10,7 +10,10 @@ import pytest
 from agent_core import JsonlSessionStore, JobManager, LLMResponse, Session, ToolCall, Workspace
 from agent_runtime.experiments import ExperimentRunner
 from agent_runtime.scene_input import prepare_scene_input
-from rade_tasks.strategy import Strategy, StrategyProfile
+from rade_tasks.algorithms.base import Strategy, StrategyProfile
+from rade_tasks.algorithms.implementations.marginal_greedy import solve
+from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES
+from rade_tasks.scene import SceneState
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 
 
@@ -91,7 +94,7 @@ def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, s
 
 def test_discovery_and_submission_validate_profiles(experiment_run):
     runner, scene, turn_id, jobs, _ = experiment_run
-    strategy, = runner.list_strategies()
+    strategy, = runner.registry.discover()
     assert strategy["version"] == "1.2.3"
     assert "enum" in strategy["parameter_schema"]["properties"]["mode"]
     assert {config["config_id"] for config in strategy["configs"]} == {
@@ -136,6 +139,28 @@ def test_comparison_rejects_different_source_snapshots(experiment_run, tmp_path)
     jobs.wait_for_turn(turn_id)
     with pytest.raises(ValueError, match="same scene snapshot"):
         runner.get(candidate, baseline)
+
+
+def test_marginal_greedy_accounts_for_previous_assignments_and_breaks_ties_by_task_index():
+    scene = SceneState('{"P":[[0.5,0.5,1],[0.5,0.5,1],[0,0,1]],"v":[10,10,-1]}').snapshot
+    assert solve(scene, {}, seed=0) == [0, 1, None]
+
+
+def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run):
+    _, scene, turn_id, jobs, run_directory = experiment_run
+    runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, run_directory)
+    strategy, = runner.registry.discover()
+    assert strategy["strategy_id"] == "marginal_greedy"
+    profile, = strategy["configs"]
+    assert profile["config_id"] == "default"
+
+    experiment_id = runner.submit(strategy["strategy_id"], profile["config_id"], scene, turn_id)["experiment_id"]
+    jobs.wait_for_turn(turn_id)
+    result = runner.get(experiment_id)
+    assert result["valid"] is True, result
+    assert result["metrics"]["expected_value"] == 8.0
+    allocation = json.loads((run_directory / result["result_ref"]).read_text(encoding="utf-8"))
+    assert allocation == {"allocation": [0, 1]}
 
 
 class TestExperimentBridge(BridgeTestCase):

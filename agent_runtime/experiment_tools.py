@@ -23,7 +23,7 @@ class StrategyListTool(Tool):
         assert isinstance(context, SceneToolContext) and context.experiments is not None
         if arguments:
             raise ValueError("strategy_list takes no arguments")
-        return {"strategies": context.experiments.list_strategies()}
+        return {"strategies": context.experiments.registry.discover()}
 
 
 class ExperimentRunTool(Tool):

@@ -1,9 +1,9 @@
-"""Contracts and registration for task allocation strategies."""
+"""Contracts for task allocation algorithms and their configurations."""
 
 from dataclasses import dataclass
 from typing import Protocol
 
-from .scene import SceneSnapshot
+from ..scene import SceneSnapshot
 
 
 class Solver(Protocol):
@@ -31,6 +31,3 @@ class Strategy:
     entrypoint: str  # An installed module and Solver function, as module:function.
     parameter_schema: dict[str, object]
     profiles: dict[str, StrategyProfile]
-
-
-BUILTIN_STRATEGIES: tuple[Strategy, ...] = ()

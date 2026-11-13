@@ -27,7 +27,7 @@ from agent_core.llm import LLMProvider
 from agent_core.tools import ROLE_TOOL_NAMES
 from agent_core.hooks import HookRunner
 from agent_core.execution.process import CancellationSignal
-from rade_tasks.strategy import BUILTIN_STRATEGIES
+from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES
 
 from .config import (
     ModelConfig,

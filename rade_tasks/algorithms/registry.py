@@ -26,6 +26,39 @@ BUILTIN_STRATEGIES = (
             "reverse": StrategyProfile(parameters={"reverse_workers": True}, seed=0, timeout_seconds=30),
         },
     ),
+    Strategy(
+        strategy_id="global_marginal_greedy",
+        version="1.0.0",
+        description=(
+            "Repeatedly choose the largest positive marginal gain across all unassigned "
+            "processing units and tasks; ties use original row, then column order."
+        ),
+        entrypoint="rade_tasks.algorithms.implementations.global_marginal_greedy:solve",
+        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        profiles={"default": StrategyProfile(parameters={}, seed=0, timeout_seconds=30)},
+    ),
+    Strategy(
+        strategy_id="multi_round_hungarian",
+        version="1.0.0",
+        description=(
+            "Repeat maximum-weight Hungarian matching on current marginal gains. "
+            "Each round is optimal for its weights; the full allocation is a heuristic."
+        ),
+        entrypoint="rade_tasks.algorithms.implementations.multi_round_hungarian:solve",
+        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        profiles={"default": StrategyProfile(parameters={}, seed=0, timeout_seconds=30)},
+    ),
+    Strategy(
+        strategy_id="multi_round_min_cost_flow",
+        version="1.0.0",
+        description=(
+            "Repeat unit-capacity minimum-cost flow matching on current marginal gains. "
+            "Each round is optimal for its weights; the full allocation is a heuristic."
+        ),
+        entrypoint="rade_tasks.algorithms.implementations.multi_round_min_cost_flow:solve",
+        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
+        profiles={"default": StrategyProfile(parameters={}, seed=0, timeout_seconds=300)},
+    ),
 )
 
 

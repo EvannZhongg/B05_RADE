@@ -152,7 +152,8 @@ def test_marginal_greedy_accounts_for_previous_assignments_and_breaks_ties_by_ta
 def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run):
     _, scene, turn_id, jobs, files, deadline = experiment_run
     runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
-    strategy, = runner.registry.discover()
+    strategy = next(item for item in runner.registry.discover()
+                    if item["strategy_id"] == "marginal_greedy")
     assert strategy["strategy_id"] == "marginal_greedy"
     profile = strategy["configs"][0]
     assert profile["config_id"] == "default"
@@ -278,7 +279,9 @@ class TestExperimentBridge(BridgeTestCase):
             item.tool_call_id: json.loads(item.content)["output"]
             for item in session.items if item.role == "tool"
         }
-        assert [strategy["strategy_id"] for strategy in results["discover"]["strategies"]] == ["marginal_greedy", "fixture"]
+        assert [strategy["strategy_id"] for strategy in results["discover"]["strategies"]] == [
+            *(strategy.strategy_id for strategy in BUILTIN_STRATEGIES), "fixture",
+        ]
         assert results["candidate"] == {
             "experiment_id": results["candidate"]["experiment_id"], "status": "submitted", "elapsed_seconds": 0.0,
         }

@@ -9,6 +9,7 @@ class ExperimentRecord:
     experiment_id: str
     strategy_id: str
     config_id: str
+    parameters: dict[str, object]
     version: str
     seed: int
     timeout_seconds: int
@@ -18,8 +19,9 @@ class ExperimentRecord:
     elapsed_seconds: float | None
     solver_elapsed_seconds: float | None
     valid: bool | None
-    metrics: dict[str, int | float] | None
-    diagnostic: str | None
+    metrics: dict[str, object] | None
+    task_metrics: list[dict[str, object]] | None
+    diagnostic: dict[str, object] | None
     result_ref: str | None
     allocation_digest: str | None
 
@@ -32,6 +34,7 @@ def query_experiment(
     del result["scene_digest"]
     del result["task_id"]
     del result["allocation_digest"]
+    del result["task_metrics"]
     if baseline_experiment_id is None:
         return result
 
@@ -47,5 +50,15 @@ def query_experiment(
         "expected_value_delta": (
             score - baseline_score if score is not None and baseline_score is not None else None
         ),
+        "task_deltas": [
+            {
+                "task_index": task["task_index"],
+                "baseline_expected_value": reference["expected_value"],
+                "expected_value": task["expected_value"],
+                "expected_value_delta": task["expected_value"] - reference["expected_value"],
+                "assigned_workers_delta": task["assigned_workers"] - reference["assigned_workers"],
+            }
+            for task, reference in zip(experiment.task_metrics, baseline.task_metrics)
+        ] if experiment.task_metrics is not None and baseline.task_metrics is not None else None,
     }
     return result

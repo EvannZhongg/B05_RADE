@@ -182,11 +182,12 @@ class SceneTaskRunner:
             jobs.drain_updates(task_id)
             control.raise_if_cancelled()
             baseline = experiments.get(baseline_id)
+            baseline_reason = baseline["diagnostic"]["message"] if baseline["diagnostic"] else baseline["status"]
             if baseline["status"] == "timed_out":
-                raise TimeoutError(str(baseline["diagnostic"]))
+                raise TimeoutError(str(baseline_reason))
             baseline_metrics = baseline["metrics"]
             if not baseline["valid"] or not isinstance(baseline_metrics, dict):
-                raise ValueError(f"Baseline solver failed: {baseline['diagnostic'] or baseline['status']}")
+                raise ValueError(f"Baseline solver failed: {baseline_reason}")
             candidate_ids = [baseline_id]
             if plane is not None:
                 assert plane.tool_context is not None and plane.agent is not None
@@ -196,7 +197,9 @@ class SceneTaskRunner:
                     objective=(
                         "Use knowledge_query to look for relevant experience. Reflect on the baseline and "
                         "use registered experiments to test improvements. Compare completed experiments with "
-                        "experiment_get, then submit supported findings with reflection_propose. The runtime "
+                        "experiment_get; inspect diagnostics and per-task deltas, and adjust schema-valid "
+                        "parameters or seed when testing a hypothesis. Submit supported findings with "
+                        "reflection_propose. The runtime "
                         "will validate and export the best allocation after this turn."
                     ),
                 )

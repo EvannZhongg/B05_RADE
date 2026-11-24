@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 
 from jsonschema import Draft202012Validator, ValidationError
 
@@ -61,8 +62,14 @@ BUILTIN_STRATEGIES = (
         parameter_schema={
             "type": "object",
             "properties": {
-                "budget_seconds": {"type": "number", "exclusiveMinimum": 0},
-                "restarts": {"type": "integer", "minimum": 0},
+                "budget_seconds": {
+                    "type": "number", "exclusiveMinimum": 0,
+                    "description": "Cooperative search budget including matching; the selected profile's process timeout still applies.",
+                },
+                "restarts": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Maximum perturbed restarts after improving the matching seed; seed controls perturbations.",
+                },
             },
             "required": ["budget_seconds", "restarts"],
             "additionalProperties": False,
@@ -123,13 +130,22 @@ class StrategyRegistry:
             })
         return strategies
 
-    def resolve(self, strategy_id: str, config_id: str) -> tuple[Strategy, StrategyProfile]:
+    def resolve(
+        self, strategy_id: str, config_id: str, *,
+        parameters: dict[str, object] | None = None, seed: int | None = None,
+    ) -> tuple[Strategy, StrategyProfile]:
         strategy = self._strategies.get(strategy_id)
         if strategy is None:
             raise ValueError(f"Unknown strategy_id: {strategy_id}")
         profile = strategy.profiles.get(config_id)
         if profile is None:
             raise ValueError(f"Unknown config_id for strategy {strategy_id}: {config_id}")
+        if parameters is not None and not isinstance(parameters, dict):
+            raise ValueError("parameters must be an object")
+        effective = deepcopy(profile.parameters)
+        if parameters is not None:
+            effective.update(deepcopy(parameters))
+        profile = replace(profile, parameters=effective, seed=profile.seed if seed is None else seed)
         try:
             self._validate_profile(strategy, profile)
         except ValueError as error:

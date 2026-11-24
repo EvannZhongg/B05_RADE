@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from time import monotonic, sleep
 from unittest.mock import patch
@@ -14,7 +15,7 @@ from agent_runtime.experiments import ExperimentRunner
 from agent_runtime.scene_input import prepare_scene_input
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
 from rade_tasks.algorithms.implementations.marginal_greedy import solve
-from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES
+from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES, StrategyRegistry
 from rade_tasks.knowledge import KnowledgeService, ReflectionProposal, ReflectionSource
 from rade_tasks.results import select_result
 from rade_tasks.scene import SceneState
@@ -90,7 +91,13 @@ def test_invalid_results_and_process_errors_are_recorded(experiment_run, mode, s
     result = runner.get(experiment_id)
     assert result["status"] == status
     assert result["valid"] is (False if status == "invalid" else None)
-    assert diagnostic in result["diagnostic"]
+    assert diagnostic in result["diagnostic"]["message"]
+    if mode == "timeout":
+        assert result["diagnostic"]["timed_out_by"] == "profile"
+        assert result["diagnostic"]["profile_timeout_seconds"] == 1
+        assert result["diagnostic"]["budget_remaining_seconds"] > 1
+    elif mode == "invalid":
+        assert result["diagnostic"]["errors"][0]["worker_index"] == 0
     assert result["elapsed_seconds"] > 0
     assert result["solver_elapsed_seconds"] > 0
     assert result["result_ref"] is None
@@ -113,6 +120,57 @@ def test_discovery_and_submission_validate_profiles(experiment_run):
         with pytest.raises(ValueError, match=error):
             runner.submit(strategy_id, config_id, scene, turn_id, deadline=deadline)
     assert jobs.drain_updates(turn_id) == ()
+
+
+def test_parameter_overrides_merge_with_profile_without_mutating_defaults():
+    registry = StrategyRegistry(BUILTIN_STRATEGIES, max_timeout_seconds=3600)
+    strategy, profile = registry.resolve(
+        "hungarian_local_search", "fast", parameters={"restarts": 8}, seed=123,
+    )
+    assert profile.parameters == {"budget_seconds": 2, "restarts": 8}
+    assert profile.seed == 123 and profile.timeout_seconds == 5
+    profile.parameters["budget_seconds"] = 1
+    assert strategy.profiles["fast"].parameters == {"budget_seconds": 2, "restarts": 4}
+    assert registry.resolve("hungarian_local_search", "fast")[1].seed == 0
+
+
+@pytest.mark.parametrize("parameters", [
+    {"budget_seconds": 0}, {"budget_seconds": float("nan")}, {"budget_seconds": float("inf")},
+    {"restarts": -1}, {"restarts": 1.5}, {"restarts": True},
+])
+def test_local_search_override_schema_and_finite_json_are_enforced(parameters):
+    registry = StrategyRegistry(BUILTIN_STRATEGIES, max_timeout_seconds=3600)
+    with pytest.raises(ValueError):
+        registry.resolve("hungarian_local_search", "fast", parameters=parameters)
+
+
+@pytest.mark.parametrize("overrides", [
+    {"parameters": {"mode": "unknown"}}, {"parameters": {"unexpected": 1}},
+    {"parameters": []}, {"parameters": {"mode": float("nan")}},
+    {"seed": True}, {"seed": -1}, {"seed": 1.0},
+])
+def test_invalid_overrides_never_submit_a_job(experiment_run, overrides):
+    runner, scene, turn_id, jobs, _, deadline = experiment_run
+    with pytest.raises(ValueError):
+        runner.submit("fixture", "baseline", scene, turn_id, deadline=deadline, **overrides)
+    assert jobs.drain_updates(turn_id) == ()
+
+
+def test_overridden_parameters_and_seed_reach_the_worker(experiment_run, strategy):
+    _, scene, turn_id, jobs, files, deadline = experiment_run
+    strategy = replace(strategy, profiles={"default": StrategyProfile({"mode": "baseline"}, 0, 10)})
+    runner = ExperimentRunner((strategy,), jobs, files)
+    parameters = {"mode": "candidate"}
+    experiment_id = runner.submit(
+        "fixture", "default", scene, turn_id, deadline=deadline, parameters=parameters, seed=42,
+    )["experiment_id"]
+    parameters["mode"] = "invalid"
+    jobs.wait_for_turn(turn_id)
+    result = runner.get(experiment_id)
+    assert result["valid"] is True, result
+    assert result["parameters"] == {"mode": "candidate"} and result["seed"] == 42
+    assert result["metrics"]["expected_value"] == 17
+    assert strategy.profiles["default"].seed == 0
 
 
 def test_can_cancel_a_running_solver(experiment_run, tmp_path):
@@ -229,6 +287,11 @@ def test_solver_uses_remaining_budget_when_its_job_starts(experiment_run):
     assert executor.return_value.execute.call_args.args[1] == 0.25
     assert runner.get(active["experiment_id"])["status"] == "timed_out"
     assert runner.get(expired["experiment_id"])["status"] == "timed_out"
+    assert runner.get(active["experiment_id"])["diagnostic"] == {
+        "code": "solver_timeout", "message": "Exceeded 0.25 seconds",
+        "profile_timeout_seconds": 10, "budget_remaining_seconds": .25, "timed_out_by": "budget",
+    }
+    assert runner.get(expired["experiment_id"])["diagnostic"]["budget_remaining_seconds"] == 0
 
 
 class TestExperimentBridge(BridgeTestCase):
@@ -283,7 +346,10 @@ class TestExperimentBridge(BridgeTestCase):
             if "candidate" not in results:
                 assert results["measured-baseline"]["metrics"]["expected_value"] == 10
                 return LLMResponse(content=None, tool_calls=(ToolCall(
-                    "candidate", "experiment_run", {"strategy_id": "fixture", "config_id": "candidate"},
+                    "candidate", "experiment_run", {
+                        "strategy_id": "fixture", "config_id": "baseline",
+                        "parameters": {"mode": "candidate"}, "seed": 42,
+                    },
                 ),))
             if "reflection" in results:
                 return LLMResponse(content="Evaluated")
@@ -332,9 +398,26 @@ class TestExperimentBridge(BridgeTestCase):
         assert comparison["valid"] is True
         assert comparison["seed"] == 42
         assert comparison["version"] == "1.2.3"
-        assert comparison["metrics"] == {"expected_value": 17.0, "total_value": 20, "assigned_workers": 2}
+        assert comparison["parameters"] == {"mode": "candidate"}
+        assert comparison["config_id"] == "baseline"
+        assert comparison["metrics"] == {
+            "expected_value": 17.0, "total_value": 20, "assigned_workers": 2,
+            "unassigned_workers": 0, "covered_tasks": 2,
+            "weakest_tasks": [
+                {"task_index": 1, "value": 10, "assigned_workers": 1, "candidate_workers": 1,
+                 "success_probability": .7, "expected_value": 7.0},
+                {"task_index": 0, "value": 10, "assigned_workers": 1, "candidate_workers": 2,
+                 "success_probability": 1.0, "expected_value": 10.0},
+            ],
+        }
         assert comparison["comparison"]["baseline_expected_value"] == 10.0
         assert comparison["comparison"]["expected_value_delta"] == 7.0
+        assert comparison["comparison"]["task_deltas"] == [
+            {"task_index": 0, "baseline_expected_value": 10.0, "expected_value": 10.0,
+             "expected_value_delta": 0.0, "assigned_workers_delta": -1},
+            {"task_index": 1, "baseline_expected_value": 0.0, "expected_value": 7.0,
+             "expected_value_delta": 7.0, "assigned_workers_delta": 1},
+        ]
         result_ref = comparison["result_ref"]
         assert result_ref.startswith("experiments/")
         assert json.loads((plane.files.path / result_ref).read_text(encoding="utf-8")) == {"allocation": [1, 0]}
@@ -390,6 +473,7 @@ class TestExperimentBridge(BridgeTestCase):
                 profile = knowledge["alternative"]
                 return LLMResponse(content=None, tool_calls=(ToolCall("reuse", "experiment_run", {
                     "strategy_id": profile["strategy_id"], "config_id": profile["config_id"],
+                    "parameters": profile["parameters"], "seed": profile["seed"],
                 }),))
             return LLMResponse(content="Found prior evidence")
 

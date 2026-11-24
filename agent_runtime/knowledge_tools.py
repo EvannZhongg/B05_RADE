@@ -27,7 +27,8 @@ class KnowledgeQueryTool(_KnowledgeTool):
                 "Find verified strategy profile comparisons for scenes in the same worker capacity and "
                 "candidate density categories. Same-scale evidence ranks first. Comparisons from the other "
                 "task scale are candidates for testing on the current scene. Observations describe the "
-                "effect of the alternative relative to the reference."
+                "effect of the alternative relative to the reference. Reuse the returned configuration's "
+                "parameters and seed along with strategy_id and config_id when testing it."
             ),
             parameters={
                 "type": "object",
@@ -52,7 +53,8 @@ class ReflectionProposeTool(_KnowledgeTool):
             name=self.name,
             description=(
                 "Submit a hypothesis and conclusion after comparing completed experiments from this scene task. "
-                "Provide two distinct strategy profiles and the measured effect on expected value of "
+                "Compare two effective configurations differing in strategy/config IDs, parameters or seed, "
+                "and provide the measured effect on expected value of "
                 "experiment_id relative to reference_experiment_id. The Runtime verifies the allocations and scores."
             ),
             parameters={

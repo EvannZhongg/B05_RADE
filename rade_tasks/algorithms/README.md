@@ -51,6 +51,17 @@ solve(scene, parameters, *, seed) -> list[int | None]
 提交 `strategy_id` 和对应的 `config_id`，再通过 `experiment_get` 读取评估结果。
 每次实验的实际超时取配置上限与场景剩余预算的较小值。
 最小费用流构建稠密残量网络，开销通常较大，因此配置了较长的求解上限。
+`experiment_run` 可传 `parameters` 和 `seed` 测试调整；参数覆盖 profile 的同名字段，
+其余沿用默认值，并由注册表统一校验。覆盖不改变 profile 的进程超时。
+例如 `hungarian_local_search/fast` 可覆盖 `{"restarts": 8}` 并指定 `seed=42`；
+需要更长进程预算时应选择 `thorough`。
+
+`evaluate` 在任何评分前收集全部非法行，通过 `AllocationValidationError.errors`
+给出结构化原因。默认计算总价值、已分配/空闲单元数及覆盖数；
+`evaluate(..., detailed=True)` 额外计算全部 `task_metrics` 与贡献升序的正价值任务
+`weakest_tasks`（最多 5 个）。详细模式只在实验结果边界调用，局部搜索的目标复算不做
+候选矩阵统计和任务排序。`experiment_get` 默认返回摘要，指定基线时返回所有逐任务差值；
+完整任务指标保存在实验记录中。诊断字段及知识复测契约见 [Runtime 算法实验](../../agent_runtime/README.md#算法实验)。
 
 也可以在仓库根目录直接调用：
 

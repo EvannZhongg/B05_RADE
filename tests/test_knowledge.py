@@ -24,10 +24,11 @@ def comparison(values: tuple[int, int], session: str, *, workers: int = 2, tasks
     for config, allocation in (("default", [0, 0]), ("reverse", [1, 0])):
         allocation.extend([None] * (workers - 2))
         record = ExperimentRecord(
-            experiment_id=f"{session}-{config}", strategy_id="greedy", config_id=config,
+            experiment_id=f"{session}-{config}", strategy_id="greedy", config_id=config, parameters={},
             version="1.0", seed=0, timeout_seconds=30, scene_digest=source.scene_digest,
             task_id=source.task_id, status="completed", elapsed_seconds=0.01, solver_elapsed_seconds=0.01,
-            valid=True, metrics=evaluate(scene.snapshot, allocation), diagnostic=None, result_ref=f"{config}.json",
+            valid=True, metrics=evaluate(scene.snapshot, allocation), task_metrics=None,
+            diagnostic=None, result_ref=f"{config}.json",
             allocation_digest=f"{config}-digest",
         )
         records[record.experiment_id] = record, allocation

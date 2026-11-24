@@ -98,6 +98,7 @@ def _profile(experiment: ExperimentRecord) -> dict:
     return {
         "strategy_id": experiment.strategy_id, "config_id": experiment.config_id,
         "version": experiment.version, "seed": experiment.seed,
+        "parameters": experiment.parameters,
     }
 
 
@@ -156,7 +157,7 @@ class KnowledgeService:
             observed = _compare(alternative["expected_value"], reference["expected_value"])
             reflection.update(evidence=evidence, observed_effect=observed)
             if reference["profile"] == alternative["profile"]:
-                raise ValueError("Compare two different strategy profiles")
+                raise ValueError("Compare two different effective strategy configurations")
             if observed != proposal.expected_value_effect:
                 raise ValueError(f"Claimed effect {proposal.expected_value_effect}, measured effect {observed}")
         except (ValueError, OverflowError) as error:

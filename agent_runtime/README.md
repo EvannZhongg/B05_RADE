@@ -215,8 +215,25 @@ standalone Skill 与 MCP 使用同一套 Core registry / manager，不存在 Plu
 默认基线使用 `multi_round_hungarian/default`：逐轮按当前边际收益执行最大权匹配，声明 30 秒求解上限。`hungarian_local_search` 从相同匹配解出发，执行单元改派、两单元任务交换和随机扰动重启，提供 `fast`（2 秒搜索预算、最多 4 次重启）与 `thorough`（30 秒搜索预算、最多 32 次重启）。随机种子控制重启，每次采纳前复算目标值，最终结果不低于匹配种子。策略、邻域和预算细节见 [算法说明](../rade_tasks/algorithms/README.md)。每个实验启动时，以配置声明的进程超时和任务剩余时间中的较小值限制求解进程，排队时间也消耗任务预算。
 
 - `strategy_list` 返回已注册策略的参数范围和通过校验的配置。
-- `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。
-- `experiment_get` 查询本次运行的实验记录。带上 `baseline_experiment_id` 可比较同一输入快照的期望处理价值。求解产物写入 `files/experiments/<id>/allocation.json`。成功结果的 `result_ref` 相对于 `files/`，可直接传给 `read_file`。实验状态和指标随 Session Journal 保存。
+- `experiment_run` 在场景 Turn 内接受 `strategy_id` 和 `config_id`，可选 `parameters` 和 `seed`。参数逐字段覆盖 profile 默认值，再用注册策略的 `parameter_schema` 校验；未提供的参数和种子沿用 profile 值。覆盖不改变 profile 的进程超时，也不修改注册表。提交后台 Job 后立即返回 `experiment_id`、状态和当前耗时。Runtime 在独立进程内运行策略，独立评估器用原始 `P` 和 `v` 校验分配并复算期望处理价值。
+- `experiment_get` 查询本次运行的实际参数、种子和实验记录。成功的 `metrics` 包含总价值、已分配/空闲单元数、覆盖任务数和贡献最低的 5 个正价值任务。带上 `baseline_experiment_id` 可比较同一输入快照的总价值和所有逐任务贡献差异。失败的 `diagnostic` 为含 `code`、`message` 和具体详情的对象。求解产物写入 `files/experiments/<id>/allocation.json`。成功结果的 `result_ref` 相对于 `files/`，可直接传给 `read_file`。实验状态、实际配置和任务级指标随 Session Journal 保存。
+
+例如对局部搜索增加重启次数、改变种子，其他参数继承 `fast`：
+
+```json
+{
+  "strategy_id": "hungarian_local_search",
+  "config_id": "fast",
+  "parameters": {"restarts": 8},
+  "seed": 42
+}
+```
+
+`weakest_tasks` 附带原始零基任务索引、价值、成功概率、期望贡献、已分配单元数及原始矩阵中的候选单元数。低贡献可能源于价值低或任务不可达，不能单独视为算法缺陷。`covered_tasks` 只计成功概率大于零的任务；给零成功率组合分配单元仍是合法分配，但不计覆盖。`comparison.task_deltas` 按原始任务列顺序给出本次与基线的贡献及其差值、分配单元数量差，保留负差值。任一方未取得合法结果时，比较差值为 `null`。
+
+非法分配的 `diagnostic.errors` 一次性列出所有非法行、缺失行或多余行，索引从零开始，不返回部分得分。超时的 `diagnostic` 包含 `profile_timeout_seconds`、`budget_remaining_seconds` 和 `timed_out_by="profile" | "budget"`。剩余预算记录的是实际准备启动求解进程时的值（已扣除排队等耗时），不是查询时的剩余时间；预算已耗尽时记为零，两项上限相等时归为 `budget`。`solver_elapsed_seconds` 继续记录求解进程执行链路的耗时。
+
+`reflection_propose` 依据实际参数与种子区分有效配置，因此支持同一 profile 的调参对照。查询知识后，下一次 `experiment_run` 应同时传递所选配置的实际 `parameters` 和 `seed`，以复测同一调整。
 
 ## 模块索引
 

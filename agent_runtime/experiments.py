@@ -15,7 +15,7 @@ from agent_core.execution.process import MAX_COMMAND_TIMEOUT_SECONDS, CommandCan
 from agent_core.tools import JSONValue
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
 from rade_tasks.algorithms.registry import StrategyRegistry
-from rade_tasks.execution import execute_strategy
+from rade_tasks.execution import StrategyTimeout, execute_strategy
 from rade_tasks.experiments import ExperimentRecord, query_experiment
 from rade_tasks.scene import SceneSnapshot
 
@@ -30,8 +30,9 @@ class ExperimentRunner:
 
     def submit(
         self, strategy_id: str, config_id: str, scene: SceneInput, turn_id: str, *, deadline: float,
+        parameters: dict[str, object] | None = None, seed: int | None = None,
     ) -> dict[str, JSONValue]:
-        strategy, profile = self.registry.resolve(strategy_id, config_id)
+        strategy, profile = self.registry.resolve(strategy_id, config_id, parameters=parameters, seed=seed)
         snapshot = scene.state.snapshot
         result_ref = f"experiments/{uuid4().hex}/allocation.json"
         handle = self._jobs.submit(
@@ -41,6 +42,7 @@ class ExperimentRunner:
                 "strategy_id": strategy_id,
                 "config_id": config_id,
                 "version": strategy.version,
+                "parameters": json.dumps(profile.parameters, allow_nan=False),
                 "seed": str(profile.seed),
                 "timeout_seconds": str(profile.timeout_seconds),
                 "scene_digest": scene.digest,
@@ -68,7 +70,7 @@ class ExperimentRunner:
         if result.status == "completed":
             data = json.dumps({"allocation": result.allocation}, allow_nan=False).encode("utf-8")
             atomic_write_bytes(self._files.resolve_path(result_ref), data)
-            summary.update(valid=True, metrics=result.metrics, result_ref=result_ref,
+            summary.update(valid=True, metrics=result.metrics, task_metrics=result.task_metrics, result_ref=result_ref,
                            allocation_digest=sha256(data).hexdigest())
         elif result.status == "invalid":
             summary["valid"] = False
@@ -118,15 +120,16 @@ class ExperimentRunner:
 
         details = job.details
         summary = (job.result_summary or {}) if job.status == "completed" else {}
-        diagnostic = job.error
+        diagnostic = {"code": "job_failed", "message": job.error} if job.error is not None else None
         if job.status == "cancelled":
-            diagnostic = "Experiment was cancelled"
+            diagnostic = {"code": "cancelled", "message": "Experiment was cancelled"}
         elif job.status == "interrupted":
-            diagnostic = "Experiment was interrupted before completion"
+            diagnostic = {"code": "interrupted", "message": "Experiment was interrupted before completion"}
         return ExperimentRecord(
             experiment_id=experiment_id,
             strategy_id=details["strategy_id"],
             config_id=details["config_id"],
+            parameters=json.loads(details["parameters"]),
             version=details["version"],
             seed=int(details["seed"]),
             timeout_seconds=int(details["timeout_seconds"]),
@@ -136,8 +139,9 @@ class ExperimentRunner:
             elapsed_seconds=job.elapsed_seconds,
             solver_elapsed_seconds=cast(float | None, summary.get("solver_elapsed_seconds")),
             valid=cast(bool | None, summary.get("valid")),
-            metrics=cast(dict[str, int | float] | None, summary.get("metrics")),
-            diagnostic=cast(str | None, summary.get("diagnostic", diagnostic)),
+            metrics=cast(dict[str, object] | None, summary.get("metrics")),
+            task_metrics=cast(list[dict[str, object]] | None, summary.get("task_metrics")),
+            diagnostic=cast(dict[str, object] | None, summary.get("diagnostic", diagnostic)),
             result_ref=cast(str | None, summary.get("result_ref")),
             allocation_digest=cast(str | None, summary.get("allocation_digest")),
         )
@@ -147,9 +151,10 @@ def _run_process(
     executor: HostCommandExecutor, job: JobContext, command: tuple[str, ...], profile_timeout: int,
     request: bytes, deadline: float,
 ) -> str:
-    timeout = min(profile_timeout, deadline - monotonic())
+    budget_remaining = deadline - monotonic()
+    timeout = min(profile_timeout, budget_remaining)
     if timeout <= 0:
-        raise TimeoutError("Scene task budget expired before the solver started")
+        raise StrategyTimeout(profile_timeout, budget_remaining)
     try:
         execution = executor.execute(command, timeout, cancellation=job.cancellation, stdin=request)
     except CommandCancelled:
@@ -159,7 +164,7 @@ def _run_process(
     try:
         job.cancellation.raise_if_cancelled()
         if execution.timed_out:
-            raise TimeoutError(f"Exceeded {timeout:.3g} seconds")
+            raise StrategyTimeout(profile_timeout, budget_remaining)
         if execution.exit_code != 0:
             message = execution.stderr.strip()[-2000:]
             raise RuntimeError(f"Strategy exited with code {execution.exit_code}: {message}")

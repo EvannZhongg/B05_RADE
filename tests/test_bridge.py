@@ -1215,7 +1215,9 @@ class InterruptedTurnTest(BridgeTestCase):
 
         config_path = self.root / "agent_config.json"
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        config["scene_task"] = {"baseline_config_id": "reverse"}
+        config["scene_task"] = {
+            "baseline_strategy_id": "marginal_greedy", "baseline_config_id": "reverse",
+        }
         config_path.write_text(json.dumps(config), encoding="utf-8")
         self.bridge.run_scene_task({**message, "turn_id": "baseline"})
 

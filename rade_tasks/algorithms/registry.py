@@ -49,6 +49,32 @@ BUILTIN_STRATEGIES = (
         profiles={"default": StrategyProfile(parameters={}, seed=0, timeout_seconds=30)},
     ),
     Strategy(
+        strategy_id="hungarian_local_search",
+        version="1.0.0",
+        description=(
+            "Start from multi-round Hungarian matching, then improve expected value with "
+            "single-worker relocations and two-worker task swaps. Verify every accepted move; "
+            "seed controls perturbed restarts and the best allocation never regresses. "
+            "fast uses a 2-second budget; thorough uses 30 seconds, including matching."
+        ),
+        entrypoint="rade_tasks.algorithms.implementations.hungarian_local_search:solve",
+        parameter_schema={
+            "type": "object",
+            "properties": {
+                "budget_seconds": {"type": "number", "exclusiveMinimum": 0},
+                "restarts": {"type": "integer", "minimum": 0},
+            },
+            "required": ["budget_seconds", "restarts"],
+            "additionalProperties": False,
+        },
+        profiles={
+            "fast": StrategyProfile(parameters={"budget_seconds": 2, "restarts": 4},
+                                    seed=0, timeout_seconds=5),
+            "thorough": StrategyProfile(parameters={"budget_seconds": 30, "restarts": 32},
+                                        seed=0, timeout_seconds=35),
+        },
+    ),
+    Strategy(
         strategy_id="multi_round_min_cost_flow",
         version="1.0.0",
         description=(

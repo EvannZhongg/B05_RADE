@@ -8,7 +8,7 @@
   },
   "scene_task": {
     "budget_seconds": 600,
-    "baseline_strategy_id": "marginal_greedy",
+    "baseline_strategy_id": "multi_round_hungarian",
     "baseline_config_id": "default"
   },
   "context": {

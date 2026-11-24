@@ -9,12 +9,14 @@ import pytest
 
 from agent_core import JsonlSessionStore, JobManager, LLMResponse, Session, ToolCall, Workspace
 from agent_core.execution import CommandExecutionResult
+from agent_runtime.config import SceneTaskConfig
 from agent_runtime.experiments import ExperimentRunner
 from agent_runtime.scene_input import prepare_scene_input
 from rade_tasks.algorithms.base import Strategy, StrategyProfile
 from rade_tasks.algorithms.implementations.marginal_greedy import solve
 from rade_tasks.algorithms.registry import BUILTIN_STRATEGIES
-from rade_tasks.knowledge import KnowledgeService
+from rade_tasks.knowledge import KnowledgeService, ReflectionProposal, ReflectionSource
+from rade_tasks.results import select_result
 from rade_tasks.scene import SceneState
 from tests.bridge_fixtures import BridgeTestCase, emitted, open_session_message
 
@@ -153,8 +155,8 @@ def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run)
     _, scene, turn_id, jobs, files, deadline = experiment_run
     runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
     strategy = next(item for item in runner.registry.discover()
-                    if item["strategy_id"] == "marginal_greedy")
-    assert strategy["strategy_id"] == "marginal_greedy"
+                    if item["strategy_id"] == SceneTaskConfig().baseline_strategy_id)
+    assert strategy["strategy_id"] == "multi_round_hungarian"
     profile = strategy["configs"][0]
     assert profile["config_id"] == "default"
 
@@ -164,9 +166,49 @@ def test_builtin_baseline_is_discoverable_and_runs_in_the_worker(experiment_run)
     jobs.wait_for_turn(turn_id)
     result = runner.get(experiment_id)
     assert result["valid"] is True, result
-    assert result["metrics"]["expected_value"] == 10.0
+    assert result["metrics"]["expected_value"] == 17.0
     allocation = json.loads((files.path / result["result_ref"]).read_text(encoding="utf-8"))
-    assert allocation == {"allocation": [0, 0]}
+    assert allocation == {"allocation": [1, 0]}
+
+
+def test_hungarian_local_improvement_is_compared_adopted_and_retained_as_knowledge(experiment_run, tmp_path):
+    _, _, turn_id, jobs, files, deadline = experiment_run
+    path = tmp_path / "scene1_1.json"
+    path.write_text(json.dumps({
+        "P": [[.8, 1, .5], [.5, .2, .2], [0, .5, 1], [.8, 1, 0], [.5, 1, 1]],
+        "v": [10, 10, 10],
+    }), encoding="utf-8")
+    scene = prepare_scene_input(tmp_path, path.name, files)
+    runner = ExperimentRunner(BUILTIN_STRATEGIES, jobs, files)
+    baseline_id = runner.submit(
+        SceneTaskConfig().baseline_strategy_id, "default", scene, turn_id, deadline=deadline,
+    )["experiment_id"]
+    candidate_id = runner.submit(
+        "hungarian_local_search", "fast", scene, turn_id, deadline=deadline,
+    )["experiment_id"]
+    jobs.wait_for_turn(turn_id)
+    comparison = runner.get(candidate_id, baseline_id)
+    assert comparison["valid"] is True, comparison
+    assert comparison["comparison"]["baseline_expected_value"] == pytest.approx(29.5)
+    assert comparison["comparison"]["expected_value_delta"] >= .3 - 1e-10
+    selected = select_result(scene.state.snapshot, runner.allocations(scene, [baseline_id, candidate_id]))
+    assert selected.experiment_id == candidate_id
+    assert json.loads(selected.to_json())["allocation"] == runner.evidence(candidate_id)[1]
+    service = KnowledgeService(tmp_path / "knowledge.sqlite3")
+    reflection = service.propose(
+        ReflectionProposal(
+            "Pair swaps can escape a matching solution with no improving single relocation.",
+            "The verified local search improved the matching seed.",
+            baseline_id, candidate_id, "improved",
+        ),
+        ReflectionSource("run", turn_id, scene.filename, scene.digest, scene.source_path),
+        scene.state, runner.evidence,
+    )
+    assert reflection["status"] == "verified", reflection
+    knowledge, = service.query(scene.state)
+    assert {knowledge[key]["strategy_id"] for key in ("reference", "alternative")} == {
+        "multi_round_hungarian", "hungarian_local_search",
+    }
 
 
 def test_solver_uses_remaining_budget_when_its_job_starts(experiment_run):
@@ -201,6 +243,7 @@ class TestExperimentBridge(BridgeTestCase):
             "max_same_tool_calls": 5,
             "output_reserve_tokens": 100,
             "scratch_workspace_root": str(root / "scratch"),
+            "scene_task": {"baseline_strategy_id": "marginal_greedy"},
             "main_agent": {"tools": {"read_file": True}},
         })
         bridge.open_session(message)

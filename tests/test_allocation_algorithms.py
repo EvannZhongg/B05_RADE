@@ -99,15 +99,16 @@ def test_solvers_leave_snapshot_intact_and_match_product_objective(solver):
         assert scene.P == matrix and scene.v == values
 
 
-@pytest.mark.parametrize("strategy_id", [
-    "marginal_greedy", "global_marginal_greedy",
-    "multi_round_hungarian", "multi_round_min_cost_flow",
+@pytest.mark.parametrize("strategy_id,config_id", [
+    ("marginal_greedy", "default"), ("global_marginal_greedy", "default"),
+    ("multi_round_hungarian", "default"), ("multi_round_min_cost_flow", "default"),
+    ("hungarian_local_search", "fast"), ("hungarian_local_search", "thorough"),
 ])
-def test_registered_algorithms_run_in_execution_worker(strategy_id):
+def test_registered_algorithms_run_in_execution_worker(strategy_id, config_id):
     registry = StrategyRegistry(BUILTIN_STRATEGIES, max_timeout_seconds=3600)
     discovered = {item["strategy_id"]: item for item in registry.discover()}
-    assert "default" in {item["config_id"] for item in discovered[strategy_id]["configs"]}
-    strategy, profile = registry.resolve(strategy_id, "default")
+    assert config_id in {item["config_id"] for item in discovered[strategy_id]["configs"]}
+    strategy, profile = registry.resolve(strategy_id, config_id)
     scene = SceneState('{"P":[[0.8,0.7],[1,0]],"v":[10,10]}').snapshot
 
     def run_process(command, timeout, request):

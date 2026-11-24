@@ -49,7 +49,7 @@ class PromptTemplates:
 @dataclass(frozen=True)
 class SceneTaskConfig:
     budget_seconds: int = 600
-    baseline_strategy_id: str = "marginal_greedy"
+    baseline_strategy_id: str = "multi_round_hungarian"
     baseline_config_id: str = "default"
 
 
